@@ -1,0 +1,18 @@
+# Web framework
+fastapi
+uvicorn[standard]
+
+# Computer vision / on-device models
+opencv-python
+mediapipe
+numpy
+
+# MLLM integration
+anthropic
+python-dotenv
+
+# Image processing
+pillow
+
+# Environment / utilities
+pydantic
