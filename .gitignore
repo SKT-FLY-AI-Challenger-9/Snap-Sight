@@ -1,0 +1,68 @@
+CLAUDE.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# Local databases
+*.sqlite3
+*.db
+
+# Environment variables / secrets
+.env
+.env.local
+*.key
+*.pem
+
+# Model files / training artifacts
+*.pt
+*.tflite
+*.mlmodel
+*.onnx
+*.h5
+*.ckpt
+runs/
+wandb/
+
+# Image/buffer cache (test capture data)
+*.jpg
+*.jpeg
+*.png
+!docs/**/*.png
+frame_buffer/
+captures/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Mobile (Android build artifacts)
+build/
+.gradle/
+.cxx/
+*.apk
+*.aab
+
+# Android — 로컬 SDK 경로·모듈 파일 (머신마다 다름, 커밋 금지)
+local.properties
+*.iml
+
+# Android — 서명 키 (절대 커밋 금지)
+*.jks
+*.keystore
