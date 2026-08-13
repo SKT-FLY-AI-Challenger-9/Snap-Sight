@@ -21,17 +21,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.snap_sight.camera.CameraController
-import com.example.snap_sight.camera.CaptureEventListener
+import com.example.snap_sight.camera.CaptureSessionManager
+import com.example.snap_sight.camera.SessionState
 import com.example.snap_sight.cv.LoggingFrameProcessor
 import com.example.snap_sight.ux.CaptureScreen
 import com.example.snap_sight.ui.theme.SnapSightTheme
+import java.io.File
 
 class MainActivity : ComponentActivity() {
 
     private val cameraController by lazy { CameraController(this) }
+    private val sessionManager by lazy { CaptureSessionManager(this, cameraController) }
 
     private var permissionsGranted by mutableStateOf(false)
-    private var statusText by mutableStateOf("카메라 준비 중…")
+    private var statusText by mutableStateOf(SessionState.IDLE.description)
+    private var buttonLabel by mutableStateOf("세션 시작")
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
@@ -46,18 +50,24 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         cameraController.setFrameProcessor(LoggingFrameProcessor())
-        cameraController.captureEventListener = object : CaptureEventListener {
-            override fun onShutter() {
-                statusText = "촬영!"
+        sessionManager.listener = object : CaptureSessionManager.Listener {
+            override fun onStateChanged(state: SessionState) {
+                statusText = state.description
+                buttonLabel = when (state) {
+                    SessionState.IDLE -> "세션 시작"
+                    SessionState.LISTENING -> "발화 종료"
+                    SessionState.AIMING -> "촬영"
+                    SessionState.CAPTURING, SessionState.SAVED -> "잠시만요"
+                    SessionState.ERROR -> "처음으로"
+                }
             }
 
-            override fun onPhotoSaved(uri: Uri) {
-                statusText = "저장 완료"
-                Log.i(TAG, "사진 저장됨: $uri")
+            override fun onUtteranceRecorded(sessionId: String, wav: File) {
+                Log.i(TAG, "발화 녹음 완료 [$sessionId]: ${wav.absolutePath}") // TODO: ① STT 업로드
             }
 
-            override fun onCaptureError(error: Throwable) {
-                statusText = "촬영 실패: ${error.message}"
+            override fun onPhotoCaptured(sessionId: String, uri: Uri) {
+                Log.i(TAG, "대표 컷 저장 [$sessionId]: $uri") // TODO: ④ 프레임 업로드
             }
         }
 
@@ -68,8 +78,8 @@ class MainActivity : ComponentActivity() {
                         CaptureScreen(
                             controller = cameraController,
                             statusText = statusText,
-                            sessionButtonLabel = "촬영",
-                            onSessionButton = { cameraController.takePhoto() },
+                            sessionButtonLabel = buttonLabel,
+                            onSessionButton = { sessionManager.onVolumePressed() },
                         )
                     } else {
                         Text(
@@ -96,15 +106,41 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 볼륨 버튼 = 셔터. 화면을 보지 않고도 촬영할 수 있는 물리 트리거. */
+    // 볼륨 버튼: 짧게 = 상태별 동작(시작/발화종료/셔터), 길게(≈1초) = 세션 취소.
+    // onKeyDown 에서 startTracking() 해야 onKeyLongPress 가 동작한다.
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
-            if (permissionsGranted && cameraController.isBound) {
-                cameraController.takePhoto()
-                return true
-            }
+        if (isVolumeKey(keyCode) && permissionsGranted && cameraController.isBound) {
+            event?.startTracking()
+            return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (isVolumeKey(keyCode) && permissionsGranted && cameraController.isBound) {
+            if (event?.isCanceled != true) {
+                sessionManager.onVolumePressed()
+            }
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
+    override fun onKeyLongPress(keyCode: Int, event: KeyEvent?): Boolean {
+        if (isVolumeKey(keyCode)) {
+            sessionManager.cancel()
+            return true
+        }
+        return super.onKeyLongPress(keyCode, event)
+    }
+
+    private fun isVolumeKey(keyCode: Int) =
+        keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP
+
+    override fun onDestroy() {
+        super.onDestroy()
+        sessionManager.cancel()
     }
 
     private companion object {
