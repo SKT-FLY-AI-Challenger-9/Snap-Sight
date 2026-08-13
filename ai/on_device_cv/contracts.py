@@ -105,6 +105,7 @@ class TrackedObject:
     label: str
     confidence: float
     bbox: BoundingBox
+    class_id: int | None = None
 
     def __post_init__(self) -> None:
         if type(self.track_id) is not int or self.track_id <= 0:
@@ -113,6 +114,8 @@ class TrackedObject:
             raise ValueError("Tracked-object label must not be empty")
         if not math.isfinite(self.confidence) or not 0.0 <= self.confidence <= 1.0:
             raise ValueError(f"Tracked-object confidence must be in [0, 1]: {self.confidence}")
+        if self.class_id is not None and (type(self.class_id) is not int or self.class_id < 0):
+            raise ValueError("class_id must be a non-negative integer when provided")
 
     def to_dict(self) -> dict[str, Any]:
         return {

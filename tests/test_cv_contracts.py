@@ -39,6 +39,19 @@ def test_frame_result_matches_public_schema_exactly():
     }
 
 
+def test_internal_class_id_does_not_change_the_public_object_schema():
+    tracked = TrackedObject(
+        track_id=17,
+        label="Person",
+        confidence=0.94,
+        bbox=BoundingBox(0.31, 0.12, 0.68, 0.91),
+        class_id=0,
+    )
+
+    assert tracked.class_id == 0
+    assert set(tracked.to_dict()) == {"track_id", "label", "confidence", "bbox"}
+
+
 def test_bounding_box_clips_raw_detector_coordinates():
     assert BoundingBox.clipped(-0.2, 0.1, 1.3, 0.9) == BoundingBox(0.0, 0.1, 1.0, 0.9)
     assert BoundingBox.clipped(0.8, 0.1, 0.2, 0.9) is None

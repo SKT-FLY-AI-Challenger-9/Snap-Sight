@@ -17,7 +17,7 @@ def test_visualization_draws_overlay_without_mutating_input():
         )
     )
 
-    annotated = draw_frame_result(frame, result, fps=24.0)
+    annotated = draw_frame_result(frame, result, fps=24.0, status_text="target selected | 1/1")
 
     assert annotated.shape == frame.shape
     assert not annotated is frame
