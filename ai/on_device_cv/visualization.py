@@ -13,6 +13,7 @@ def draw_frame_result(
     result: FrameResult,
     *,
     fps: float | None = None,
+    status_text: str | None = None,
     copy: bool = True,
 ) -> np.ndarray:
     """Draw bbox, label, confidence, and track ID for every visible object."""
@@ -32,7 +33,7 @@ def draw_frame_result(
         cv2.rectangle(canvas, (x_min, y_min), (x_max, y_max), color, thickness)
 
         caption = (
-            f"#{tracked_object.track_id} {tracked_object.label} " f"{tracked_object.confidence:.2f}"
+            f"#{tracked_object.track_id} {tracked_object.label} {tracked_object.confidence:.2f}"
         )
         (text_width, text_height), baseline = cv2.getTextSize(
             caption,
@@ -70,6 +71,17 @@ def draw_frame_result(
             cv2.FONT_HERSHEY_SIMPLEX,
             0.65,
             (40, 240, 40),
+            2,
+            cv2.LINE_AA,
+        )
+    if status_text:
+        cv2.putText(
+            canvas,
+            status_text,
+            (12, 54 if fps is not None else 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.60,
+            (40, 220, 255),
             2,
             cv2.LINE_AA,
         )

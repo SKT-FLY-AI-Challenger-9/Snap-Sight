@@ -61,6 +61,7 @@ class _Track:
     last_observation: np.ndarray
     last_observed_time: float
     label: str
+    class_id: int | None
     label_votes: dict[str, float] = field(default_factory=dict)
     missed_frames: int = 0
     age: int = 1
@@ -76,6 +77,7 @@ class _Track:
             last_observation=state.copy(),
             last_observed_time=current_time,
             label=detection.label,
+            class_id=detection.class_id,
             label_votes={detection.label: max(detection.confidence, 1e-6)},
         )
 
@@ -105,6 +107,8 @@ class _Track:
         self.last_observed_time = current_time
         self.missed_frames = 0
         self.hits += 1
+        if self.class_id is None and detection.class_id is not None:
+            self.class_id = detection.class_id
 
         for label in tuple(self.label_votes):
             self.label_votes[label] *= config.label_vote_decay
@@ -132,6 +136,7 @@ class _Track:
             label=detection.label,
             confidence=detection.confidence,
             bbox=detection.bbox,
+            class_id=detection.class_id,
         )
 
 
@@ -268,7 +273,11 @@ class ByteTrackLiteTracker:
         tracks: Sequence[_Track],
         detections: Sequence[DetectionResult],
         minimum_iou: float,
-    ) -> tuple[list[tuple[_Track, DetectionResult]], list[_Track], list[DetectionResult],]:
+    ) -> tuple[
+        list[tuple[_Track, DetectionResult]],
+        list[_Track],
+        list[DetectionResult],
+    ]:
         if not tracks or not detections:
             return [], list(tracks), list(detections)
 
@@ -294,9 +303,13 @@ class ByteTrackLiteTracker:
         scores = _pairwise_iou(track_boxes, detection_boxes)
         valid = (scores > 0.0) & (scores >= minimum_iou)
         if self.config.class_aware:
-            track_labels = np.array([track.label for track in tracks], dtype=object)
-            detection_labels = np.array([detection.label for detection in detections], dtype=object)
-            mismatch = track_labels[:, None] != detection_labels[None, :]
+            mismatch = np.array(
+                [
+                    [_class_identity_mismatch(track, detection) for detection in detections]
+                    for track in tracks
+                ],
+                dtype=bool,
+            )
             scores[mismatch] *= self.config.label_mismatch_penalty
             valid &= scores > 0.0
 
@@ -381,6 +394,12 @@ def _detection_sort_key(detection: DetectionResult) -> tuple[float | str | int, 
         -round(detection.confidence, 12),
         detection.class_id if detection.class_id is not None else -1,
     )
+
+
+def _class_identity_mismatch(track: _Track, detection: DetectionResult) -> bool:
+    if track.class_id is not None and detection.class_id is not None:
+        return track.class_id != detection.class_id
+    return track.label.strip().casefold() != detection.label.strip().casefold()
 
 
 def _pairwise_iou(track_boxes: np.ndarray, detection_boxes: np.ndarray) -> np.ndarray:

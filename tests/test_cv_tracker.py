@@ -12,8 +12,14 @@ def detection(
     *,
     label: str = "person",
     confidence: float = 0.9,
+    class_id: int | None = None,
 ) -> DetectionResult:
-    return DetectionResult(label, confidence, BoundingBox(x_min, y_min, x_max, y_max))
+    return DetectionResult(
+        label,
+        confidence,
+        BoundingBox(x_min, y_min, x_max, y_max),
+        class_id=class_id,
+    )
 
 
 def test_single_moving_object_keeps_track_id():
@@ -26,6 +32,43 @@ def test_single_moving_object_keeps_track_id():
     assert [item.track_id for item in first] == [1]
     assert [item.track_id for item in second] == [1]
     assert [item.track_id for item in third] == [1]
+
+
+def test_tracker_preserves_detector_class_id_for_target_selection():
+    tracker = ByteTrackLiteTracker()
+    observed = tracker.update(
+        [
+            DetectionResult(
+                "Person",
+                0.9,
+                BoundingBox(0.1, 0.1, 0.3, 0.4),
+                class_id=0,
+            )
+        ]
+    )
+
+    assert observed[0].class_id == 0
+
+
+def test_association_prefers_class_id_when_labels_flicker_at_the_same_location():
+    tracker = ByteTrackLiteTracker()
+    shared_box = (0.1, 0.1, 0.4, 0.8)
+
+    first = tracker.update(
+        [
+            detection(*shared_box, label="alpha", class_id=0),
+            detection(*shared_box, label="beta", class_id=1),
+        ]
+    )
+    second = tracker.update(
+        [
+            detection(*shared_box, label="zeta", class_id=0),
+            detection(*shared_box, label="alpha", class_id=1),
+        ]
+    )
+
+    assert [(item.track_id, item.class_id) for item in first] == [(1, 0), (2, 1)]
+    assert [(item.track_id, item.class_id) for item in second] == [(1, 0), (2, 1)]
 
 
 def test_multiple_objects_are_independent_when_detection_order_changes():

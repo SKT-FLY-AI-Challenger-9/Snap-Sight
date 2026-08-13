@@ -1,8 +1,8 @@
 # Snap-Sight On-device CV prototype
 
 카메라 또는 영상의 모든 지원 객체를 프레임마다 탐지하고, 같은 객체에 지속적인
-`track_id`를 부여하는 PC용 Python 프로토타입입니다. 현재 STT/NLU 타깃 필터링은
-포함하지 않습니다.
+`track_id`를 부여하는 PC용 Python 프로토타입입니다. STT/NLU 파싱 자체는 포함하지 않지만,
+이미 생성된 TargetSpec v0.1을 입력받아 tracking 후 의도 후보를 선택할 수 있습니다.
 
 기본 detector는 Ultralytics가 공개한 Objects365v1 365-class nano checkpoint
 `yolo26n-objv1-150.pt`입니다. `classes=None`으로 추론하므로 특정 클래스만 고르지 않고
@@ -95,6 +95,67 @@ GUI가 없는 환경에서는 `--no-display`를 추가합니다. 주요 옵션�
 python -m ai.on_device_cv --source .\sample.mp4 --frame-stride 3
 ```
 
+## TargetSpec 기반 의도 후보 선택
+
+① STT/NLU가 `ai/target_spec_schema.md` 형식의 JSON을 만들었다면 `--target-spec`으로
+전달할 수 있습니다. 저장소의 `ai/on_device_cv/examples/person_two.json`을 바로 사용하거나,
+예를 들어 `intent.json`을 다음과 같이 작성합니다.
+
+```json
+{
+  "schemaVersion": "0.1",
+  "sessionId": "sess_20260812_001",
+  "status": "ok",
+  "subjectType": "person",
+  "subjectCount": 2,
+  "framing": "closeup",
+  "rawText": "친구 두 명이랑 같이 나오게, 얼굴 크게 찍어줘",
+  "confidence": 0.9,
+  "source": "clova"
+}
+```
+
+```powershell
+python -m ai.on_device_cv `
+  --source .\sample.mp4 `
+  --target-spec .\intent.json `
+  --jsonl .\demo_outputs\target_objects.jsonl `
+  --selection-jsonl .\demo_outputs\target_selection.jsonl
+```
+
+detector와 tracker는 계속 Objects365 전체 객체를 처리하고, 화면과 JSONL에는 TargetSpec과
+일치하는 후보만 표시됩니다. 이 선택은 tracking 뒤에 적용되므로 실행 중 의도가 바뀌어도
+기존 객체의 `track_id`가 새로 발급되지 않습니다. 화면 왼쪽 위에는
+`target selected|searching|ambiguous|scene_only|unresolved` 상태와 현재 후보 수가 함께
+표시됩니다. 기존 JSONL은 호환성을 위해 `{"objects": [...]}` 형식을 그대로 유지합니다.
+`--selection-jsonl`에는 `selected|searching|ambiguous|scene_only|unresolved`, 요청/검출 개수,
+후보 객체가 versioned `schemaVersion=0.1` 형식으로 함께 기록되므로 기계 판정에는 이 파일을
+사용합니다. 두 JSONL 모두 원본 입력
+프레임마다 한 줄을 기록합니다. `--frame-stride N`의 중간 프레임에는 최근 결과가 반복되고,
+selection JSONL의 `analyzed=false`로 미분석 프레임을 구분할 수 있습니다.
+
+- `person`: 사람 후보만 표시
+- `object`: 사람을 제외한 모든 사물 후보 표시
+- `landscape`: 객체 target을 만들지 않음
+- 요청 개수보다 후보가 적으면 `searching`, 같으면 `selected`, 많으면 `ambiguous`
+
+v0.1에는 구체 사물 class를 나타내는 필드가 없으므로 "컵"과 "의자"를 구분해 선택할 수는
+없습니다. 또한 `framing`은 현재 detection filtering이 아니라 후속 구도 판단용 값입니다.
+
+Python에서는 전체 tracking 결과와 target 후보를 모두 유지할 수 있습니다.
+
+```python
+from ai.on_device_cv.target_selection import TargetSelector
+from ai.target_spec import TargetSpec
+
+target_spec = TargetSpec.from_file("intent.json")
+all_objects = pipeline.process(frame_bgr, timestamp_s=frame_timestamp_s)
+selection = TargetSelector().select(all_objects, target_spec)
+
+candidate_payload = selection.to_dict()  # state/count 상태 포함
+existing_payload = selection.to_frame_result().to_dict()  # 기존 objects schema
+```
+
 ## Python API와 출력 계약
 
 ```python
@@ -172,7 +233,8 @@ Android/TFLite 이식 시에도 다음 경계를 유지합니다.
 ```powershell
 python -m pytest tests\test_cv_contracts.py tests\test_cv_tracker.py `
   tests\test_cv_demo.py tests\test_cv_pipeline.py tests\test_cv_visualization.py `
-  tests\test_ultralytics_detector.py
+  tests\test_ultralytics_detector.py tests\test_target_spec.py `
+  tests\test_target_selection.py
 ```
 
 테스트는 정확한 JSON schema, bbox 정규화, 다중 객체, 입력 순서 변경, 저신뢰 복구,
