@@ -7,20 +7,39 @@
 
 ```
 com.example.snap_sight
-├── MainActivity.kt              앱 진입점, 권한 처리, 볼륨 버튼 훅
+├── MainActivity.kt              앱 진입점, 권한 처리, 볼륨 버튼 훅, 업로드 조합
 ├── camera/                      ⑤ CameraX·트리거·센서
 │   ├── CameraController.kt      파이프라인 (미리보기·분석·촬영·AF/AE·렌즈전환)
+│   ├── CaptureSessionManager.kt 세션 상태 머신 (IDLE→LISTENING→AIMING→CAPTURING→SAVED)
+│   ├── RingFrameBuffer.kt       촬영 전후 1초 후보 프레임 링 버퍼 (최대 6장)
 │   ├── FrameAnalysisAdapter.kt  프레임 분배 (CV 프로세서 + 링 버퍼)
+│   ├── YuvToJpeg.kt             YUV_420_888 → JPEG 변환 (stride 대응)
+│   ├── TiltSensorMonitor.kt     IMU 가속도계 기울기 (roll/pitch, AIMING 중만 동작)
 │   ├── CaptureEventListener.kt  촬영 결과 수신 계약
 │   └── audio/WavAudioRecorder.kt 마이크 녹음 → 16kHz mono WAV (① STT 입력용)
 ├── cv/                          ⑤ TFLite 통합 지점 (② 모듈이 여기로 들어옴)
 │   ├── FrameProcessor.kt        ② CV 모듈이 구현하는 프레임 수신 계약
 │   └── LoggingFrameProcessor.kt 파이프라인 검증용 더미 (FPS 로그)
 ├── network/                     ⑤ 백엔드 API 클라이언트
+│   └── FrameUploader.kt         POST /api/capture/frames 멀티파트 업로드
 ├── ux/                          ⑥ 접근성 UI·햅틱·사운드
 │   └── CaptureScreen.kt         임시 화면 (⑥이 정식 화면으로 교체)
 └── ui/theme/                    Compose 테마
 ```
+
+## 세션 흐름 (구현 완료, E2E 검증됨)
+
+볼륨 버튼 짧게 = 상태별 동작, 길게(≈1초) = 세션 취소.
+
+```
+IDLE ──볼륨──▶ LISTENING(발화 녹음) ──볼륨──▶ AIMING(조준·기울기 센서 ON)
+──볼륨(셔터)──▶ CAPTURING(대표 컷 + 전후 1초 후보 수집) ──▶ SAVED ──2초──▶ IDLE
+                                    └──▶ 대표 컷+후보 6장 백엔드 업로드 (비동기)
+```
+
+- 발화 WAV 는 `cacheDir/utterance_{session_id}.wav` — ① STT 연결 지점 (`Listener.onUtteranceRecorded`)
+- 업로드 실패는 촬영 성공과 분리 (사진은 MediaStore 에 이미 저장, 재시도는 추후)
+- 알려진 한계: 후보 JPEG 는 회전 미적용 원본 (회전값은 파일명 `_r90` 형태로 전달) — MLLM 전처리에서 보정 필요
 
 ## 팀별 연동 방법
 
@@ -49,8 +68,11 @@ class YoloFrameProcessor : FrameProcessor {
 
 ### ④ 저장·MLLM (봄연)
 - 링 버퍼는 **⑤(Android 로컬)** 보유로 확정 (`backend/api/capture.py` 기준)
-- 촬영 시 `network` 패키지의 업로더가 `POST /api/capture/frames` 로
+- 촬영 시 `network.FrameUploader` 가 `POST /api/capture/frames` 로
   `session_id` + 대표 컷 + 후보 프레임들을 멀티파트 전송
+- **E2E 검증 완료**: 에뮬레이터 → FastAPI(capture 라우터) → `captures/{session_id}/`
+  에 representative.jpg + candidate_0~5.jpg 저장 확인 (2026-08-13)
+- 개발 기본 URL: `http://10.0.2.2:8000` (에뮬레이터→호스트). 실기기는 LAN IP 로 교체
 
 ### ① STT/NLU (숩젼)
 `camera.audio.WavAudioRecorder` 가 16kHz / mono / 16bit PCM WAV 를 만들어 줍니다.
