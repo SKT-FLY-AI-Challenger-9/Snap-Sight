@@ -12,6 +12,7 @@ env/
 .mypy_cache/
 htmlcov/
 .coverage
+.runtime/
 
 # Local databases
 *.sqlite3
@@ -40,6 +41,7 @@ wandb/
 !docs/**/*.png
 frame_buffer/
 captures/
+demo_outputs/
 
 # OS
 .DS_Store
