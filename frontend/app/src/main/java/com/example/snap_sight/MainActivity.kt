@@ -22,8 +22,10 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.snap_sight.camera.CameraController
 import com.example.snap_sight.camera.CaptureSessionManager
+import com.example.snap_sight.camera.RingFrameBuffer
 import com.example.snap_sight.camera.SessionState
 import com.example.snap_sight.cv.LoggingFrameProcessor
+import com.example.snap_sight.network.FrameUploader
 import com.example.snap_sight.ux.CaptureScreen
 import com.example.snap_sight.ui.theme.SnapSightTheme
 import java.io.File
@@ -32,6 +34,13 @@ class MainActivity : ComponentActivity() {
 
     private val cameraController by lazy { CameraController(this) }
     private val sessionManager by lazy { CaptureSessionManager(this, cameraController) }
+    private val frameUploader = FrameUploader()
+
+    // 대표 컷(MediaStore)과 후보 프레임(링 버퍼)은 비동기로 따로 도착하므로
+    // 둘 다 모이면 업로드한다.
+    private var pendingSessionId: String? = null
+    private var pendingRepresentative: Uri? = null
+    private var pendingCandidates: List<RingFrameBuffer.Frame>? = null
 
     private var permissionsGranted by mutableStateOf(false)
     private var statusText by mutableStateOf(SessionState.IDLE.description)
@@ -67,7 +76,19 @@ class MainActivity : ComponentActivity() {
             }
 
             override fun onPhotoCaptured(sessionId: String, uri: Uri) {
-                Log.i(TAG, "대표 컷 저장 [$sessionId]: $uri") // TODO: ④ 프레임 업로드
+                Log.i(TAG, "대표 컷 저장 [$sessionId]: $uri")
+                pendingSessionId = sessionId
+                pendingRepresentative = uri
+                maybeUploadFrames()
+            }
+
+            override fun onCandidatesCollected(
+                sessionId: String,
+                candidates: List<RingFrameBuffer.Frame>,
+            ) {
+                Log.i(TAG, "후보 프레임 ${candidates.size}장 [$sessionId]")
+                pendingCandidates = candidates
+                maybeUploadFrames()
             }
         }
 
@@ -92,6 +113,35 @@ class MainActivity : ComponentActivity() {
         }
 
         checkOrRequestPermissions()
+    }
+
+    /** 대표 컷과 후보 프레임이 모두 모이면 백엔드로 업로드 (⑤→④). */
+    private fun maybeUploadFrames() {
+        val sessionId = pendingSessionId ?: return
+        val representative = pendingRepresentative ?: return
+        val candidates = pendingCandidates ?: return
+        pendingSessionId = null
+        pendingRepresentative = null
+        pendingCandidates = null
+
+        frameUploader.uploadCaptureFrames(
+            sessionId = sessionId,
+            representativeJpegProvider = {
+                contentResolver.openInputStream(representative)?.use { it.readBytes() }
+                    ?: throw IllegalStateException("대표 컷을 읽을 수 없음: $representative")
+            },
+            candidates = candidates,
+            callback = object : FrameUploader.Callback {
+                override fun onSuccess(result: FrameUploader.UploadResult) {
+                    Log.i(TAG, "업로드 완료 [${result.sessionId}] 후보 ${result.receivedCandidateCount}장")
+                }
+
+                override fun onFailure(error: Throwable) {
+                    // 업로드 실패는 촬영 성공과 무관 — 사진은 이미 기기에 저장됨 (재시도는 추후)
+                    Log.w(TAG, "업로드 실패 (사진은 기기에 저장됨)", error)
+                }
+            },
+        )
     }
 
     private fun checkOrRequestPermissions() {
