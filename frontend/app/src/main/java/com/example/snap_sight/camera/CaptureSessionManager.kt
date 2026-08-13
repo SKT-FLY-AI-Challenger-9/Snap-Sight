@@ -44,6 +44,9 @@ class CaptureSessionManager(
     private val ringBuffer: RingFrameBuffer = RingFrameBuffer(),
 ) : CaptureEventListener {
 
+    /** 조준 루프 동안만 동작하는 기울기 센서. ③ 판정·⑥ 수평 피드백이 소비. */
+    val tiltMonitor: TiltSensorMonitor = TiltSensorMonitor(context)
+
     interface Listener {
         /** 상태가 바뀔 때마다 호출. ⑥은 여기서 낭독/햅틱/사운드를 렌더링한다. */
         fun onStateChanged(state: SessionState)
@@ -151,6 +154,7 @@ class CaptureSessionManager(
     private fun moveTo(next: SessionState) {
         if (state == next) return
         state = next
+        if (next == SessionState.AIMING) tiltMonitor.start() else tiltMonitor.stop()
         Log.i(TAG, "세션 상태: $next")
         listener?.onStateChanged(next)
     }
