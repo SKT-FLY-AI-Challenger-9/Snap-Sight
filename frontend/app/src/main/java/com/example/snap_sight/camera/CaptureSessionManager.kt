@@ -41,6 +41,7 @@ class CaptureSessionManager(
     private val context: Context,
     private val cameraController: CameraController,
     private val audioRecorder: WavAudioRecorder = WavAudioRecorder(),
+    private val ringBuffer: RingFrameBuffer = RingFrameBuffer(),
 ) : CaptureEventListener {
 
     interface Listener {
@@ -52,6 +53,9 @@ class CaptureSessionManager(
 
         /** 대표 컷 저장 완료. ④ 업로드 연결 지점. */
         fun onPhotoCaptured(sessionId: String, uri: Uri) {}
+
+        /** 셔터 전후 1초 후보 프레임 수집 완료. ④ 업로드 연결 지점. */
+        fun onCandidatesCollected(sessionId: String, candidates: List<RingFrameBuffer.Frame>) {}
     }
 
     var listener: Listener? = null
@@ -67,6 +71,7 @@ class CaptureSessionManager(
 
     init {
         cameraController.captureEventListener = this
+        cameraController.setFrameSink(ringBuffer)
     }
 
     /** 볼륨 버튼 짧게 누름. 처리했으면 true. */
@@ -85,6 +90,7 @@ class CaptureSessionManager(
     fun cancel() {
         if (state == SessionState.IDLE) return
         if (audioRecorder.isRecording) audioRecorder.stop()
+        ringBuffer.flush()
         mainHandler.removeCallbacksAndMessages(null)
         moveTo(SessionState.IDLE)
     }
@@ -117,6 +123,11 @@ class CaptureSessionManager(
 
     private fun shutter() {
         moveTo(SessionState.CAPTURING)
+        val shutterSessionId = sessionId
+        ringBuffer.requestCandidates(System.currentTimeMillis()) { candidates ->
+            Log.i(TAG, "후보 프레임 ${candidates.size}장 수집 [$shutterSessionId]")
+            listener?.onCandidatesCollected(shutterSessionId, candidates)
+        }
         cameraController.takePhoto()
     }
 
