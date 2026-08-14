@@ -22,25 +22,34 @@ ImageProxy(YUV) → JPEG → Bitmap(회전 보정) → letterbox 320×320 → fl
   → DetectionListener.onDetections  ← ③ 판정 로직 연동 지점
 ```
 
-## 모델 준비
+## 모델 파일
 
-레포에는 `.tflite` 를 포함하지 않는다. 각자 아래로 생성해서 넣는다:
+`frontend/app/src/main/assets/models/yolo26n.tflite` (fp32, ~9.4MB) 가 레포에 포함되어 있다.
+입력 `[1,320,320,3]` float32, 출력 `[1,300,6]` (x1,y1,x2,y2,score,cls — **0..1 정규화 좌표**).
+
+### 재생성 방법 (모델 교체 시)
+
+LiteRT export 는 **Linux/macOS 전용**이다. Windows 에서는 WSL 에서 실행:
 
 ```bash
-pip install ultralytics
+# ultralytics 8.4.x 의 litert_torch 경로는 torch 버전 충돌이 있어 8.3.x 고정.
+# 변환 스택을 한 번에 설치해야 numpy/scipy 버전이 꼬이지 않는다.
+uv venv --python 3.11 .venv && source .venv/bin/activate
+uv pip install "ultralytics>=8.3.200,<8.4" "tensorflow>=2.16,<2.20" tf_keras \
+  "onnx>=1.12,<1.18" onnx2tf onnxslim sng4onnx onnx_graphsurgeon \
+  ai-edge-litert "numpy<2.3" scipy
+
 yolo export model=yolo26n.pt format=tflite imgsz=320 nms=True
+cp yolo26n_saved_model/yolo26n_float32.tflite \
+  frontend/app/src/main/assets/models/yolo26n.tflite
 ```
 
-생성된 파일을 다음 경로에 복사:
-
-```
-frontend/app/src/main/assets/models/yolo26n.tflite
-```
-
-- `nms=True`(end-to-end) 필수 — 출력이 `[1, N, 6]` 이어야 한다.
-  raw 출력(`[1, 84, ...]`) 모델은 로드 시 에러 로그와 함께 비활성화된다.
+- **`nms=True` 필수** — 없으면 raw `[1,84,2100]` 출력이 나오고, 로드 시
+  "지원하지 않는 출력 형태" 에러와 함께 탐지가 비활성화된다.
 - `imgsz` 는 320 이 아니어도 됨 (입력 크기는 모델에서 읽어 자동 적용).
+- 좌표 단위(픽셀/정규화)는 후처리에서 자동 감지하므로 export 버전이 달라져도 안전.
 - `.tflite` 는 `noCompress` 처리되어 있어 assets 에서 메모리 매핑으로 로드된다.
+- 용량이 부담되면 `yolo26n_float16.tflite`(~5MB) 로 교체 가능 (입출력은 동일하게 float32).
 
 ## 좌표계 계약 (② #2 와 합의 필요)
 
