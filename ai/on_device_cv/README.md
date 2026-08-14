@@ -243,6 +243,12 @@ Android/TFLite 이식 시에도 다음 경계를 유지합니다.
 - tracker의 상태/association을 Kotlin으로 포팅하거나 `Tracker` 구현 교체
 - CameraX `ImageAnalysis`와 UI overlay는 pipeline 바깥에서 처리
 
+이 이식은 완료되어 `frontend/app/src/main/java/com/example/snap_sight/cv/`에 있습니다.
+연결 방법, 의도(TargetSpec)·편차 계산 확장 지점, 모델 export 절차는
+[`docs/android-cv-module.md`](../../docs/android-cv-module.md)를 참고하세요. 두 구현은 같은
+공개 JSON 계약과 같은 association 임계값을 쓰므로 **한쪽을 고치면 반드시 다른 쪽도 고칩니다.**
+Android용 `.tflite` 모델은 `python -m ai.tools.export_tflite`로 생성합니다.
+
 ## 검증과 한계
 
 모델 다운로드 없이 실행되는 단위 테스트:
