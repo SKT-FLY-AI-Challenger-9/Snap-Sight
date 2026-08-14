@@ -24,32 +24,36 @@ ImageProxy(YUV) → JPEG → Bitmap(회전 보정) → letterbox 320×320 → fl
 
 ## 모델 파일
 
-`frontend/app/src/main/assets/models/yolo26n.tflite` (fp32, ~9.4MB) 가 레포에 포함되어 있다.
-입력 `[1,320,320,3]` float32, 출력 `[1,300,6]` (x1,y1,x2,y2,score,cls — **0..1 정규화 좌표**).
+`frontend/app/src/main/assets/models/yolo26n.tflite` (fp32, ~10MB) 가 레포에 포함되어 있다.
+입력 `[1,3,320,320]` float32 (NCHW), 출력 `[1,300,6]` (x1,y1,x2,y2,score,cls — 입력 픽셀 좌표).
+앱은 NHWC/NCHW 입력과 픽셀/정규화 좌표를 모두 자동 감지하므로 export 세부가 달라져도 동작한다.
 
 ### 재생성 방법 (모델 교체 시)
 
 LiteRT export 는 **Linux/macOS 전용**이다. Windows 에서는 WSL 에서 실행:
 
 ```bash
-# ultralytics 8.4.x 의 litert_torch 경로는 torch 버전 충돌이 있어 8.3.x 고정.
-# 변환 스택을 한 번에 설치해야 numpy/scipy 버전이 꼬이지 않는다.
+# 반드시 ultralytics >= 8.4.120 사용.
+# 8.3.x 는 YOLO26 아키텍처를 잘못 조립해 겉보기엔 변환이 성공하지만
+# 탐지 품질이 심하게 손상된다 (bus.jpg 에서 사람·버스를 못 잡음) — 실측 확인됨.
 uv venv --python 3.11 .venv && source .venv/bin/activate
-uv pip install "ultralytics>=8.3.200,<8.4" "tensorflow>=2.16,<2.20" tf_keras \
-  "onnx>=1.12,<1.18" onnx2tf onnxslim sng4onnx onnx_graphsurgeon \
-  ai-edge-litert "numpy<2.3" scipy
+uv pip install "ultralytics>=8.4.120" litert-torch onnx
 
-yolo export model=yolo26n.pt format=tflite imgsz=320 nms=True
-cp yolo26n_saved_model/yolo26n_float32.tflite \
-  frontend/app/src/main/assets/models/yolo26n.tflite
+yolo export model=yolo26n.pt format=tflite imgsz=320   # litert 로 자동 매핑, NMS-free 기본
+cp yolo26n.tflite frontend/app/src/main/assets/models/yolo26n.tflite
 ```
 
-- **`nms=True` 필수** — 없으면 raw `[1,84,2100]` 출력이 나오고, 로드 시
-  "지원하지 않는 출력 형태" 에러와 함께 탐지가 비활성화된다.
 - `imgsz` 는 320 이 아니어도 됨 (입력 크기는 모델에서 읽어 자동 적용).
-- 좌표 단위(픽셀/정규화)는 후처리에서 자동 감지하므로 export 버전이 달라져도 안전.
 - `.tflite` 는 `noCompress` 처리되어 있어 assets 에서 메모리 매핑으로 로드된다.
-- 용량이 부담되면 `yolo26n_float16.tflite`(~5MB) 로 교체 가능 (입출력은 동일하게 float32).
+
+### 교체 전 품질 게이트 (필수)
+
+새 모델은 탑재 전에 표준 이미지(bus.jpg)로 최소 품질을 확인한다:
+
+```bash
+yolo predict model=yolo26n.tflite source=bus.jpg imgsz=320 conf=0.35
+# 기대: 4 persons, 1 bus  (refrigerator 등 오탐이 상위에 오면 변환 손상 의심)
+```
 
 ## 좌표계 계약 (② #2 와 합의 필요)
 
