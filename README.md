@@ -162,13 +162,19 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-MLLM(Claude) 연동을 위해 Anthropic API 키가 필요하다. 저장소 루트에 `.env` 파일을 만들고 아래처럼 채운다.
+MLLM(Claude) 연동을 위해 Anthropic API 키가 필요하다. 저장소 루트에 `.env` 파일을 만들고 `.env.example`을 참고해 아래처럼 채운다.
 
 ```
 ANTHROPIC_API_KEY=your_api_key_here
 ```
 
-> 아직 백엔드 앱 엔트리포인트(`main.py` 등)가 구현되지 않아 서버 실행 명령은 없다. 엔트리포인트가 추가되면 `uvicorn <module>:app --reload` 형태로 실행할 예정이며, 이 섹션도 함께 업데이트한다.
+서버 실행:
+
+```bash
+uvicorn backend.main:app --reload
+```
+
+기본적으로 `http://127.0.0.1:8000`에서 실행되며, `POST /api/capture/frames`로 대표 컷·후보 프레임을 업로드할 수 있다. `.env`가 없거나 `ANTHROPIC_API_KEY`가 비어 있으면 서버 기동 시 명확한 에러 메시지와 함께 종료된다.
 
 ### 모바일 앱 (Android)
 
