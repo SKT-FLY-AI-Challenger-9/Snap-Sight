@@ -48,6 +48,10 @@ class MainActivity : ComponentActivity() {
     private var statusText by mutableStateOf(SessionState.IDLE.description)
     private var buttonLabel by mutableStateOf("세션 시작")
 
+    // 디버그 오버레이용 최신 탐지 결과 (정식 화면에서는 음성·햅틱으로 대체)
+    private var debugDetections by mutableStateOf<List<Detection>>(emptyList())
+    private var detectionFrameAspect by mutableStateOf(0f)
+
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
             permissionsGranted = results[Manifest.permission.CAMERA] == true
@@ -63,9 +67,17 @@ class MainActivity : ComponentActivity() {
         // 모델 에셋이 있으면 YOLO26n 탐지, 없으면 기존 fps 로거로 폴백
         val yoloProcessor = YoloFrameProcessor.createIfAvailable(this)
         yoloProcessor?.listener = object : YoloFrameProcessor.DetectionListener {
-            override fun onDetections(detections: List<Detection>, inferenceMs: Long) {
+            override fun onDetections(
+                detections: List<Detection>,
+                frameWidth: Int,
+                frameHeight: Int,
+                inferenceMs: Long,
+            ) {
                 // TODO: ③ 판정 로직 연동 지점 — docs/detection-api-design.md 페이로드로 전달 예정.
-                // 현재는 파이프라인 검증용 로그만 남긴다 (분석 스레드에서 호출됨).
+                runOnUiThread {
+                    debugDetections = detections
+                    detectionFrameAspect = frameWidth.toFloat() / frameHeight
+                }
             }
         }
         cameraController.setFrameProcessor(yoloProcessor ?: LoggingFrameProcessor())
@@ -111,6 +123,8 @@ class MainActivity : ComponentActivity() {
                             statusText = statusText,
                             sessionButtonLabel = buttonLabel,
                             onSessionButton = { sessionManager.onVolumePressed() },
+                            detections = debugDetections,
+                            detectionFrameAspect = detectionFrameAspect,
                         )
                     } else {
                         Text(
