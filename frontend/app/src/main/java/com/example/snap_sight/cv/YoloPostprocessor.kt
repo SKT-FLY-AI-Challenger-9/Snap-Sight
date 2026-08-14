@@ -42,22 +42,28 @@ object YoloPostprocessor {
         labels: List<String> = CocoLabels.SNAKE_CASE,
     ): List<Detection> {
         val lb = letterboxFor(srcWidth, srcHeight, inputSize)
+        val kept = rows.filter { it.size >= 6 && it[4] >= scoreThreshold }
+        if (kept.isEmpty()) return emptyList()
+
+        // 좌표 단위 자동 감지: export 방식에 따라 입력 픽셀(0..inputSize) 또는
+        // 0..1 정규화로 나온다 (ultralytics 8.3.x nms=True litert export 는 정규화).
+        // 실존 탐지 박스의 좌표가 전부 2 이하일 수는 없으므로 최댓값으로 구분한다.
+        val maxCoord = kept.maxOf { maxOf(it[0], it[1], it[2], it[3]) }
+        val toPixels = if (maxCoord <= 2f) inputSize.toFloat() else 1f
+
         val result = ArrayList<Detection>()
-        for (row in rows) {
-            if (row.size < 6) continue
-            val score = row[4]
-            if (score < scoreThreshold) continue
+        for (row in kept) {
             val classIndex = row[5].toInt()
             val label = labels.getOrNull(classIndex) ?: continue
 
             // 입력 픽셀 → letterbox 제거 → 원본 픽셀 → 0..1 정규화
-            val left = ((row[0] - lb.padX) / lb.scale / srcWidth).coerceIn(0f, 1f)
-            val top = ((row[1] - lb.padY) / lb.scale / srcHeight).coerceIn(0f, 1f)
-            val right = ((row[2] - lb.padX) / lb.scale / srcWidth).coerceIn(0f, 1f)
-            val bottom = ((row[3] - lb.padY) / lb.scale / srcHeight).coerceIn(0f, 1f)
+            val left = ((row[0] * toPixels - lb.padX) / lb.scale / srcWidth).coerceIn(0f, 1f)
+            val top = ((row[1] * toPixels - lb.padY) / lb.scale / srcHeight).coerceIn(0f, 1f)
+            val right = ((row[2] * toPixels - lb.padX) / lb.scale / srcWidth).coerceIn(0f, 1f)
+            val bottom = ((row[3] * toPixels - lb.padY) / lb.scale / srcHeight).coerceIn(0f, 1f)
             if (right <= left || bottom <= top) continue
 
-            result.add(Detection(label, score, left, top, right, bottom))
+            result.add(Detection(label, row[4], left, top, right, bottom))
         }
         return result.sortedByDescending { it.score }
     }
