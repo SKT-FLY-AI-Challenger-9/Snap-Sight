@@ -27,15 +27,16 @@ import com.example.snap_sight.camera.SessionState
 import com.example.snap_sight.cv.CvFrameOutput
 import com.example.snap_sight.cv.SnapSightFrameProcessor
 import com.example.snap_sight.network.FrameUploader
+import com.example.snap_sight.network.UtteranceClient
 import com.example.snap_sight.ux.CaptureScreen
 import com.example.snap_sight.ui.theme.SnapSightTheme
-import java.io.File
 
 class MainActivity : ComponentActivity() {
 
     private val cameraController by lazy { CameraController(this) }
     private val sessionManager by lazy { CaptureSessionManager(this, cameraController) }
     private val frameUploader = FrameUploader()
+    private val utteranceClient = UtteranceClient()
 
     /** ② 온디바이스 CV. 결과는 분석 스레드에서 도착하므로 여기서는 로그만 남긴다. */
     private val cvProcessor by lazy {
@@ -75,14 +76,34 @@ class MainActivity : ComponentActivity() {
                 buttonLabel = when (state) {
                     SessionState.IDLE -> "세션 시작"
                     SessionState.LISTENING -> "발화 종료"
+                    SessionState.PARSING, SessionState.CAPTURING, SessionState.SAVED -> "잠시만요"
                     SessionState.AIMING -> "촬영"
-                    SessionState.CAPTURING, SessionState.SAVED -> "잠시만요"
                     SessionState.ERROR -> "처음으로"
                 }
             }
 
-            override fun onUtteranceRecorded(sessionId: String, wav: File) {
-                Log.i(TAG, "발화 녹음 완료 [$sessionId]: ${wav.absolutePath}") // TODO: ① STT 업로드
+            override fun onUtteranceRecognized(sessionId: String, text: String?) {
+                if (text == null) {
+                    Log.w(TAG, "발화 인식 실패 [$sessionId] — 타겟 스펙 없이 진행")
+                    return
+                }
+                Log.i(TAG, "발화 인식 완료 [$sessionId]: $text")
+                utteranceClient.sendUtterance(
+                    sessionId = sessionId,
+                    rawText = text,
+                    callback = object : UtteranceClient.Callback {
+                        override fun onSuccess(result: UtteranceClient.TargetSpecResult) {
+                            Log.i(TAG, "타겟 스펙 수신 [$sessionId]: subjectType=${result.subjectType} " +
+                                "objectLabel=${result.objectLabel} count=${result.subjectCount} " +
+                                "framing=${result.framing} confidence=${result.confidence}")
+                        }
+
+                        override fun onFailure(error: Throwable) {
+                            // 타겟 스펙 요청 실패해도 촬영 흐름은 계속 진행 (일반 촬영 모드로 대체)
+                            Log.w(TAG, "타겟 스펙 요청 실패 [$sessionId]", error)
+                        }
+                    },
+                )
             }
 
             override fun onPhotoCaptured(sessionId: String, uri: Uri) {

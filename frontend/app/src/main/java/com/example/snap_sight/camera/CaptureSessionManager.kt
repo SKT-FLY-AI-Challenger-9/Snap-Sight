@@ -8,19 +8,16 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.core.content.ContextCompat
-import com.example.snap_sight.camera.audio.WavAudioRecorder
-import java.io.File
+import com.example.snap_sight.stt.SpeechToTextRecognizer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * 촬영 세션 상태. docs/screen-design.md 의 S3 상태 정의와 1:1 대응한다.
- * (PARSING 은 ① STT/NLU 연동 전까지 스킵 — LISTENING → AIMING 직행)
- */
+/** 촬영 세션 상태. docs/screen-design.md 의 S3 상태 정의와 1:1 대응한다. */
 enum class SessionState(val description: String) {
     IDLE("볼륨 버튼을 눌러 시작"),
     LISTENING("무엇을 찍을까요? 말한 뒤 볼륨 버튼"),
+    PARSING("음성을 확인하고 있어요…"),
     AIMING("조준 중 — 볼륨 버튼으로 촬영"),
     CAPTURING("촬영 중…"),
     SAVED("저장 완료"),
@@ -40,7 +37,7 @@ enum class SessionState(val description: String) {
 class CaptureSessionManager(
     private val context: Context,
     private val cameraController: CameraController,
-    private val audioRecorder: WavAudioRecorder = WavAudioRecorder(),
+    private val speechRecognizer: SpeechToTextRecognizer = SpeechToTextRecognizer(context),
     private val ringBuffer: RingFrameBuffer = RingFrameBuffer(),
 ) : CaptureEventListener {
 
@@ -51,8 +48,11 @@ class CaptureSessionManager(
         /** 상태가 바뀔 때마다 호출. ⑥은 여기서 낭독/햅틱/사운드를 렌더링한다. */
         fun onStateChanged(state: SessionState)
 
-        /** 의도 발화 녹음 완료. ① STT 파이프라인 연결 지점. */
-        fun onUtteranceRecorded(sessionId: String, wav: File) {}
+        /**
+         * 발화 인식 완료(성공/실패 모두). ① 슬롯 파서 연결 지점 — [text]가 null이면 인식 실패.
+         * 성공 시 [text]를 백엔드로 전송하면 ai/slot_parser.py가 타겟 스펙으로 변환한다.
+         */
+        fun onUtteranceRecognized(sessionId: String, text: String?) {}
 
         /** 대표 컷 저장 완료. ④ 업로드 연결 지점. */
         fun onPhotoCaptured(sessionId: String, uri: Uri) {}
@@ -84,7 +84,8 @@ class CaptureSessionManager(
             SessionState.LISTENING -> finishListening()
             SessionState.AIMING -> shutter()
             SessionState.ERROR -> moveTo(SessionState.IDLE)
-            SessionState.CAPTURING, SessionState.SAVED -> return false // 전환 중에는 무시
+            // PARSING은 인식 결과 콜백을 기다리는 중이라 볼륨 입력을 받지 않음
+            SessionState.PARSING, SessionState.CAPTURING, SessionState.SAVED -> return false
         }
         return true
     }
@@ -92,7 +93,7 @@ class CaptureSessionManager(
     /** 볼륨 버튼 길게 누름 = 세션 취소. */
     fun cancel() {
         if (state == SessionState.IDLE) return
-        if (audioRecorder.isRecording) audioRecorder.stop()
+        if (state == SessionState.LISTENING || state == SessionState.PARSING) speechRecognizer.cancel()
         ringBuffer.flush()
         mainHandler.removeCallbacksAndMessages(null)
         moveTo(SessionState.IDLE)
@@ -103,25 +104,31 @@ class CaptureSessionManager(
 
         val hasMic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
                 PackageManager.PERMISSION_GRANTED
-        if (hasMic) {
-            val out = File(context.cacheDir, "utterance_$sessionId.wav")
-            if (audioRecorder.start(out)) {
-                moveTo(SessionState.LISTENING)
-                return
-            }
-            Log.w(TAG, "녹음 시작 실패 — 발화 단계를 건너뜀")
+        if (hasMic && speechRecognizer.isAvailable) {
+            speechRecognizer.start(object : SpeechToTextRecognizer.Listener {
+                override fun onRecognized(text: String) {
+                    listener?.onUtteranceRecognized(sessionId, text)
+                    moveTo(SessionState.AIMING)
+                }
+
+                override fun onError(message: String) {
+                    Log.w(TAG, "발화 인식 실패: $message")
+                    // 인식 실패해도 타겟 스펙 없는 일반 촬영 모드로 계속 진행
+                    listener?.onUtteranceRecognized(sessionId, null)
+                    moveTo(SessionState.AIMING)
+                }
+            })
+            moveTo(SessionState.LISTENING)
+            return
         }
-        // 마이크를 못 쓰면 발화 없이 조준으로 직행 (타겟 스펙 없는 일반 촬영 모드)
+        Log.w(TAG, "마이크 권한 없음 또는 음성 인식 미지원 — 발화 단계를 건너뜀")
+        // 발화 없이 조준으로 직행 (타겟 스펙 없는 일반 촬영 모드)
         moveTo(SessionState.AIMING)
     }
 
     private fun finishListening() {
-        val wav = audioRecorder.stop()
-        if (wav != null) {
-            listener?.onUtteranceRecorded(sessionId, wav)
-        }
-        // TODO(①): STT/의도 파싱 붙으면 PARSING 상태 경유
-        moveTo(SessionState.AIMING)
+        moveTo(SessionState.PARSING)
+        speechRecognizer.stop()
     }
 
     private fun shutter() {
