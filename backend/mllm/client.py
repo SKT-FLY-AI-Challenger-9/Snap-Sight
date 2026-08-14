@@ -13,7 +13,7 @@ from backend.utils.logger import load_logger
 
 load_dotenv()
 
-logger = load_logger(__name__)
+logger = load_logger("mllm_client.log")
 
 MODEL_ID = "claude-opus-5"
 MAX_TOKENS = 1024

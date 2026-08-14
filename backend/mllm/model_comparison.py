@@ -18,7 +18,7 @@ from backend.utils.logger import load_logger
 
 load_dotenv()
 
-logger = load_logger(__name__)
+logger = load_logger("model_comparison.log")
 
 COMPARISON_PROMPT = (
     "대표 컷과 후보 프레임들을 비교해서, 표정·눈감음·의도 부합성 기준으로 "
