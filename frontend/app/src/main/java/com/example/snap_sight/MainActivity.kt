@@ -53,6 +53,10 @@ class MainActivity : ComponentActivity() {
     private var statusText by mutableStateOf(SessionState.IDLE.description)
     private var buttonLabel by mutableStateOf("세션 시작")
 
+    // 디버그 오버레이용 최신 탐지 결과 (정식 화면에서는 음성·햅틱으로 대체)
+    private var debugDetections by mutableStateOf<List<Detection>>(emptyList())
+    private var detectionFrameAspect by mutableStateOf(0f)
+
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
             permissionsGranted = results[Manifest.permission.CAMERA] == true
@@ -111,6 +115,8 @@ class MainActivity : ComponentActivity() {
                             statusText = statusText,
                             sessionButtonLabel = buttonLabel,
                             onSessionButton = { sessionManager.onVolumePressed() },
+                            detections = debugDetections,
+                            detectionFrameAspect = detectionFrameAspect,
                         )
                     } else {
                         Text(
