@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "0.1",
+  "sessionId": "demo-person-two",
+  "status": "ok",
+  "subjectType": "person",
+  "subjectCount": 2,
+  "framing": "closeup",
+  "rawText": "친구 두 명이랑 같이 나오게, 얼굴 크게 찍어줘",
+  "confidence": 0.9,
+  "source": "ondevice"
+}

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "0.2",
+  "sessionId": "demo-cup-one",
+  "status": "ok",
+  "subjectType": "object",
+  "objectLabel": "cup",
+  "subjectCount": 1,
+  "framing": "closeup",
+  "rawText": "컵 한 개를 크게 찍어줘",
+  "confidence": 0.9,
+  "source": "ondevice"
+}

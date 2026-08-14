@@ -87,16 +87,7 @@ flowchart TD
 
 ## 폴더 구조
 
-현재 저장소에는 아직 실제 코드가 없고 아래 파일만 있다.
-
-```
-Snap-Sight/
-├── README.md          # 프로젝트 개요, 파이프라인, 역할 분담
-├── CLAUDE.md           # 개발 규칙 · 아키텍처 제약 · 인터페이스 계약
-└── requirements.txt    # 백엔드(Python) 의존성
-```
-
-6인 역할 분담(① STT/NLU, ② 온디바이스 CV, ③ 백엔드-판정 로직, ④ 백엔드-저장·MLLM, ⑤ Android-카메라/센서, ⑥ Android-UX/피드백)에 따라 아래와 같이 확장될 예정이다.
+현재 구현과 향후 확장 위치는 다음과 같다. 아직 만들지 않은 모듈은 예정 구조다.
 
 ```
 backend/                     # ③④ 공유 백엔드 (FastAPI)
@@ -120,29 +111,57 @@ backend/                     # ③④ 공유 백엔드 (FastAPI)
 └── utils/
     └── logger.py
 
-ai/                           # ② 온디바이스 CV 모델 준비
-├── models/                     # 학습/export된 .tflite (.gitignore로 커밋 제외)
-├── select_model.py              # 모델 선정 · 경량화
-└── export_tflite.py             # TFLite export 스크립트
+ai/                           # ② 온디바이스 CV
+├── on_device_cv/               # PC 참조 구현 (Python)
+│   ├── contracts.py             # normalized bbox·공개 JSON 계약
+│   ├── detectors/               # 교체 가능한 detector adapter
+│   ├── trackers/                # multi-object tracker
+│   ├── extensions.py            # 향후 person→face 확장 hook
+│   ├── pipeline.py              # 모델 독립 처리 pipeline
+│   └── demo.py                  # 영상·웹캠 PC prototype
+├── target_spec.py              # ① TargetSpec 계약 validator
+├── taxonomy/                   # Objects365 365-class 고정 taxonomy
+└── tools/export_tflite.py      # .pt → Android assets 용 .tflite export
 
-android/                      # ⑤⑥ Android 네이티브 앱
+frontend/                     # ⑤⑥ Android 네이티브 앱
 └── app/src/main/
-    ├── java/…/                  # 패키지명 미정
-    │   ├── camera/               # ⑤ Camera2/CameraX, 트리거, 센서
-    │   ├── cv/                   # ⑤ TFLite 모듈 통합·호출
+    ├── java/com/example/snap_sight/
+    │   ├── camera/               # ⑤ CameraX, 트리거, 링 버퍼, 센서
+    │   ├── cv/                   # ② 온디바이스 CV (Kotlin 포팅) + ⑤ 프레임 계약
+    │   │   ├── Contracts.kt       # 공개 JSON 계약 (Python contracts.py 와 1:1)
+    │   │   ├── TfLiteYoloDetector.kt  # TFLite 에 의존하는 유일한 파일
+    │   │   ├── ByteTrackLiteTracker.kt
+    │   │   ├── TargetSelector.kt  # 의도 기반 선택 확장 자리 (현재 pass-through)
+    │   │   ├── Deviation.kt       # 편차 계산 확장 자리 (현재 no-op)
+    │   │   └── SnapSightFrameProcessor.kt  # CameraX 진입점
     │   ├── network/              # ⑤ 백엔드 API 클라이언트
     │   └── ux/                   # ⑥ 접근성 UI, TalkBack, 햅틱·사운드
     ├── res/                     # 레이아웃 · 리소스
-    └── assets/                  # ②가 넘긴 .tflite 모델 배치
+    └── assets/                  # ②가 export 한 .tflite 모델 + 라벨
 
-tests/                        # 백엔드 pytest
-├── test_deviation.py
-└── test_mllm.py
+tests/                        # pytest
+├── test_capture.py
+├── test_cv_contracts.py
+├── test_cv_demo.py
+├── test_cv_tracker.py
+├── test_cv_pipeline.py
+├── test_cv_visualization.py
+└── test_ultralytics_detector.py
 ```
 
 > iOS는 6인 역할표가 Android 전용으로 확정되면서 폴더 구조에서 뺐다. 다시 포함하기로 하면 `ios/`를 추가하고 이 문서와 CLAUDE.md의 "Android" 표기를 되돌릴 것.
 
 ## 설치 및 실행
+
+### On-device CV 프로토타입
+
+Objects365 365-class YOLO nano detector와 multi-object tracker를 분리한 PC용 구현은
+[`ai/on_device_cv`](ai/on_device_cv/README.md)에 있습니다. 영상 또는 웹캠에서 지원
+객체 전체를 탐지하고 normalized bbox, confidence, 지속적인 `track_id`를 반환합니다.
+
+```powershell
+python -m ai.on_device_cv --source .\sample.mp4
+```
 
 ### 백엔드 (Python)
 
@@ -168,7 +187,23 @@ uvicorn backend.main:app --reload
 
 ### 모바일 앱 (Android)
 
-Android 프로젝트는 아직 저장소에 추가되지 않았다. 추가되는 대로 이 섹션에 빌드·실행 방법을 채운다.
+Android 프로젝트는 `frontend/`에 있다. Android Studio로 열거나 CLI로 빌드한다.
+
+```powershell
+cd frontend
+.\gradlew.bat :app:assembleDebug
+```
+
+②의 온디바이스 CV 모듈은 `frontend/app/src/main/java/com/example/snap_sight/cv/`에 포팅되어
+CameraX 프레임 스트림에 연결돼 있다. 연결 방법과 확장 지점은
+[docs/android-cv-module.md](docs/android-cv-module.md) 참고. TFLite 모델은 별도로 생성해야 한다.
+
+```powershell
+python -m pip install "ultralytics" tensorflow
+python -m ai.tools.export_tflite
+```
+
+모델 자산이 없어도 앱은 정상 기동하며, CV 결과만 비어 있는 상태로 동작한다.
 
 ## 개발 가이드
 

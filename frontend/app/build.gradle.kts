@@ -34,8 +34,8 @@ android {
         compose = true
     }
     androidResources {
-        // .tflite 를 압축하면 메모리 매핑 로드가 불가능해진다
-        noCompress.add("tflite")
+        // TFLite 모델은 mmap 으로 읽으므로(assets.openFd) 압축되면 안 된다.
+        noCompress += "tflite"
     }
 }
 
@@ -53,8 +53,9 @@ dependencies {
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
     implementation(libs.okhttp)
-    implementation(libs.litert)
+    implementation(libs.tensorflow.lite)
     testImplementation(libs.junit)
+    testImplementation(libs.json)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)

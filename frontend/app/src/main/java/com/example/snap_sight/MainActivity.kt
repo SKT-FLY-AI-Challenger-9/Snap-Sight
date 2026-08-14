@@ -24,9 +24,8 @@ import com.example.snap_sight.camera.CameraController
 import com.example.snap_sight.camera.CaptureSessionManager
 import com.example.snap_sight.camera.RingFrameBuffer
 import com.example.snap_sight.camera.SessionState
-import com.example.snap_sight.cv.Detection
-import com.example.snap_sight.cv.LoggingFrameProcessor
-import com.example.snap_sight.cv.YoloFrameProcessor
+import com.example.snap_sight.cv.CvFrameOutput
+import com.example.snap_sight.cv.SnapSightFrameProcessor
 import com.example.snap_sight.network.FrameUploader
 import com.example.snap_sight.ux.CaptureScreen
 import com.example.snap_sight.ui.theme.SnapSightTheme
@@ -37,6 +36,12 @@ class MainActivity : ComponentActivity() {
     private val cameraController by lazy { CameraController(this) }
     private val sessionManager by lazy { CaptureSessionManager(this, cameraController) }
     private val frameUploader = FrameUploader()
+
+    /** ② 온디바이스 CV. 결과는 분석 스레드에서 도착하므로 여기서는 로그만 남긴다. */
+    private val cvProcessor by lazy {
+        SnapSightFrameProcessor.create(this, listener = { output -> onCvFrameResult(output) })
+    }
+    private var lastCvLogMs = 0L
 
     // 대표 컷(MediaStore)과 후보 프레임(링 버퍼)은 비동기로 따로 도착하므로
     // 둘 다 모이면 업로드한다.
@@ -64,26 +69,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // 모델 에셋이 있으면 YOLO26n 탐지, 없으면 기존 fps 로거로 폴백
-        val yoloProcessor = YoloFrameProcessor.createIfAvailable(this)
-        yoloProcessor?.listener = object : YoloFrameProcessor.DetectionListener {
-            override fun onDetections(
-                detections: List<Detection>,
-                frameWidth: Int,
-                frameHeight: Int,
-                inferenceMs: Long,
-            ) {
-                // TODO: ③ 판정 로직 연동 지점 — docs/detection-api-design.md 페이로드로 전달 예정.
-                runOnUiThread {
-                    debugDetections = detections
-                    detectionFrameAspect = frameWidth.toFloat() / frameHeight
-                }
-            }
-        }
-        cameraController.setFrameProcessor(yoloProcessor ?: LoggingFrameProcessor())
+        cameraController.setFrameProcessor(cvProcessor)
         sessionManager.listener = object : CaptureSessionManager.Listener {
             override fun onStateChanged(state: SessionState) {
                 statusText = state.description
+                // 조준 시작 = 새 추적 세션. track_id 가 이전 세션과 섞이지 않도록 초기화한다.
+                // TODO(①): STT 파싱이 붙으면 여기에 TargetSpec 을 넘긴다 (지금은 의도 없음 = null).
+                if (state == SessionState.AIMING) cvProcessor.startNewSession(spec = null)
                 buttonLabel = when (state) {
                     SessionState.IDLE -> "세션 시작"
                     SessionState.LISTENING -> "발화 종료"
@@ -137,6 +129,21 @@ class MainActivity : ComponentActivity() {
         }
 
         checkOrRequestPermissions()
+    }
+
+    /**
+     * ② CV 결과 수신 지점 (분석 스레드).
+     *
+     * 여기서 나오는 `output.objectsJson()` 이 ③ 편차 계산 / ⑥ 햅틱·사운드 렌더링의 입력이다.
+     * 매 프레임 로그는 너무 많으므로 1초에 한 번만 남긴다.
+     * Logcat 필터: `tag:SnapSightCV`
+     */
+    private fun onCvFrameResult(output: CvFrameOutput) {
+        if (!output.analyzed) return
+        val now = output.timestampMs
+        if (now - lastCvLogMs < 1000) return
+        lastCvLogMs = now
+        Log.d(CV_TAG, "객체 ${output.objects.size}개 ${output.objectsJson()}")
     }
 
     /** 대표 컷과 후보 프레임이 모두 모이면 백엔드로 업로드 (⑤→④). */
@@ -215,9 +222,12 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         sessionManager.cancel()
+        // 분리 시 onDetached() 가 불려 TFLite 인터프리터가 해제된다.
+        cameraController.setFrameProcessor(null)
     }
 
     private companion object {
         const val TAG = "SnapSight"
+        const val CV_TAG = "SnapSightCV"
     }
 }
