@@ -66,3 +66,6 @@ local.properties
 # Android — 서명 키 (절대 커밋 금지)
 *.jks
 *.keystore
+
+# 앱 배포용 온디바이스 모델은 예외로 포함 (docs/detection-module.md)
+!frontend/app/src/main/assets/models/yolo26n.tflite
