@@ -24,7 +24,9 @@ import com.example.snap_sight.camera.CameraController
 import com.example.snap_sight.camera.CaptureSessionManager
 import com.example.snap_sight.camera.RingFrameBuffer
 import com.example.snap_sight.camera.SessionState
+import com.example.snap_sight.cv.Detection
 import com.example.snap_sight.cv.LoggingFrameProcessor
+import com.example.snap_sight.cv.YoloFrameProcessor
 import com.example.snap_sight.network.FrameUploader
 import com.example.snap_sight.ux.CaptureScreen
 import com.example.snap_sight.ui.theme.SnapSightTheme
@@ -58,7 +60,15 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        cameraController.setFrameProcessor(LoggingFrameProcessor())
+        // 모델 에셋이 있으면 YOLO26n 탐지, 없으면 기존 fps 로거로 폴백
+        val yoloProcessor = YoloFrameProcessor.createIfAvailable(this)
+        yoloProcessor?.listener = object : YoloFrameProcessor.DetectionListener {
+            override fun onDetections(detections: List<Detection>, inferenceMs: Long) {
+                // TODO: ③ 판정 로직 연동 지점 — docs/detection-api-design.md 페이로드로 전달 예정.
+                // 현재는 파이프라인 검증용 로그만 남긴다 (분석 스레드에서 호출됨).
+            }
+        }
+        cameraController.setFrameProcessor(yoloProcessor ?: LoggingFrameProcessor())
         sessionManager.listener = object : CaptureSessionManager.Listener {
             override fun onStateChanged(state: SessionState) {
                 statusText = state.description
