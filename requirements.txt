@@ -3,9 +3,6 @@ fastapi
 uvicorn[standard]
 python-multipart  # FastAPI 파일 업로드(UploadFile/Form) 처리에 필요
 
-# HTTP client
-requests
-
 # Computer vision / on-device models
 opencv-python
 mediapipe
