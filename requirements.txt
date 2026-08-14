@@ -7,6 +7,7 @@ python-multipart  # FastAPI 파일 업로드(UploadFile/Form) 처리에 필요
 opencv-python
 mediapipe
 numpy
+ultralytics>=8.4.83,<9  # YOLO26n Objects365 PC prototype
 
 # MLLM integration
 anthropic
