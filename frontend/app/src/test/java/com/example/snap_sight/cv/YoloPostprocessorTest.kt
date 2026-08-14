@@ -33,6 +33,21 @@ class YoloPostprocessorTest {
     }
 
     @Test
+    fun decode_acceptsNormalizedCoordsFromLitertExport() {
+        // 같은 박스를 0..1 정규화(입력 320 기준)로 표현 — 픽셀 테스트와 결과가 같아야 한다
+        val rows = arrayOf(floatArrayOf(80f / 320, 60f / 320, 240f / 320, 300f / 320, 0.9f, 41f))
+        val result = YoloPostprocessor.decode(rows, 320, 640, 480, 0.5f)
+
+        assertEquals(1, result.size)
+        val d = result[0]
+        assertEquals("cup", d.label)
+        assertEquals(0.25f, d.left, 1e-4f)
+        assertEquals(0.75f, d.right, 1e-4f)
+        assertEquals(40f / 480f, d.top, 1e-4f)
+        assertEquals(1.0f, d.bottom, 1e-4f)
+    }
+
+    @Test
     fun decode_dropsLowScoreAndUnknownClassAndDegenerateBox() {
         val rows = arrayOf(
             floatArrayOf(10f, 10f, 100f, 100f, 0.2f, 0f),   // 점수 미달
