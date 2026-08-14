@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from backend.storage.frame_buffer import save_candidate_frame, save_representative_frame
 from backend.utils.logger import load_logger
 
-logger = load_logger(__name__)
+logger = load_logger("capture.log")
 
 router = APIRouter()
 
