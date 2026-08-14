@@ -12,6 +12,7 @@ env/
 .mypy_cache/
 htmlcov/
 .coverage
+.runtime/
 
 # Local databases
 *.sqlite3
@@ -33,6 +34,13 @@ htmlcov/
 runs/
 wandb/
 
+# ultralytics export 가 남기는 중간 산출물 (.pt → onnx → SavedModel → tflite)
+*_saved_model/
+*.pb
+
+# ② CV 온디바이스 모델 자산만 예외 — Android assets 에 들어가야 앱이 로드할 수 있다
+!frontend/app/src/main/assets/*.tflite
+
 # Image/buffer cache (test capture data)
 *.jpg
 *.jpeg
@@ -40,6 +48,7 @@ wandb/
 !docs/**/*.png
 frame_buffer/
 captures/
+demo_outputs/
 
 # OS
 .DS_Store
@@ -66,3 +75,6 @@ local.properties
 # Android — 서명 키 (절대 커밋 금지)
 *.jks
 *.keystore
+
+# Virtual Environment
+.venv/
