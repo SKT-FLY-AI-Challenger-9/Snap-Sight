@@ -33,7 +33,16 @@ class YoloFrameProcessor private constructor(
 
     /** 탐지 결과 수신 계약. 분석 스레드에서 호출되므로 UI 접근 시 스레드 전환 필요. */
     interface DetectionListener {
-        fun onDetections(detections: List<Detection>, inferenceMs: Long)
+        /**
+         * @param frameWidth  정방향(회전 보정 후) 프레임 너비 — 오버레이 좌표 매핑용
+         * @param frameHeight 정방향 프레임 높이
+         */
+        fun onDetections(
+            detections: List<Detection>,
+            frameWidth: Int,
+            frameHeight: Int,
+            inferenceMs: Long,
+        )
     }
 
     @Volatile
@@ -41,6 +50,7 @@ class YoloFrameProcessor private constructor(
 
     private var interpreter: Interpreter? = null
     private var inputSize = 0
+    private var channelsFirst = false // NCHW [1,3,S,S] (litert-torch export) 여부
     private var inputBuffer: ByteBuffer? = null
     private var inputBitmap: Bitmap? = null
     private var outputRows: Array<FloatArray> = emptyArray()
@@ -55,17 +65,23 @@ class YoloFrameProcessor private constructor(
             val model = loadMappedModel()
             val itp = Interpreter(model, Interpreter.Options().apply { numThreads = NUM_THREADS })
 
-            val inShape = itp.getInputTensor(0).shape() // [1, H, W, 3]
+            // 입력: NHWC [1,S,S,3] 또는 NCHW [1,3,S,S] (litert-torch 는 NCHW 로 내보냄)
+            val inShape = itp.getInputTensor(0).shape()
             val outShape = itp.getOutputTensor(0).shape() // end-to-end: [1, N, 6]
-            require(inShape.size == 4 && inShape[1] == inShape[2] && inShape[3] == 3) {
+            channelsFirst = inShape.size == 4 && inShape[1] == 3 && inShape[3] != 3
+            require(
+                inShape.size == 4 &&
+                    (channelsFirst && inShape[2] == inShape[3] ||
+                        !channelsFirst && inShape[1] == inShape[2] && inShape[3] == 3)
+            ) {
                 "지원하지 않는 입력 형태: ${inShape.contentToString()}"
             }
             require(outShape.size == 3 && outShape[2] == 6) {
                 "지원하지 않는 출력 형태: ${outShape.contentToString()} " +
-                    "(YOLO26 end-to-end [1,N,6] 만 지원 — nms=True 로 내보냈는지 확인)"
+                    "(YOLO26 end-to-end [1,N,6] 만 지원 — 문서의 export 절차 확인)"
             }
 
-            inputSize = inShape[1]
+            inputSize = if (channelsFirst) inShape[2] else inShape[1]
             inputBuffer = ByteBuffer
                 .allocateDirect(inputSize * inputSize * 3 * 4)
                 .order(ByteOrder.nativeOrder())
@@ -112,7 +128,7 @@ class YoloFrameProcessor private constructor(
         )
 
         val elapsed = System.currentTimeMillis() - started
-        listener?.onDetections(detections, elapsed)
+        listener?.onDetections(detections, srcWidth, srcHeight, elapsed)
         logWindow(elapsed, detections)
     }
 
@@ -138,10 +154,22 @@ class YoloFrameProcessor private constructor(
         val pixels = IntArray(inputSize * inputSize)
         canvasBitmap.getPixels(pixels, 0, inputSize, 0, 0, inputSize, inputSize)
         buffer.rewind()
-        for (p in pixels) {
-            buffer.putFloat(((p shr 16) and 0xFF) / 255f)
-            buffer.putFloat(((p shr 8) and 0xFF) / 255f)
-            buffer.putFloat((p and 0xFF) / 255f)
+        if (channelsFirst) {
+            // NCHW: R 평면 → G 평면 → B 평면 (절대 오프셋으로 기록)
+            val plane = inputSize * inputSize
+            for (i in pixels.indices) {
+                val p = pixels[i]
+                buffer.putFloat(i * 4, ((p shr 16) and 0xFF) / 255f)
+                buffer.putFloat((plane + i) * 4, ((p shr 8) and 0xFF) / 255f)
+                buffer.putFloat((2 * plane + i) * 4, (p and 0xFF) / 255f)
+            }
+        } else {
+            // NHWC: 픽셀마다 RGB 인터리브
+            for (p in pixels) {
+                buffer.putFloat(((p shr 16) and 0xFF) / 255f)
+                buffer.putFloat(((p shr 8) and 0xFF) / 255f)
+                buffer.putFloat((p and 0xFF) / 255f)
+            }
         }
         buffer.rewind()
     }
