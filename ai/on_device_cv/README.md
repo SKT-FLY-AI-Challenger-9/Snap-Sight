@@ -2,7 +2,7 @@
 
 카메라 또는 영상의 모든 지원 객체를 프레임마다 탐지하고, 같은 객체에 지속적인
 `track_id`를 부여하는 PC용 Python 프로토타입입니다. STT/NLU 파싱 자체는 포함하지 않지만,
-이미 생성된 TargetSpec v0.1을 입력받아 tracking 후 의도 후보를 선택할 수 있습니다.
+이미 생성된 TargetSpec v0.1/v0.2를 입력받아 tracking 후 의도 후보를 선택할 수 있습니다.
 
 기본 detector는 Ultralytics가 공개한 Objects365v1 365-class nano checkpoint
 `yolo26n-objv1-150.pt`입니다. `classes=None`으로 추론하므로 특정 클래스만 고르지 않고
@@ -19,6 +19,7 @@ OpenCV BGR frame
   -> DetectionExtension[]          향후 person -> face detector 확장 지점
   -> ByteTrackLiteTracker          다중 객체 ID 연결
   -> output confidence threshold
+  -> TargetSelector (optional)     TargetSpec 기반 post-tracking 후보 선택
   -> FrameResult / dict            공개 JSON 계약
 ```
 
@@ -98,18 +99,19 @@ python -m ai.on_device_cv --source .\sample.mp4 --frame-stride 3
 ## TargetSpec 기반 의도 후보 선택
 
 ① STT/NLU가 `ai/target_spec_schema.md` 형식의 JSON을 만들었다면 `--target-spec`으로
-전달할 수 있습니다. 저장소의 `ai/on_device_cv/examples/person_two.json`을 바로 사용하거나,
-예를 들어 `intent.json`을 다음과 같이 작성합니다.
+전달할 수 있습니다. 기존 v0.1 인물 예시는 `examples/person_two.json`, Objects365 class를
+지정하는 v0.2 사물 예시는 `examples/cup_one.json`에 있습니다.
 
 ```json
 {
-  "schemaVersion": "0.1",
-  "sessionId": "sess_20260812_001",
+  "schemaVersion": "0.2",
+  "sessionId": "sess_20260813_002",
   "status": "ok",
-  "subjectType": "person",
-  "subjectCount": 2,
+  "subjectType": "object",
+  "objectLabel": "cup",
+  "subjectCount": 1,
   "framing": "closeup",
-  "rawText": "친구 두 명이랑 같이 나오게, 얼굴 크게 찍어줘",
+  "rawText": "컵 한 개를 크게 찍어줘",
   "confidence": 0.9,
   "source": "clova"
 }
@@ -129,18 +131,28 @@ detector와 tracker는 계속 Objects365 전체 객체를 처리하고, 화면�
 `target selected|searching|ambiguous|scene_only|unresolved` 상태와 현재 후보 수가 함께
 표시됩니다. 기존 JSONL은 호환성을 위해 `{"objects": [...]}` 형식을 그대로 유지합니다.
 `--selection-jsonl`에는 `selected|searching|ambiguous|scene_only|unresolved`, 요청/검출 개수,
-후보 객체가 versioned `schemaVersion=0.1` 형식으로 함께 기록되므로 기계 판정에는 이 파일을
-사용합니다. 두 JSONL 모두 원본 입력
+후보 객체가 versioned 형식으로 함께 기록되므로 기계 판정에는 이 파일을 사용합니다.
+selection 결과의 `schemaVersion`은 입력 TargetSpec 버전을 따르며 v0.2에는 요청한
+`objectLabel`도 포함됩니다. 두 JSONL 모두 원본 입력
 프레임마다 한 줄을 기록합니다. `--frame-stride N`의 중간 프레임에는 최근 결과가 반복되고,
 selection JSONL의 `analyzed=false`로 미분석 프레임을 구분할 수 있습니다.
 
 - `person`: 사람 후보만 표시
-- `object`: 사람을 제외한 모든 사물 후보 표시
+- v0.1 `object` 또는 v0.2 `objectLabel=null`: 지원하는 모든 non-person 객체 후보 표시
+- v0.2 `objectLabel`: 해당 Objects365 class만 표시(예: `cup`, `wine glass`, `cell phone`)
 - `landscape`: 객체 target을 만들지 않음
 - 요청 개수보다 후보가 적으면 `searching`, 같으면 `selected`, 많으면 `ambiguous`
 
-v0.1에는 구체 사물 class를 나타내는 필드가 없으므로 "컵"과 "의자"를 구분해 선택할 수는
-없습니다. 또한 `framing`은 현재 detection filtering이 아니라 후속 구도 판단용 값입니다.
+`objectLabel`은 실제 checkpoint의 canonical label을 사용합니다. 전체 364개 사물 허용값은
+`ai/taxonomy/objects365_yolo26_v1.json`에 고정되어 있으며 공백과 슬래시를 보존합니다.
+예를 들어 `wine_glass`가 아니라 `wine glass`입니다. CV는 `rawText`를 다시 파싱하지 않으므로
+STT/NLU가 발화를 이 canonical 값으로 변환해야 합니다. `framing`은 현재 detection filtering이
+아니라 후속 구도 판단용 값입니다.
+
+TargetSpec을 사용하면 detector load 시 모델의 365개 class 이름과 순서를 taxonomy와 대조합니다.
+따라서 `--model`로 COCO/subset 모델을 넘기면 class ID 오해를 막기 위해 명확히 실패하며, 해당
+모델용 taxonomy와 그 taxonomy를 명시하는 TargetSpec 계약/selector adapter가 별도로 필요합니다.
+Objects365 class 순서를 유지한 fine-tuned 모델은 같은 taxonomy를 계속 사용할 수 있습니다.
 
 Python에서는 전체 tracking 결과와 target 후보를 모두 유지할 수 있습니다.
 
@@ -204,11 +216,16 @@ PC prototype은 Python 3.11 이상을 기준으로 합니다. 현재는 저장�
 
 ## 모델과 Face Detector 교체 지점
 
-Objects365 subset으로 fine-tuning한 모델은 pipeline 수정 없이 바꿀 수 있습니다.
+같은 365개 class ID와 label 순서를 유지해 fine-tuning한 모델은 pipeline 수정 없이 바꿀 수 있습니다.
 
 ```powershell
 python -m ai.on_device_cv --source .\sample.mp4 --model .\models\best.pt
 ```
+
+class subset/reorder 모델은 기존 Objects365 taxonomy로 해석할 수 없으므로 해당 모델 전용
+taxonomy와 selector adapter가 필요합니다. TargetSpec 없이 범용 탐지·추적만 수행하는 별도
+detector를 구성할 때는 `expected_taxonomy=None`으로 명시할 수 있지만, 이 결과를 기본
+`TargetSelector`에 넘겨서는 안 됩니다.
 
 다른 runtime을 쓸 때는 `Detector` protocol의 `load/detect/close`만 구현합니다. 색상
 변환, letterbox, quantization, raw tensor decode, NMS, class map은 adapter 안에서 끝내고
@@ -234,7 +251,7 @@ Android/TFLite 이식 시에도 다음 경계를 유지합니다.
 python -m pytest tests\test_cv_contracts.py tests\test_cv_tracker.py `
   tests\test_cv_demo.py tests\test_cv_pipeline.py tests\test_cv_visualization.py `
   tests\test_ultralytics_detector.py tests\test_target_spec.py `
-  tests\test_target_selection.py
+  tests\test_target_selection.py tests\test_objects365_taxonomy.py
 ```
 
 테스트는 정확한 JSON schema, bbox 정규화, 다중 객체, 입력 순서 변경, 저신뢰 복구,

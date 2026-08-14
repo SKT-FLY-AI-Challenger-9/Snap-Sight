@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 
 from ai.on_device_cv.contracts import BoundingBox, DetectionResult, validate_bgr_frame
+from ai.taxonomy import OBJECTS365_YOLO26, ObjectTaxonomy
 
 ModelFactory = Callable[..., Any]
 
@@ -25,6 +26,7 @@ class UltralyticsDetectorConfig:
     max_detections: int = 300
     device: str = "cpu"
     runtime_directory: Path = Path(".runtime")
+    expected_taxonomy: ObjectTaxonomy | None = OBJECTS365_YOLO26
 
     def __post_init__(self) -> None:
         if not self.model:
@@ -37,6 +39,10 @@ class UltralyticsDetectorConfig:
             raise ValueError("max_detections must be positive")
         if not self.device:
             raise ValueError("device must not be empty")
+        if self.expected_taxonomy is not None and not isinstance(
+            self.expected_taxonomy, ObjectTaxonomy
+        ):
+            raise TypeError("expected_taxonomy must be an ObjectTaxonomy or null")
 
 
 class UltralyticsYoloDetector:
@@ -88,7 +94,13 @@ class UltralyticsYoloDetector:
 
             # The model name is intentionally passed through. Official names are
             # downloaded by Ultralytics; compatible local checkpoints work too.
-            self._model = factory(self.config.model, task="detect")
+            model = factory(self.config.model, task="detect")
+            if self.config.expected_taxonomy is not None:
+                names = getattr(model, "names", None)
+                if names is None:
+                    raise ValueError("Model does not expose class names for taxonomy validation")
+                self.config.expected_taxonomy.validate_model_names(names)
+            self._model = model
         finally:
             for name, previous_value in previous_environment.items():
                 if previous_value is None:

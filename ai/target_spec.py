@@ -10,7 +10,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, TypeVar
 
+from ai.taxonomy import OBJECTS365_YOLO26
+
 EnumValue = TypeVar("EnumValue", bound=StrEnum)
+SUPPORTED_SCHEMA_VERSIONS = frozenset({"0.1", "0.2"})
 
 
 class TargetSpecStatus(StrEnum):
@@ -39,7 +42,7 @@ class TargetSpecSource(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class TargetSpec:
-    """Machine-validated representation of ``ai/target_spec_schema.md`` v0.1."""
+    """Machine-validated representation of ``ai/target_spec_schema.md`` v0.1/v0.2."""
 
     session_id: str
     raw_text: str
@@ -50,9 +53,10 @@ class TargetSpec:
     subject_count: int | None = None
     framing: Framing = Framing.FULL_BODY
     confidence: float = 0.0
+    object_label: str | None = None
 
     def __post_init__(self) -> None:
-        if self.schema_version != "0.1":
+        if self.schema_version not in SUPPORTED_SCHEMA_VERSIONS:
             raise ValueError(f"Unsupported TargetSpec schemaVersion: {self.schema_version}")
         if not isinstance(self.session_id, str):
             raise TypeError("TargetSpec sessionId must be a string")
@@ -71,6 +75,17 @@ class TargetSpec:
                 raise TypeError(f"TargetSpec {field_name} must use {expected_type.__name__}")
         if self.status is not TargetSpecStatus.FAILED and not self.raw_text.strip():
             raise ValueError("TargetSpec rawText must not be empty unless status is failed")
+        if self.object_label is not None:
+            if not isinstance(self.object_label, str):
+                raise TypeError("TargetSpec objectLabel must be a string or null")
+            if self.schema_version == "0.1":
+                raise ValueError("TargetSpec objectLabel requires schemaVersion 0.2")
+            if self.subject_type is not SubjectType.OBJECT:
+                raise ValueError("TargetSpec objectLabel is only valid for subjectType=object")
+            if not OBJECTS365_YOLO26.is_object_label(self.object_label):
+                raise ValueError(
+                    "TargetSpec objectLabel must be an exact Objects365 canonical object label"
+                )
         if self.subject_count is not None and (
             type(self.subject_count) is not int or self.subject_count < 1
         ):
@@ -90,6 +105,7 @@ class TargetSpec:
             "sessionId",
             "status",
             "subjectType",
+            "objectLabel",
             "subjectCount",
             "framing",
             "rawText",
@@ -104,9 +120,16 @@ class TargetSpec:
             if required_field not in payload:
                 raise ValueError(f"TargetSpec is missing required field: {required_field}")
 
+        # Payloads created before objectLabel existed often omitted the version.
+        # Keep interpreting those as v0.1; new v0.2 producers must be explicit.
         schema_version = _string_field(payload, "schemaVersion", default="0.1")
+        if schema_version == "0.1" and "objectLabel" in payload:
+            raise ValueError("TargetSpec v0.1 must not contain objectLabel")
         session_id = _string_field(payload, "sessionId")
         raw_text = _string_field(payload, "rawText", allow_empty=True)
+        object_label = payload.get("objectLabel")
+        if object_label is not None and not isinstance(object_label, str):
+            raise TypeError("TargetSpec objectLabel must be a string or null")
         subject_count = payload.get("subjectCount")
         if subject_count is not None and (type(subject_count) is not int or subject_count < 1):
             raise ValueError("TargetSpec subjectCount must be null or an integer of at least 1")
@@ -128,6 +151,7 @@ class TargetSpec:
                 payload.get("subjectType", SubjectType.PERSON.value),
                 "subjectType",
             ),
+            object_label=object_label,
             subject_count=subject_count,
             framing=_enum_field(
                 Framing,
@@ -157,17 +181,24 @@ class TargetSpec:
         return cls.from_json(contents)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schemaVersion": self.schema_version,
             "sessionId": self.session_id,
             "status": self.status.value,
             "subjectType": self.subject_type.value,
-            "subjectCount": self.subject_count,
-            "framing": self.framing.value,
-            "rawText": self.raw_text,
-            "confidence": float(self.confidence),
-            "source": self.source.value,
         }
+        if self.schema_version == "0.2":
+            payload["objectLabel"] = self.object_label
+        payload.update(
+            {
+                "subjectCount": self.subject_count,
+                "framing": self.framing.value,
+                "rawText": self.raw_text,
+                "confidence": float(self.confidence),
+                "source": self.source.value,
+            }
+        )
+        return payload
 
 
 def _string_field(

@@ -8,8 +8,7 @@ from typing import Any
 
 from ai.on_device_cv.contracts import FrameResult, TrackedObject
 from ai.target_spec import SubjectType, TargetSpec, TargetSpecStatus
-
-TARGET_SELECTION_SCHEMA_VERSION = "0.1"
+from ai.taxonomy import OBJECTS365_YOLO26, ObjectTaxonomy
 
 
 class TargetSelectionState(StrEnum):
@@ -39,6 +38,8 @@ class TargetSelectionResult:
     requested_count: int | None
     count_status: TargetCountStatus
     framing: str
+    schema_version: str = "0.1"
+    object_label: str | None = None
 
     @property
     def detected_count(self) -> int:
@@ -52,8 +53,8 @@ class TargetSelectionResult:
     def to_dict(self) -> dict[str, Any]:
         """Serialize the additive TargetSpec selection contract."""
 
-        return {
-            "schemaVersion": TARGET_SELECTION_SCHEMA_VERSION,
+        payload = {
+            "schemaVersion": self.schema_version,
             "sessionId": self.session_id,
             "state": self.state.value,
             "subjectType": self.subject_type.value,
@@ -63,16 +64,22 @@ class TargetSelectionResult:
             "framing": self.framing,
             "objects": [candidate.to_dict() for candidate in self.candidates],
         }
+        if self.schema_version == "0.2":
+            payload["objectLabel"] = self.object_label
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
 class TargetSelectorConfig:
-    """Mapping used for the current Objects365 model taxonomy."""
+    """Taxonomy used by the detector that produced the tracked objects."""
 
+    taxonomy: ObjectTaxonomy = OBJECTS365_YOLO26
     person_class_id: int | None = None
     person_labels: frozenset[str] = frozenset({"person"})
 
     def __post_init__(self) -> None:
+        if not isinstance(self.taxonomy, ObjectTaxonomy):
+            raise TypeError("taxonomy must be an ObjectTaxonomy")
         if self.person_class_id is not None and (
             type(self.person_class_id) is not int or self.person_class_id < 0
         ):
@@ -109,7 +116,24 @@ class TargetSelector:
         if target_spec.subject_type is SubjectType.PERSON:
             candidates = tuple(item for item in frame_result.objects if self._is_person(item))
         else:
-            candidates = tuple(item for item in frame_result.objects if not self._is_person(item))
+            candidates = tuple(
+                item
+                for item in frame_result.objects
+                if self.config.taxonomy.is_supported_object(
+                    class_id=item.class_id,
+                    observed_label=item.label,
+                )
+            )
+            if target_spec.object_label is not None:
+                candidates = tuple(
+                    item
+                    for item in candidates
+                    if self.config.taxonomy.matches(
+                        class_id=item.class_id,
+                        observed_label=item.label,
+                        canonical_label=target_spec.object_label,
+                    )
+                )
         candidates = tuple(sorted(candidates, key=lambda item: item.track_id))
 
         requested_count = target_spec.subject_count
@@ -123,7 +147,7 @@ class TargetSelector:
             count_status = TargetCountStatus.EXACT
             state = TargetSelectionState.SELECTED
         else:
-            # There is no identity or qualifier in TargetSpec v0.1, so choosing
+            # There is no identity qualifier in TargetSpec, so choosing
             # an arbitrary top-N subset would be unsafe.
             count_status = TargetCountStatus.OVER
             state = TargetSelectionState.AMBIGUOUS
@@ -133,7 +157,13 @@ class TargetSelector:
     def _is_person(self, item: TrackedObject) -> bool:
         if self.config.person_class_id is not None and item.class_id is not None:
             return item.class_id == self.config.person_class_id
-        return item.label.strip().casefold() in self.config.person_labels
+        if item.class_id is None and item.label.strip().casefold() in self.config.person_labels:
+            return True
+        return self.config.taxonomy.matches(
+            class_id=item.class_id,
+            observed_label=item.label,
+            canonical_label="person",
+        )
 
     @staticmethod
     def _result(
@@ -143,9 +173,11 @@ class TargetSelector:
         count_status: TargetCountStatus,
     ) -> TargetSelectionResult:
         return TargetSelectionResult(
+            schema_version=target_spec.schema_version,
             session_id=target_spec.session_id,
             state=state,
             subject_type=target_spec.subject_type,
+            object_label=target_spec.object_label,
             candidates=candidates,
             requested_count=target_spec.subject_count,
             count_status=count_status,
