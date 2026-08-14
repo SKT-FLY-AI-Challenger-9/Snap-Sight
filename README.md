@@ -112,23 +112,32 @@ backend/                     # ③④ 공유 백엔드 (FastAPI)
     └── logger.py
 
 ai/                           # ② 온디바이스 CV
-└── on_device_cv/
-    ├── contracts.py             # normalized bbox·공개 JSON 계약
-    ├── detectors/               # 교체 가능한 detector adapter
-    ├── trackers/                # multi-object tracker
-    ├── extensions.py            # 향후 person→face 확장 hook
-    ├── pipeline.py              # 모델 독립 처리 pipeline
-    └── demo.py                  # 영상·웹캠 PC prototype
+├── on_device_cv/               # PC 참조 구현 (Python)
+│   ├── contracts.py             # normalized bbox·공개 JSON 계약
+│   ├── detectors/               # 교체 가능한 detector adapter
+│   ├── trackers/                # multi-object tracker
+│   ├── extensions.py            # 향후 person→face 확장 hook
+│   ├── pipeline.py              # 모델 독립 처리 pipeline
+│   └── demo.py                  # 영상·웹캠 PC prototype
+├── target_spec.py              # ① TargetSpec 계약 validator
+├── taxonomy/                   # Objects365 365-class 고정 taxonomy
+└── tools/export_tflite.py      # .pt → Android assets 용 .tflite export
 
-android/                      # ⑤⑥ Android 네이티브 앱
+frontend/                     # ⑤⑥ Android 네이티브 앱
 └── app/src/main/
-    ├── java/…/                  # 패키지명 미정
-    │   ├── camera/               # ⑤ Camera2/CameraX, 트리거, 센서
-    │   ├── cv/                   # ⑤ TFLite 모듈 통합·호출
+    ├── java/com/example/snap_sight/
+    │   ├── camera/               # ⑤ CameraX, 트리거, 링 버퍼, 센서
+    │   ├── cv/                   # ② 온디바이스 CV (Kotlin 포팅) + ⑤ 프레임 계약
+    │   │   ├── Contracts.kt       # 공개 JSON 계약 (Python contracts.py 와 1:1)
+    │   │   ├── TfLiteYoloDetector.kt  # TFLite 에 의존하는 유일한 파일
+    │   │   ├── ByteTrackLiteTracker.kt
+    │   │   ├── TargetSelector.kt  # 의도 기반 선택 확장 자리 (현재 pass-through)
+    │   │   ├── Deviation.kt       # 편차 계산 확장 자리 (현재 no-op)
+    │   │   └── SnapSightFrameProcessor.kt  # CameraX 진입점
     │   ├── network/              # ⑤ 백엔드 API 클라이언트
     │   └── ux/                   # ⑥ 접근성 UI, TalkBack, 햅틱·사운드
     ├── res/                     # 레이아웃 · 리소스
-    └── assets/                  # ②가 넘긴 .tflite 모델 배치
+    └── assets/                  # ②가 export 한 .tflite 모델 + 라벨
 
 tests/                        # pytest
 ├── test_capture.py
@@ -178,7 +187,23 @@ uvicorn backend.main:app --reload
 
 ### 모바일 앱 (Android)
 
-Android 프로젝트는 아직 저장소에 추가되지 않았다. 추가되는 대로 이 섹션에 빌드·실행 방법을 채운다.
+Android 프로젝트는 `frontend/`에 있다. Android Studio로 열거나 CLI로 빌드한다.
+
+```powershell
+cd frontend
+.\gradlew.bat :app:assembleDebug
+```
+
+②의 온디바이스 CV 모듈은 `frontend/app/src/main/java/com/example/snap_sight/cv/`에 포팅되어
+CameraX 프레임 스트림에 연결돼 있다. 연결 방법과 확장 지점은
+[docs/android-cv-module.md](docs/android-cv-module.md) 참고. TFLite 모델은 별도로 생성해야 한다.
+
+```powershell
+python -m pip install "ultralytics" tensorflow
+python -m ai.tools.export_tflite
+```
+
+모델 자산이 없어도 앱은 정상 기동하며, CV 결과만 비어 있는 상태로 동작한다.
 
 ## 개발 가이드
 
