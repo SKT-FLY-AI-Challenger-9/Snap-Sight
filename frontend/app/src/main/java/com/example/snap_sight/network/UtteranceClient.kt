@@ -3,6 +3,7 @@ package com.example.snap_sight.network
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.example.snap_sight.cv.TargetSpec
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -19,9 +20,9 @@ import java.util.concurrent.TimeUnit
  * 백엔드 계약: POST {baseUrl}/api/session/utterance (application/json)
  *  - session_id: 문자열
  *  - raw_text: STT로 인식된 텍스트
- * 응답: ai/target_spec_schema.md 의 TargetSpec JSON
- *  (schemaVersion, sessionId, status, subjectType, objectLabel, subjectCount, framing,
- *   rawText, confidence, source) — 이 클라이언트는 ③ 판정 로직이 바로 쓸 핵심 필드만 옮겨 담는다.
+ * 응답: ai/target_spec_schema.md 의 TargetSpec JSON. 파싱은 [TargetSpec.fromJsonOrNull]에
+ * 위임한다 — CV 쪽 검증 규칙(`ai/target_spec.py`)과 항상 같은 기준을 쓰기 위함이다.
+ * 응답 body가 스키마를 어겨도(HTTP 자체는 성공) 예외 없이 [Callback.onSuccess]에 null이 온다.
  */
 class UtteranceClient(
     private val baseUrl: String = FrameUploader.DEFAULT_BASE_URL,
@@ -32,18 +33,9 @@ class UtteranceClient(
         .build(),
 ) {
 
-    class TargetSpecResult(
-        val sessionId: String,
-        val status: String,
-        val subjectType: String,
-        val objectLabel: String?,
-        val subjectCount: Int?,
-        val framing: String,
-        val confidence: Double,
-    )
-
     interface Callback {
-        fun onSuccess(result: TargetSpecResult)
+        /** [spec]은 응답이 스키마를 어겼을 때만 null — HTTP 자체 실패는 [onFailure]로 온다. */
+        fun onSuccess(spec: TargetSpec?)
         fun onFailure(error: Throwable)
     }
 
@@ -65,17 +57,11 @@ class UtteranceClient(
                     if (!response.isSuccessful) {
                         throw IllegalStateException("타겟 스펙 요청 실패: HTTP ${response.code}")
                     }
-                    val json = JSONObject(response.body?.string().orEmpty())
-                    val result = TargetSpecResult(
-                        sessionId = json.optString("sessionId", sessionId),
-                        status = json.optString("status", ""),
-                        subjectType = json.optString("subjectType", "person"),
-                        objectLabel = if (json.isNull("objectLabel")) null else json.optString("objectLabel"),
-                        subjectCount = if (json.isNull("subjectCount")) null else json.optInt("subjectCount"),
-                        framing = json.optString("framing", "full_body"),
-                        confidence = json.optDouble("confidence", 0.0),
-                    )
-                    mainHandler.post { callback.onSuccess(result) }
+                    val body = response.body?.string().orEmpty()
+                    val spec = TargetSpec.fromJsonOrNull(body) { error ->
+                        Log.w(TAG, "타겟 스펙 응답 파싱 실패 [$sessionId]", error)
+                    }
+                    mainHandler.post { callback.onSuccess(spec) }
                 }
             } catch (t: Throwable) {
                 Log.e(TAG, "타겟 스펙 요청 실패 [$sessionId]", t)
