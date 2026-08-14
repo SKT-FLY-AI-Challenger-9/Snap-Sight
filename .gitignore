@@ -50,6 +50,9 @@ frame_buffer/
 captures/
 demo_outputs/
 
+# Local voice test recordings (personal audio, not for commit)
+ai/samples/
+
 # OS
 .DS_Store
 Thumbs.db
