@@ -134,9 +134,11 @@ def test_changing_target_spec_does_not_reset_all_object_track_ids():
         second,
         TargetSpec(
             session_id="session-1",
-            raw_text="사물을 찍어줘",
+            raw_text="물병을 찍어줘",
             source=TargetSpecSource.ONDEVICE,
+            schema_version="0.2",
             subject_type=SubjectType.OBJECT,
+            object_label="bottle",
         ),
     )
     pipeline.close()

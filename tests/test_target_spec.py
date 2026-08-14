@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +10,7 @@ from ai.target_spec import (
     TargetSpecSource,
     TargetSpecStatus,
 )
+from ai.taxonomy import OBJECTS365_YOLO26
 
 
 def valid_payload(**overrides):
@@ -54,6 +56,75 @@ def test_target_spec_applies_documented_defaults():
     assert target_spec.subject_count is None
     assert target_spec.framing is Framing.FULL_BODY
     assert target_spec.confidence == 0.0
+    assert target_spec.object_label is None
+
+
+@pytest.mark.parametrize("object_label", ["cup", "wine glass", "cabinet/shelf", "flashlight"])
+def test_target_spec_v02_accepts_exact_objects365_object_labels(object_label):
+    payload = valid_payload(
+        schemaVersion="0.2",
+        subjectType="object",
+        objectLabel=object_label,
+    )
+
+    target_spec = TargetSpec.from_dict(payload)
+
+    assert target_spec.object_label == object_label
+    assert target_spec.to_dict() == payload
+
+
+def test_target_spec_v02_null_label_keeps_generic_object_intent():
+    payload = valid_payload(
+        schemaVersion="0.2",
+        subjectType="object",
+        objectLabel=None,
+    )
+
+    assert TargetSpec.from_dict(payload).to_dict() == payload
+
+
+def test_all_objects365_non_person_labels_are_valid_object_intents():
+    for object_label in OBJECTS365_YOLO26.object_labels:
+        spec = TargetSpec.from_dict(
+            valid_payload(
+                schemaVersion="0.2",
+                subjectType="object",
+                objectLabel=object_label,
+            )
+        )
+        assert spec.object_label == object_label
+
+
+@pytest.mark.parametrize(
+    "object_label",
+    ["person", "bird", "wine_glass", "Cell Phone", "", " cup ", 7, True],
+)
+def test_target_spec_rejects_noncanonical_or_non_object_labels(object_label):
+    with pytest.raises((TypeError, ValueError), match="objectLabel"):
+        TargetSpec.from_dict(
+            valid_payload(
+                schemaVersion="0.2",
+                subjectType="object",
+                objectLabel=object_label,
+            )
+        )
+
+
+def test_target_spec_v01_rejects_object_label_even_when_null():
+    with pytest.raises(ValueError, match="v0.1"):
+        TargetSpec.from_dict(valid_payload(objectLabel=None))
+
+
+@pytest.mark.parametrize("subject_type", ["person", "landscape"])
+def test_target_spec_rejects_object_label_for_non_object_subject(subject_type):
+    with pytest.raises(ValueError, match="subjectType=object"):
+        TargetSpec.from_dict(
+            valid_payload(
+                schemaVersion="0.2",
+                subjectType=subject_type,
+                objectLabel="cup",
+            )
+        )
 
 
 @pytest.mark.parametrize("subject_count", [True, 0, -1, 1.5, "2"])
@@ -97,3 +168,23 @@ def test_direct_target_spec_constructor_rejects_boolean_confidence():
             source=TargetSpecSource.ONDEVICE,
             confidence=True,
         )
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected_version", "expected_label"),
+    [
+        ("person_two.json", "0.1", None),
+        ("cup_one.json", "0.2", "cup"),
+    ],
+)
+def test_checked_in_target_spec_examples_match_the_runtime_contract(
+    filename,
+    expected_version,
+    expected_label,
+):
+    examples_directory = Path("ai/on_device_cv/examples")
+
+    target_spec = TargetSpec.from_file(examples_directory / filename)
+
+    assert target_spec.schema_version == expected_version
+    assert target_spec.object_label == expected_label

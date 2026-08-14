@@ -186,7 +186,8 @@ def test_demo_target_spec_keeps_only_matching_candidates_in_public_jsonl(tmp_pat
             return FrameResult(
                 (
                     TrackedObject(1, "Person", 0.9, bbox, class_id=0),
-                    TrackedObject(2, "Bottle", 0.8, bbox, class_id=8),
+                    TrackedObject(2, "Bottle", 0.8, bbox, class_id=5),
+                    TrackedObject(3, "Chair", 0.7, bbox, class_id=2),
                 )
             )
 
@@ -198,13 +199,14 @@ def test_demo_target_spec_keeps_only_matching_candidates_in_public_jsonl(tmp_pat
     target_spec_path = tmp_path / "intent.json"
     target_spec_path.write_text(
         """{
-          "schemaVersion": "0.1",
+          "schemaVersion": "0.2",
           "sessionId": "session-1",
           "status": "ok",
-          "subjectType": "person",
+          "subjectType": "object",
+          "objectLabel": "bottle",
           "subjectCount": 1,
           "framing": "full_body",
-          "rawText": "사람 한 명을 찍어줘",
+          "rawText": "물병 한 개를 찍어줘",
           "confidence": 0.9,
           "source": "ondevice"
         }""",
@@ -227,9 +229,12 @@ def test_demo_target_spec_keeps_only_matching_candidates_in_public_jsonl(tmp_pat
     )
 
     assert demo.run(args) == 1
-    assert '"label": "Person"' in jsonl_path.read_text(encoding="utf-8")
-    assert '"Bottle"' not in jsonl_path.read_text(encoding="utf-8")
+    assert '"label": "Bottle"' in jsonl_path.read_text(encoding="utf-8")
+    assert '"Person"' not in jsonl_path.read_text(encoding="utf-8")
+    assert '"Chair"' not in jsonl_path.read_text(encoding="utf-8")
     selection_payload = json.loads(selection_jsonl_path.read_text(encoding="utf-8"))
+    assert selection_payload["schemaVersion"] == "0.2"
+    assert selection_payload["objectLabel"] == "bottle"
     assert selection_payload["state"] == "selected"
     assert selection_payload["countStatus"] == "exact"
     assert selection_payload["frameIndex"] == 0

@@ -5,11 +5,13 @@ import numpy as np
 import pytest
 
 from ai.on_device_cv.detectors import UltralyticsDetectorConfig, UltralyticsYoloDetector
+from ai.taxonomy import OBJECTS365_YOLO26
 
 
 class FakeModel:
     def __init__(self, result):
         self.result = result
+        self.names = getattr(result, "names", None)
         self.predict_kwargs = None
 
     def predict(self, **kwargs):
@@ -46,6 +48,7 @@ def test_ultralytics_adapter_normalizes_and_hides_raw_results(tmp_path, monkeypa
         confidence_threshold=0.25,
         max_detections=10,
         runtime_directory=tmp_path,
+        expected_taxonomy=None,
     )
     detector = UltralyticsYoloDetector(config, model_factory=model_factory)
     detector.load()
@@ -73,3 +76,47 @@ def test_detector_requires_explicit_load():
 
     with pytest.raises(RuntimeError, match="load"):
         detector.detect(frame)
+
+
+def test_detector_config_rejects_an_invalid_taxonomy_adapter():
+    with pytest.raises(TypeError, match="expected_taxonomy"):
+        UltralyticsDetectorConfig(expected_taxonomy=object())
+
+
+def test_detector_can_fail_fast_when_model_taxonomy_is_reordered(tmp_path):
+    result = SimpleNamespace(boxes=None, names={0: "person", 1: "bottle"})
+    fake_model = FakeModel(result)
+    detector = UltralyticsYoloDetector(
+        UltralyticsDetectorConfig(
+            model="wrong-taxonomy.pt",
+            runtime_directory=tmp_path,
+            expected_taxonomy=OBJECTS365_YOLO26,
+        ),
+        model_factory=lambda *args, **kwargs: fake_model,
+    )
+
+    with pytest.raises(ValueError, match="taxonomy mismatch"):
+        detector.load()
+
+    with pytest.raises(RuntimeError, match="load"):
+        detector.detect(np.zeros((10, 10, 3), dtype=np.uint8))
+
+
+def test_detector_accepts_the_exact_objects365_taxonomy(tmp_path):
+    result = SimpleNamespace(
+        boxes=None,
+        names=dict(enumerate(OBJECTS365_YOLO26.labels)),
+    )
+    fake_model = FakeModel(result)
+    detector = UltralyticsYoloDetector(
+        UltralyticsDetectorConfig(
+            model="objects365.pt",
+            runtime_directory=tmp_path,
+            expected_taxonomy=OBJECTS365_YOLO26,
+        ),
+        model_factory=lambda *args, **kwargs: fake_model,
+    )
+
+    detector.load()
+
+    assert detector.detect(np.zeros((10, 10, 3), dtype=np.uint8)) == []

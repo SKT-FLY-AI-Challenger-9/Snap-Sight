@@ -59,7 +59,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--target-spec",
         type=Path,
         help=(
-            "Optional TargetSpec v0.1 JSON. Detection/tracking still runs for every "
+            "Optional TargetSpec v0.1/v0.2 JSON. Detection/tracking still runs for every "
             "class, while the overlay and JSONL contain only intent-matching candidates."
         ),
     )
