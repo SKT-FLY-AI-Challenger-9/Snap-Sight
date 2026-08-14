@@ -26,6 +26,7 @@ import com.example.snap_sight.camera.RingFrameBuffer
 import com.example.snap_sight.camera.SessionState
 import com.example.snap_sight.cv.CvFrameOutput
 import com.example.snap_sight.cv.SnapSightFrameProcessor
+import com.example.snap_sight.cv.TargetSpec
 import com.example.snap_sight.network.FrameUploader
 import com.example.snap_sight.network.UtteranceClient
 import com.example.snap_sight.ux.CaptureScreen
@@ -71,7 +72,8 @@ class MainActivity : ComponentActivity() {
             override fun onStateChanged(state: SessionState) {
                 statusText = state.description
                 // 조준 시작 = 새 추적 세션. track_id 가 이전 세션과 섞이지 않도록 초기화한다.
-                // TODO(①): STT 파싱이 붙으면 여기에 TargetSpec 을 넘긴다 (지금은 의도 없음 = null).
+                // TargetSpec은 아직 백엔드 응답 전이라 일단 null로 시작 — onUtteranceRecognized의
+                // UtteranceClient 콜백이 도착하면 같은 세션이 아직 AIMING일 때 한 번 더 갱신한다.
                 if (state == SessionState.AIMING) cvProcessor.startNewSession(spec = null)
                 buttonLabel = when (state) {
                     SessionState.IDLE -> "세션 시작"
@@ -92,10 +94,9 @@ class MainActivity : ComponentActivity() {
                     sessionId = sessionId,
                     rawText = text,
                     callback = object : UtteranceClient.Callback {
-                        override fun onSuccess(result: UtteranceClient.TargetSpecResult) {
-                            Log.i(TAG, "타겟 스펙 수신 [$sessionId]: subjectType=${result.subjectType} " +
-                                "objectLabel=${result.objectLabel} count=${result.subjectCount} " +
-                                "framing=${result.framing} confidence=${result.confidence}")
+                        override fun onSuccess(spec: TargetSpec?) {
+                            Log.i(TAG, "타겟 스펙 수신 [$sessionId]: $spec")
+                            applyTargetSpecIfStillAiming(sessionId, spec)
                         }
 
                         override fun onFailure(error: Throwable) {
@@ -144,6 +145,22 @@ class MainActivity : ComponentActivity() {
         }
 
         checkOrRequestPermissions()
+    }
+
+    /**
+     * 타겟 스펙이 (네트워크 지연으로) AIMING 시작보다 늦게 도착했을 때 CV 세션에 반영한다.
+     *
+     * [SpeechToTextRecognizer][com.example.snap_sight.stt.SpeechToTextRecognizer] 인식 →
+     * [UtteranceClient] 응답은 비동기라 AIMING 진입 시점엔 아직 없는 게 보통이다(spec=null로 시작).
+     * 응답이 왔을 때 사용자가 이미 촬영을 마쳤거나 세션을 취소·재시작했다면(다른 sessionId,
+     * 또는 더 이상 AIMING이 아님) 엉뚱한 세션에 적용하면 안 되므로 여기서 막는다.
+     */
+    private fun applyTargetSpecIfStillAiming(sessionId: String, spec: TargetSpec?) {
+        if (sessionManager.sessionId != sessionId || sessionManager.state != SessionState.AIMING) {
+            Log.i(TAG, "타겟 스펙 도착했지만 세션이 이미 지나감 [$sessionId] — 무시")
+            return
+        }
+        cvProcessor.startNewSession(spec = spec)
     }
 
     /**
