@@ -11,6 +11,7 @@ ultralytics>=8.4.83,<9  # YOLO26n Objects365 PC prototype
 
 # MLLM integration
 anthropic
+openai  # 오픈소스 모델 비교용 (Together.ai 등 OpenAI 호환 호스팅 API 호출)
 python-dotenv
 
 # Image processing
