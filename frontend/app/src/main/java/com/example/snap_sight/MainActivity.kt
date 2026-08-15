@@ -26,16 +26,18 @@ import com.example.snap_sight.camera.RingFrameBuffer
 import com.example.snap_sight.camera.SessionState
 import com.example.snap_sight.cv.CvFrameOutput
 import com.example.snap_sight.cv.SnapSightFrameProcessor
+import com.example.snap_sight.cv.TargetSpec
 import com.example.snap_sight.network.FrameUploader
+import com.example.snap_sight.network.UtteranceClient
 import com.example.snap_sight.ux.CaptureScreen
 import com.example.snap_sight.ui.theme.SnapSightTheme
-import java.io.File
 
 class MainActivity : ComponentActivity() {
 
     private val cameraController by lazy { CameraController(this) }
     private val sessionManager by lazy { CaptureSessionManager(this, cameraController) }
     private val frameUploader = FrameUploader()
+    private val utteranceClient = UtteranceClient()
 
     /** ② 온디바이스 CV. 결과는 분석 스레드에서 도착하므로 여기서는 로그만 남긴다. */
     private val cvProcessor by lazy {
@@ -52,6 +54,10 @@ class MainActivity : ComponentActivity() {
     private var permissionsGranted by mutableStateOf(false)
     private var statusText by mutableStateOf(SessionState.IDLE.description)
     private var buttonLabel by mutableStateOf("세션 시작")
+
+    // 디버그 오버레이용 최신 탐지 결과 (정식 화면에서는 음성·햅틱으로 대체)
+    private var debugDetections by mutableStateOf<List<Detection>>(emptyList())
+    private var detectionFrameAspect by mutableStateOf(0f)
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
@@ -70,19 +76,39 @@ class MainActivity : ComponentActivity() {
             override fun onStateChanged(state: SessionState) {
                 statusText = state.description
                 // 조준 시작 = 새 추적 세션. track_id 가 이전 세션과 섞이지 않도록 초기화한다.
-                // TODO(①): STT 파싱이 붙으면 여기에 TargetSpec 을 넘긴다 (지금은 의도 없음 = null).
+                // TargetSpec은 아직 백엔드 응답 전이라 일단 null로 시작 — onUtteranceRecognized의
+                // UtteranceClient 콜백이 도착하면 같은 세션이 아직 AIMING일 때 한 번 더 갱신한다.
                 if (state == SessionState.AIMING) cvProcessor.startNewSession(spec = null)
                 buttonLabel = when (state) {
                     SessionState.IDLE -> "세션 시작"
                     SessionState.LISTENING -> "발화 종료"
+                    SessionState.PARSING, SessionState.CAPTURING, SessionState.SAVED -> "잠시만요"
                     SessionState.AIMING -> "촬영"
-                    SessionState.CAPTURING, SessionState.SAVED -> "잠시만요"
                     SessionState.ERROR -> "처음으로"
                 }
             }
 
-            override fun onUtteranceRecorded(sessionId: String, wav: File) {
-                Log.i(TAG, "발화 녹음 완료 [$sessionId]: ${wav.absolutePath}") // TODO: ① STT 업로드
+            override fun onUtteranceRecognized(sessionId: String, text: String?) {
+                if (text == null) {
+                    Log.w(TAG, "발화 인식 실패 [$sessionId] — 타겟 스펙 없이 진행")
+                    return
+                }
+                Log.i(TAG, "발화 인식 완료 [$sessionId]: $text")
+                utteranceClient.sendUtterance(
+                    sessionId = sessionId,
+                    rawText = text,
+                    callback = object : UtteranceClient.Callback {
+                        override fun onSuccess(spec: TargetSpec?) {
+                            Log.i(TAG, "타겟 스펙 수신 [$sessionId]: $spec")
+                            applyTargetSpecIfStillAiming(sessionId, spec)
+                        }
+
+                        override fun onFailure(error: Throwable) {
+                            // 타겟 스펙 요청 실패해도 촬영 흐름은 계속 진행 (일반 촬영 모드로 대체)
+                            Log.w(TAG, "타겟 스펙 요청 실패 [$sessionId]", error)
+                        }
+                    },
+                )
             }
 
             override fun onPhotoCaptured(sessionId: String, uri: Uri) {
@@ -111,6 +137,8 @@ class MainActivity : ComponentActivity() {
                             statusText = statusText,
                             sessionButtonLabel = buttonLabel,
                             onSessionButton = { sessionManager.onVolumePressed() },
+                            detections = debugDetections,
+                            detectionFrameAspect = detectionFrameAspect,
                         )
                     } else {
                         Text(
@@ -123,6 +151,22 @@ class MainActivity : ComponentActivity() {
         }
 
         checkOrRequestPermissions()
+    }
+
+    /**
+     * 타겟 스펙이 (네트워크 지연으로) AIMING 시작보다 늦게 도착했을 때 CV 세션에 반영한다.
+     *
+     * [SpeechToTextRecognizer][com.example.snap_sight.stt.SpeechToTextRecognizer] 인식 →
+     * [UtteranceClient] 응답은 비동기라 AIMING 진입 시점엔 아직 없는 게 보통이다(spec=null로 시작).
+     * 응답이 왔을 때 사용자가 이미 촬영을 마쳤거나 세션을 취소·재시작했다면(다른 sessionId,
+     * 또는 더 이상 AIMING이 아님) 엉뚱한 세션에 적용하면 안 되므로 여기서 막는다.
+     */
+    private fun applyTargetSpecIfStillAiming(sessionId: String, spec: TargetSpec?) {
+        if (sessionManager.sessionId != sessionId || sessionManager.state != SessionState.AIMING) {
+            Log.i(TAG, "타겟 스펙 도착했지만 세션이 이미 지나감 [$sessionId] — 무시")
+            return
+        }
+        cvProcessor.startNewSession(spec = spec)
     }
 
     /**
