@@ -22,6 +22,19 @@ def save_candidate_frame(session_id: str, index: int, filename: str, content: by
     return path
 
 
+def load_session_frame_paths(session_id: str) -> tuple[Path, list[Path]]:
+    """세션 디렉터리에 저장된 대표 컷 경로와 후보 프레임 경로 목록(인덱스 순)을 읽어 반환한다."""
+    session_dir = CAPTURES_DIR / session_id
+    representative_matches = list(session_dir.glob("representative.*"))
+    if not representative_matches:
+        raise FileNotFoundError(f"세션 {session_id}의 대표 컷을 찾을 수 없습니다: {session_dir}")
+    candidate_matches = sorted(
+        session_dir.glob("candidate_*"),
+        key=lambda path: int(path.stem.split("_")[1]),
+    )
+    return representative_matches[0], candidate_matches
+
+
 def _ensure_session_dir(session_id: str) -> Path:
     """세션 디렉터리가 없으면 생성하고 경로를 반환한다."""
     session_dir = CAPTURES_DIR / session_id
