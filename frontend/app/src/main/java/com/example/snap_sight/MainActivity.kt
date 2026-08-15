@@ -33,6 +33,17 @@ import com.example.snap_sight.network.UtteranceClient
 import com.example.snap_sight.ux.CaptureScreen
 import com.example.snap_sight.ui.theme.SnapSightTheme
 
+/**
+ * 모듈 배선 호스트.
+ *
+ * 소유·연결하는 것:
+ *  - 카메라(⑤): [CameraController] + 세션 상태 머신 [CaptureSessionManager] (볼륨 버튼 트리거)
+ *  - CV(②): [SnapSightFrameProcessor] — 탐지·추적 결과를 디버그 오버레이와 성능 로그로 소비
+ *  - STT(①): 발화 인식 결과를 [UtteranceClient]로 보내 타겟 스펙 수신
+ *  - 업로드(⑤→④): 대표 컷 + 후보 프레임을 [FrameUploader]로 백엔드 전송
+ *
+ * 화면(⑥ 임시)은 [CaptureScreen]이 담당하고, 이 클래스는 상태 배선만 한다.
+ */
 class MainActivity : ComponentActivity() {
 
     private val cameraController by lazy { CameraController(this) }
@@ -40,7 +51,7 @@ class MainActivity : ComponentActivity() {
     private val frameUploader = FrameUploader()
     private val utteranceClient = UtteranceClient()
 
-    /** ② 온디바이스 CV. 결과는 분석 스레드에서 도착하므로 여기서는 로그만 남긴다. */
+    /** ② 온디바이스 CV. 결과는 분석 스레드에서 도착 — 오버레이 갱신·성능 집계는 [onCvFrameResult] 참고. */
     private val cvProcessor by lazy {
         SnapSightFrameProcessor.create(this, listener = { output -> onCvFrameResult(output) })
     }

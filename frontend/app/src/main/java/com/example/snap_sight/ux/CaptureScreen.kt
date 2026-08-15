@@ -29,6 +29,9 @@ import com.example.snap_sight.cv.TrackedObject
 /**
  * ⑤ 모듈 동작 확인용 임시 화면.
  * 정식 접근성 UI/온보딩은 ⑥ 담당 — docs/screen-design.md 의 S3 화면으로 교체 예정.
+ *
+ * @param cvObjects ② CV 스트림의 최신 추적 객체 — [DetectionOverlay]가 미리보기 위에
+ *                  박스로 그린다 (개발·데모 검증용, 정식 화면에서는 음성·햅틱으로 대체)
  */
 @Composable
 fun CaptureScreen(
