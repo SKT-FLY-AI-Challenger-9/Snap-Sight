@@ -24,7 +24,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.snap_sight.camera.CameraController
-import com.example.snap_sight.cv.Detection
+import com.example.snap_sight.cv.TrackedObject
 
 /**
  * ⑤ 모듈 동작 확인용 임시 화면.
@@ -36,8 +36,7 @@ fun CaptureScreen(
     statusText: String,
     sessionButtonLabel: String,
     onSessionButton: () -> Unit,
-    detections: List<Detection> = emptyList(),
-    detectionFrameAspect: Float = 0f,
+    cvObjects: List<TrackedObject> = emptyList(),
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -56,10 +55,7 @@ fun CaptureScreen(
                 .semantics { contentDescription = "카메라 미리보기" },
         )
 
-        DetectionOverlay(
-            detections = detections,
-            frameAspect = detectionFrameAspect,
-        )
+        DetectionOverlay(objects = cvObjects)
 
         Surface(
             modifier = Modifier

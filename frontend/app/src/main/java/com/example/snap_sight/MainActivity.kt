@@ -26,6 +26,7 @@ import com.example.snap_sight.camera.RingFrameBuffer
 import com.example.snap_sight.camera.SessionState
 import com.example.snap_sight.cv.CvFrameOutput
 import com.example.snap_sight.cv.SnapSightFrameProcessor
+import com.example.snap_sight.cv.TrackedObject
 import com.example.snap_sight.cv.TargetSpec
 import com.example.snap_sight.network.FrameUploader
 import com.example.snap_sight.network.UtteranceClient
@@ -55,9 +56,12 @@ class MainActivity : ComponentActivity() {
     private var statusText by mutableStateOf(SessionState.IDLE.description)
     private var buttonLabel by mutableStateOf("세션 시작")
 
-    // 디버그 오버레이용 최신 탐지 결과 (정식 화면에서는 음성·햅틱으로 대체)
-    private var debugDetections by mutableStateOf<List<Detection>>(emptyList())
-    private var detectionFrameAspect by mutableStateOf(0f)
+    // 디버그 오버레이용 최신 추적 객체 (정식 화면에서는 음성·햅틱으로 대체)
+    private var cvObjects by mutableStateOf<List<TrackedObject>>(emptyList())
+
+    // CV 성능 측정용 롤링 창 (분석 스레드에서 갱신, 로그 시점에 집계)
+    private val cvLatencies = ArrayDeque<Long>()
+    private var cvAnalyzedCount = 0
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
@@ -137,8 +141,7 @@ class MainActivity : ComponentActivity() {
                             statusText = statusText,
                             sessionButtonLabel = buttonLabel,
                             onSessionButton = { sessionManager.onVolumePressed() },
-                            detections = debugDetections,
-                            detectionFrameAspect = detectionFrameAspect,
+                            cvObjects = cvObjects,
                         )
                     } else {
                         Text(
@@ -178,9 +181,31 @@ class MainActivity : ComponentActivity() {
      */
     private fun onCvFrameResult(output: CvFrameOutput) {
         if (!output.analyzed) return
+        runOnUiThread { cvObjects = output.objects } // 디버그 오버레이 갱신
+
+        // 성능 측정: emit 은 처리 종료 직후 동기 호출이므로 now - timestampMs = 파이프라인 지연
+        val latencyMs = System.currentTimeMillis() - output.timestampMs
+        synchronized(cvLatencies) {
+            cvLatencies.addLast(latencyMs)
+            if (cvLatencies.size > 120) cvLatencies.removeFirst()
+            cvAnalyzedCount++
+        }
+
         val now = output.timestampMs
         if (now - lastCvLogMs < 1000) return
+        val windowMs = now - lastCvLogMs
         lastCvLogMs = now
+
+        val (p50, p95, fps) = synchronized(cvLatencies) {
+            val sorted = cvLatencies.sorted()
+            val p50 = sorted[sorted.size / 2]
+            val p95 = sorted[minOf(sorted.size - 1, sorted.size * 95 / 100)]
+            val fps = cvAnalyzedCount * 1000f / windowMs.coerceAtLeast(1)
+            cvAnalyzedCount = 0
+            Triple(p50, p95, fps)
+        }
+        Log.d(CV_TAG, "성능: %.1f fps, 지연 %dms (p50 %d / p95 %d, 최근 %d프레임 창)".format(
+            fps, latencyMs, p50, p95, cvLatencies.size))
         Log.d(CV_TAG, "객체 ${output.objects.size}개 ${output.objectsJson()}")
     }
 
