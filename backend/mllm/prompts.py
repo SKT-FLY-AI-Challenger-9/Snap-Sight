@@ -63,6 +63,12 @@ _USER_PROMPT_TEMPLATE = """## 이번 촬영 정보
 - 구조화된 요구사항(structured_requirements):
 {requirements_block}
 
+## 온디바이스 사전 검사 참고 정보 (3단계 범용 결함 기준의 참고 자료일 뿐입니다)
+
+{scores_block}
+
+주의: 위 수치에 블러·노출·기울기 관련 값이 섞여 있더라도, 시스템 프롬프트의 "절대 판단하지 마십시오" 규정은 그대로 유지됩니다 — 눈감음 판단의 참고 자료로만 쓰고, 블러 등은 절대 재평가하지 마십시오.
+
 ## 첨부된 이미지
 
 이미지는 아래 순서로 첨부됩니다.
@@ -74,7 +80,11 @@ _USER_PROMPT_TEMPLATE = """## 이번 촬영 정보
 시스템 프롬프트에 명시된 판정 절차(1~4단계)를 그대로 따라 대표 컷과 각 후보 프레임을 비교하고, 지정된 JSON 스키마로만 결과를 출력하십시오."""
 
 
-def build_comparison_prompt(raw_text: str, structured_requirements: dict[str, str]) -> str:
+def build_comparison_prompt(
+    raw_text: str,
+    structured_requirements: dict[str, str],
+    candidate_scores: list[dict] | None = None,
+) -> str:
     """대표 컷 vs 후보 프레임 비교용 사용자 프롬프트 텍스트를 만든다.
 
     이미지 자체는 이 함수의 책임이 아니다 (호출부에서 별도 content block으로 첨부).
@@ -89,7 +99,21 @@ def build_comparison_prompt(raw_text: str, structured_requirements: dict[str, st
     return _USER_PROMPT_TEMPLATE.format(
         raw_text=raw_text,
         requirements_block=requirements_block,
+        scores_block=_format_candidate_scores(candidate_scores),
     )
+
+
+def _format_candidate_scores(candidate_scores: list[dict] | None) -> str:
+    """후보별 온디바이스 점수 중 눈감음 관련 값만 골라 참고자료 텍스트로 만든다."""
+    if not candidate_scores:
+        return "(온디바이스 사전 점수 없음)"
+    lines = []
+    for index, scores in enumerate(candidate_scores, start=1):
+        eyes_closed_score = scores.get("eyes_closed_score")
+        if eyes_closed_score is None:
+            continue
+        lines.append(f"- candidate_{index}: 눈감음 의심도 {eyes_closed_score}")
+    return "\n".join(lines) if lines else "(온디바이스 사전 점수 없음)"
 
 
 class FrameComparisonResult(BaseModel):
