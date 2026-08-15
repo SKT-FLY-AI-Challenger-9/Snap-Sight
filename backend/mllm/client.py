@@ -29,10 +29,11 @@ def compare_candidate_frames(
     structured_requirements: dict[str, str],
     representative_frame: Path,
     candidate_frames: list[Path],
+    candidate_scores: list[dict] | None = None,
 ) -> FrameComparisonResult:
     """대표 컷과 후보 프레임을 ③이 설계한 프롬프트로 비교하고 판정 결과를 반환한다."""
     client = Anthropic()
-    prompt = build_comparison_prompt(raw_text, structured_requirements)
+    prompt = build_comparison_prompt(raw_text, structured_requirements, candidate_scores)
     image_content = _build_image_content(representative_frame, candidate_frames)
 
     try:
@@ -73,10 +74,10 @@ def _fallback_result(reason: str) -> FrameComparisonResult:
 
 
 def _build_image_content(representative_frame: Path, candidate_frames: list[Path]) -> list[dict]:
-    """대표 컷과 후보 프레임들을 라벨이 붙은 이미지 콘텐츠 블록 목록으로 변환한다."""
+    """대표 컷과 후보 프레임들을 SYSTEM_PROMPT가 기대하는 candidate_N 라벨로 변환한다."""
     content = [{"type": "text", "text": "대표 컷:"}, _encode_image(representative_frame)]
-    for index, frame in enumerate(candidate_frames):
-        content.append({"type": "text", "text": f"후보 {index}:"})
+    for index, frame in enumerate(candidate_frames, start=1):
+        content.append({"type": "text", "text": f"candidate_{index}:"})
         content.append(_encode_image(frame))
     return content
 
