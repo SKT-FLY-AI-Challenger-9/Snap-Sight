@@ -47,6 +47,7 @@ enum class DistanceAlignment { CLOSER, FARTHER, CENTERED }
 
 ## 다루지 않는 것
 
-- `subjectType=landscape`(피사체 없음)일 때의 판정 정책 — 별도 결정 필요
 - y축 편차 반영 시의 판정 로직 (계약 v0.2 예정)
 - 임계값의 최종 튜닝 (프로토타입 단계, 7단계 몫)
+
+`subjectType=landscape` 정책은 확정됨 — `docs/ux/feedback-mapping.md` 참고 (편차 피드백 미제공).
