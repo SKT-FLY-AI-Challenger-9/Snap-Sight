@@ -140,12 +140,29 @@ def test_unrecognized_object_keeps_safe_defaults():
 
 
 def test_schema_metadata_fields_are_populated():
-    spec = parse_target_spec("사진 찍어줘", session_id="sess_7")
+    spec = parse_target_spec("혼자 찍어줘", session_id="sess_7")
 
     assert spec.schema_version == "0.2"
     assert spec.session_id == "sess_7"
     assert spec.status is TargetSpecStatus.OK
     assert spec.source is TargetSpecSource.ONDEVICE
+
+
+def test_no_signal_matched_sets_needs_clarification():
+    """신호(주체/인원수/프레이밍)가 하나도 안 잡히면 confidence 0.4로 임계값(0.6) 미만이라
+    status가 NEEDS_CLARIFICATION이 되어야 한다 (이슈 #32: 재질문 판정의 기반)."""
+    spec = parse_target_spec("사진 찍어줘", session_id="sess_14")
+
+    assert spec.confidence == 0.4
+    assert spec.status is TargetSpecStatus.NEEDS_CLARIFICATION
+
+
+def test_at_least_one_signal_matched_sets_status_ok():
+    """신호가 1개만 잡혀도(confidence 0.6) 임계값을 만족해 OK로 판정되어야 한다."""
+    spec = parse_target_spec("혼자 찍어줘", session_id="sess_15")
+
+    assert spec.confidence == 0.6
+    assert spec.status is TargetSpecStatus.OK
 
 
 def test_source_can_be_overridden():

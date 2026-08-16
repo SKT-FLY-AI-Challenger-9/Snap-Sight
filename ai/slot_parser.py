@@ -5,6 +5,11 @@ from ai.target_spec import Framing, SubjectType, TargetSpec, TargetSpecSource, T
 # STT는 숫자를 한글이 아닌 아라비아 숫자로 인식하는 경우가 많다 (예: "2명").
 DIGIT_COUNT_PATTERN = re.compile(r"(\d+)\s*명")
 
+# confidence는 0.4/0.6/0.8/1.0 네 값만 가능하다 (신호 0~3개 매칭). 임계값은 실측 근거 없는
+# 추정치이지만, 이 이산값 구조상 0.4~0.6 사이 어떤 값을 넣어도 "신호 0개 매칭"만 걸러내는
+# 것과 동일해 실질적으로는 "신호가 하나도 안 잡혔는가"를 구분하는 경계다.
+CONFIDENCE_THRESHOLD = 0.6
+
 COUNT_WORDS = {
     "혼자": 1, "한 명": 1, "한명": 1,
     "두 명": 2, "두명": 2, "둘": 2,
@@ -374,11 +379,16 @@ def parse_target_spec(
     framing_matched = framing is not Framing.FULL_BODY
     matched = sum([subject_matched, count_matched, framing_matched])
     confidence = round(0.4 + 0.2 * matched, 2)
+    status = (
+        TargetSpecStatus.OK
+        if confidence >= CONFIDENCE_THRESHOLD
+        else TargetSpecStatus.NEEDS_CLARIFICATION
+    )
 
     return TargetSpec(
         schema_version="0.2",
         session_id=session_id,
-        status=TargetSpecStatus.OK,
+        status=status,
         subject_type=subject_type,
         object_label=object_label,
         subject_count=subject_count,
