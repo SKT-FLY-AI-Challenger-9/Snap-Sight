@@ -44,6 +44,42 @@ def test_build_comparison_prompt_never_exposes_blur_score():
     assert "blur" not in prompt.lower()
 
 
+def test_build_comparison_prompt_tells_model_to_use_scores_only_at_step_three():
+    prompt = build_comparison_prompt("인물 사진 찍어줘", {})
+    assert "3단계" in prompt
+    assert "1·2단계" in prompt
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    [
+        "높음",
+        -0.1,
+        1.1,
+        True,
+        None,
+    ],
+)
+def test_build_comparison_prompt_ignores_invalid_eyes_closed_score(invalid_value):
+    prompt = build_comparison_prompt(
+        "인물 사진 찍어줘",
+        {},
+        candidate_scores=[{"eyes_closed_score": invalid_value}],
+    )
+    assert "온디바이스 사전 점수 없음" in prompt
+    assert "candidate_1: 눈감음 의심도" not in prompt
+
+
+def test_build_comparison_prompt_accepts_boundary_eyes_closed_scores():
+    prompt = build_comparison_prompt(
+        "인물 사진 찍어줘",
+        {},
+        candidate_scores=[{"eyes_closed_score": 0.0}, {"eyes_closed_score": 1.0}],
+    )
+    assert "candidate_1: 눈감음 의심도 0.0" in prompt
+    assert "candidate_2: 눈감음 의심도 1.0" in prompt
+
+
 def test_result_rejects_improved_true_with_no_selected_frame():
     with pytest.raises(ValueError):
         FrameComparisonResult(improved=True, selected_frame=None, reason="사유")

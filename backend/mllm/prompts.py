@@ -63,11 +63,11 @@ _USER_PROMPT_TEMPLATE = """## 이번 촬영 정보
 - 구조화된 요구사항(structured_requirements):
 {requirements_block}
 
-## 온디바이스 사전 검사 참고 정보 (3단계 범용 결함 기준의 참고 자료일 뿐입니다)
+## 온디바이스 사전 검사 참고 정보 (0.0=눈을 뜬 것으로 추정, 1.0=눈을 감은 것으로 추정)
 
 {scores_block}
 
-주의: 위 수치에 블러·노출·기울기 관련 값이 섞여 있더라도, 시스템 프롬프트의 "절대 판단하지 마십시오" 규정은 그대로 유지됩니다 — 눈감음 판단의 참고 자료로만 쓰고, 블러 등은 절대 재평가하지 마십시오.
+주의: 이 정보는 판정 절차 **3단계(범용 결함 기준으로 동점을 깰 때)에서만** 참고하십시오. 1·2단계(명시적 요구사항 비교)에서는 이 수치를 근거로 쓰지 마십시오. 위 수치에 블러·노출·기울기 관련 값이 섞여 있더라도, 시스템 프롬프트의 "절대 판단하지 마십시오" 규정은 그대로 유지됩니다 — 블러 등은 절대 재평가하지 마십시오.
 
 ## 첨부된 이미지
 
@@ -104,16 +104,28 @@ def build_comparison_prompt(
 
 
 def _format_candidate_scores(candidate_scores: list[dict] | None) -> str:
-    """후보별 온디바이스 점수 중 눈감음 관련 값만 골라 참고자료 텍스트로 만든다."""
+    """후보별 온디바이스 점수 중 눈감음 관련 값만 골라 참고자료 텍스트로 만든다.
+
+    합의된 스케일(가정, ②/⑤와 확정 필요): 0.0=눈을 뜬 것으로 추정, 1.0=눈을 감은 것으로 추정.
+    """
     if not candidate_scores:
         return "(온디바이스 사전 점수 없음)"
     lines = []
     for index, scores in enumerate(candidate_scores, start=1):
-        eyes_closed_score = scores.get("eyes_closed_score")
+        eyes_closed_score = _validate_eyes_closed_score(scores.get("eyes_closed_score"))
         if eyes_closed_score is None:
             continue
         lines.append(f"- candidate_{index}: 눈감음 의심도 {eyes_closed_score}")
     return "\n".join(lines) if lines else "(온디바이스 사전 점수 없음)"
+
+
+def _validate_eyes_closed_score(value: object) -> float | None:
+    """0.0~1.0 범위의 숫자만 유효한 눈감음 점수로 인정하고, 그 외(누락·잘못된 타입·범위 밖)는 무시한다."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not 0.0 <= value <= 1.0:
+        return None
+    return float(value)
 
 
 class FrameComparisonResult(BaseModel):
