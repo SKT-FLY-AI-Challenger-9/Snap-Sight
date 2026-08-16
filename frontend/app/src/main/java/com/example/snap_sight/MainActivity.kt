@@ -103,9 +103,27 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            override fun onRecognitionRetry(sessionId: String) {
+                // TODO(⑥): 여기서 "다시 말씀해주세요" 류 짧은 사운드 신호 재생.
+                // PARSING의 "처리 중 루프" 사운드와 명확히 구분돼야 함 (이슈 #32).
+                Log.i(TAG, "발화 인식 재시도 [$sessionId]")
+            }
+
             override fun onUtteranceRecognized(sessionId: String, text: String?) {
                 if (text == null) {
-                    Log.w(TAG, "발화 인식 실패 [$sessionId] — 타겟 스펙 없이 진행")
+                    // 재시도까지 소진한 뒤 호출됨(CaptureSessionManager 참고). "의도 자체가
+                    // 없었던" 경우(spec=null, 마이크 권한 없음 등)와 구분하기 위해
+                    // status=FAILED인 TargetSpec을 직접 만든다 — 백엔드에 보낼 텍스트가
+                    // 애초에 없으므로 UtteranceClient 왕복 없이 로컬에서 바로 처리한다.
+                    Log.w(TAG, "발화 인식 실패(재시도 포함) [$sessionId] — FAILED 스펙으로 진행")
+                    val failedSpec = TargetSpec(
+                        sessionId = sessionId,
+                        rawText = "",
+                        source = "ondevice",
+                        schemaVersion = "0.2",
+                        status = TargetSpec.Status.FAILED,
+                    )
+                    applyTargetSpecIfStillAiming(sessionId, failedSpec)
                     return
                 }
                 Log.i(TAG, "발화 인식 완료 [$sessionId]: $text")
