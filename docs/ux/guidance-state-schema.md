@@ -6,48 +6,47 @@
 
 ## 목적
 
-이슈 #5의 "GuidanceState 필드 정의"와 "각 상태의 타입·허용값·기본 동작 명시" 항목을 채운다. ②가 제공하는 원시 값(Document D 확정 사항)을 입력으로 받아, ⑥이 판정(Document D 질문 1 — 판정은 ⑥ 담당으로 확인됨)한 결과를 GuidanceState로 정의한다.
+이슈 #5의 "GuidanceState 필드 정의"와 "각 상태의 타입·허용값·기본 동작 명시" 항목을 채운다. `docs/deviation-interface.md`(v0.1, 이슈 #25/#29)가 정의한 출력값을 입력으로 받아, ⑥이 판정한 결과를 GuidanceState로 정의한다.
 
-## 입력값 (②로부터, Document D 기준)
+## 입력값 (`docs/deviation-interface.md` v0.1 기준)
 
 | 필드 | 타입 | 상태 |
 |---|---|---|
-| dx | Float | 확정, 지금 제공됨. 정규화된 값으로 추정(이슈 #2의 "정규화된 bbox" 근거) — 정확한 값 범위는 ② 미확인 |
-| detected | Boolean | 확정 — LOST/AMBIGUOUS를 하나로 합친 값 |
-| dy | Float? | 계산은 되나 현재 미제공/미사용. 반영 시점 미정 |
-| sizeRatio | Float? | 미구현 |
+| `subject_detected` | Boolean | 확정 |
+| `x_deviation` | Float? | 확정. center_x − 0.5, 음수=왼쪽/양수=오른쪽 |
+| `size_deviation` | Float? | 확정. area_ratio − 목표비율, 음수=너무 멂/양수=너무 가까움 |
+
+y축(`y_deviation`)은 계약에 없음 — v0.2 예정.
 
 ## GuidanceState (⑥ 내부 판정 결과)
 
-아래는 개념을 코드 형태로 표현한 예시다. **실제 구현 언어(Kotlin 여부 포함)는 아직 확정되지 않았다** — 관례상 Kotlin 문법으로 적었을 뿐이다.
+실제 구현 언어는 Kotlin으로 확인됨 (`frontend/` 프로젝트 기준).
 
 ```kotlin
 data class GuidanceState(
     val detected: Boolean,
-    val horizontal: HorizontalAlignment?  // detected == false면 null
+    val horizontal: HorizontalAlignment?,  // detected == false면 null
+    val distance: DistanceAlignment?       // detected == false면 null
 )
 
 enum class HorizontalAlignment { LEFT, RIGHT, CENTERED }
+enum class DistanceAlignment { CLOSER, FARTHER, CENTERED }
 ```
 
-- `detected = false` → 탐지 실패(LOST/AMBIGUOUS 합침). `horizontal`은 의미 없음(null)
-- `detected = true` && `horizontal = CENTERED` → READY에 해당 (Document E 기준)
-- `detected = true` && `horizontal = LEFT` 또는 `RIGHT` → 방향 안내 필요
-
-dy, sizeRatio는 현재 판정에 관여하지 않으므로 GuidanceState에 포함하지 않았다. 반영되면 이 스키마부터 다시 열어야 한다.
+- `detected = false` → 탐지 실패. `horizontal`/`distance` 모두 null
+- `detected = true` && `horizontal = CENTERED` && `distance = CENTERED` → READY
+- `horizontal = LEFT`/`RIGHT` → 방향 안내 필요
+- `distance = CLOSER`/`FARTHER` → 거리 안내 필요
 
 ## 임계값(허용 오차) — [추정, 프로토타입에서 튜닝 필요]
 
-dx가 정규화된 값(대략 -1.0~1.0 범위로 추정)이라는 가정하에 잠정 값을 둔다.
+- `|x_deviation| <= 0.1` → CENTERED, 그 외 부호에 따라 LEFT/RIGHT
+- `|size_deviation| <= 0.05` → CENTERED, `size_deviation < -0.05` → CLOSER, `size_deviation > 0.05` → FARTHER
 
-- `|dx| <= 0.1` → CENTERED
-- `dx < -0.1` → LEFT
-- `dx > 0.1` → RIGHT
-
-**0.1이라는 숫자는 선행연구나 실측 데이터 근거가 없는 순수 추정치다.** 실제 안드로이드 기기에서 dx 값의 실제 분포를 관찰한 뒤 조정이 필요하다.
+**두 숫자(0.1, 0.05) 모두 선행연구나 실측 데이터 근거가 없는 순수 추정치다.** 실제 기기에서 값 분포를 관찰한 뒤 조정이 필요하다.
 
 ## 다루지 않는 것
 
-- dy, sizeRatio 필드가 실제로 반영될 때의 판정 로직
-- 실제 구현 언어 확정
+- `subjectType=landscape`(피사체 없음)일 때의 판정 정책 — 별도 결정 필요
+- y축 편차 반영 시의 판정 로직 (계약 v0.2 예정)
 - 임계값의 최종 튜닝 (프로토타입 단계, 7단계 몫)
