@@ -39,6 +39,27 @@ cothe-baek의 구두 답변(아래 "cothe-baek 답변" 절) 이후 ②의 실제
 - `CaptureSessionManager`가 AIMING 상태 진입 시 `cv.startNewSession()` 호출 — 세션 상태 매핑 확인됨
 - 실기기 p50/p95 지연시간은 여전히 미측정
 
+## 실제 계약 확정 (2026-08-17, `docs/deviation-interface.md` + 이슈 #25/#29 기준)
+
+**이슈 #18의 서버 API 제안은 배제됐다.** 이슈 #25(서연) 본문에 "`docs/detection-api-design.md`가 제안한 서버 API 구현 — ③ 역할에서 이미 제외됨"이라고 명시되어 있다. 온디바이스 방식(이 문서의 결론과 일치)으로 정리됨.
+
+**입력/출력 계약** (`docs/deviation-interface.md` v0.1)
+
+| 구분 | 필드 | 의미 |
+|---|---|---|
+| 입력 | `center_x`, `area_ratio` | bbox 중심 x, 면적 비율 (0~1 정규화) |
+| 출력 | `subject_detected` | 탐지 여부 |
+| 출력 | `x_deviation` | center_x − 0.5. 음수=왼쪽, 양수=오른쪽 |
+| 출력 | `size_deviation` | area_ratio − 목표비율. 음수=너무 멂, 양수=너무 가까움 |
+
+목표 area_ratio: closeup 0.30 / full_body 0.12 / wide 0.04 (실측 전 추정치)
+
+**DeviationCalculator 구현 주체**: ⑤(원준서), 이슈 #29(진행 중). Kotlin 이식 완료 시 콜백으로 ⑥에 전달 예정.
+
+**미확정 항목 — ⑥ 정책 결정 필요**: `subjectType=landscape`(피사체 없음)일 때 편차 피드백 제공 여부. `docs/deviation-interface.md`에 "이 함수는 미검출로만 구분해 넘기고, 이후 판단은 ⑥ 정책"이라고 명시됨.
+
+**범위 제외**: y축 편차는 이번 계약 버전(v0.1)에 없음 — v0.2 예정.
+
 ## 이슈 #18(원준서, ⑤→③ 제안)과의 충돌 및 UX 근거
 
 `docs/detection-api-design.md`(이슈 #18)는 **③(백엔드)이 네트워크 API로 판정하는 구조**(`POST /api/judge/aim`, 왕복 지연 예산 200ms)를 제안하고 있다. 이는 이 문서의 "온디바이스, ⑥이 판정" 결론과 정면으로 다르다. 이슈 #18에 조율을 요청하기 전에, 저희(⑥) 쪽 근거를 먼저 정리한다.
