@@ -4,7 +4,7 @@
 from fastapi import FastAPI
 
 from backend.api.capture import router as capture_router
-from backend.config import validate_required_env
+from backend.config import load_server_host, load_server_port, validate_required_env
 from backend.utils.logger import load_logger
 
 logger = load_logger("main.log")
@@ -17,3 +17,17 @@ app = FastAPI(title="Snap-Sight Backend")
 app.include_router(capture_router)
 
 logger.info("Snap-Sight 백엔드 앱을 초기화했습니다.")
+
+
+def run() -> None:
+    """설정된 host·port로 개발 서버를 띄운다. 실기기 접속을 위해 기본 바인딩은 0.0.0.0이다."""
+    import uvicorn
+
+    host = load_server_host()
+    port = load_server_port()
+    logger.info(f"개발 서버를 {host}:{port}에서 시작합니다.")
+    uvicorn.run(app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    run()

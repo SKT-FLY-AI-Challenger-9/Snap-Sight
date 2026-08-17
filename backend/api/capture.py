@@ -7,9 +7,14 @@ import json
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
+from backend.config import RESULT_POLL_INTERVAL_SECONDS
 from backend.mllm.orchestration import trigger_comparison
 from backend.storage.comparison_result import load_comparison_result
-from backend.storage.frame_buffer import save_candidate_frame, save_representative_frame
+from backend.storage.frame_buffer import (
+    save_candidate_frame,
+    save_representative_frame,
+    session_exists,
+)
 from backend.utils.logger import load_logger
 
 logger = load_logger("capture.log")
@@ -31,6 +36,8 @@ class CaptureResultResponse(BaseModel):
     status: str
     improved: bool | None
     reason: str | None
+    # pending일 때만 값이 있다. 앱이 재조회 간격을 하드코딩하지 않도록 서버가 알려준다.
+    retry_after_seconds: int | None = None
 
 
 @router.post("/api/capture/frames", response_model=CaptureFramesResponse)
@@ -69,11 +76,29 @@ async def receive_capture_frames(
 
 @router.get("/api/capture/{session_id}/result", response_model=CaptureResultResponse)
 async def get_capture_result(session_id: str) -> CaptureResultResponse:
-    """세션의 MLLM 비교 결과를 조회한다. 아직 안 끝났으면 status=pending을 반환한다."""
+    """세션의 MLLM 비교 결과를 조회한다.
+
+    업로드된 적 없는 세션은 404로 끊는다 — pending으로 답하면 앱이 오타난 세션 ID를
+    영원히 폴링하게 된다. 업로드는 됐으나 비교가 안 끝난 경우만 pending이다.
+    """
     result = load_comparison_result(session_id)
-    if result is None:
-        return CaptureResultResponse(status="pending", improved=None, reason=None)
-    return CaptureResultResponse(status="done", improved=result.improved, reason=result.reason)
+    if result is not None:
+        return CaptureResultResponse(
+            status="done",
+            improved=result.improved,
+            reason=result.reason,
+            retry_after_seconds=None,
+        )
+
+    if not session_exists(session_id):
+        raise HTTPException(status_code=404, detail=f"세션 '{session_id}'을 찾을 수 없습니다")
+
+    return CaptureResultResponse(
+        status="pending",
+        improved=None,
+        reason=None,
+        retry_after_seconds=RESULT_POLL_INTERVAL_SECONDS,
+    )
 
 
 def _parse_candidate_scores(candidate_scores: str, candidate_count: int) -> list[dict]:

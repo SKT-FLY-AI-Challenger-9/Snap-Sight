@@ -6,6 +6,11 @@ from pathlib import Path
 CAPTURES_DIR = Path("captures")
 
 
+def session_exists(session_id: str) -> bool:
+    """업로드된 적이 있는 세션인지 확인한다. 결과 조회에서 '없는 세션'과 '대기 중'을 구분하는 데 쓴다."""
+    return (CAPTURES_DIR / session_id).is_dir()
+
+
 def save_representative_frame(session_id: str, filename: str, content: bytes) -> Path:
     """대표 컷 이미지를 세션 디렉터리에 저장하고 저장된 경로를 반환한다."""
     session_dir = _ensure_session_dir(session_id)
