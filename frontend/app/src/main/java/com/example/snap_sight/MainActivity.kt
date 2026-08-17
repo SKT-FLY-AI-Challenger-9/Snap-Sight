@@ -1,9 +1,11 @@
 package com.example.snap_sight
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
@@ -41,6 +43,9 @@ import com.example.snap_sight.ux.CaptureScreen
 import com.example.snap_sight.ux.GuidanceFeedback
 import com.example.snap_sight.ui.theme.SnapSightTheme
 
+/** S1(온보딩)/S2(홈·조준, [CaptureScreen]이 겸함)/S5(설정) — `docs/screen-design.md` 화면 목록 기준. */
+private enum class AppScreen { ONBOARDING, MAIN, SETTINGS }
+
 /**
  * 모듈 배선 호스트.
  *
@@ -50,8 +55,9 @@ import com.example.snap_sight.ui.theme.SnapSightTheme
  *  - STT(①): 발화 인식 결과를 [UtteranceClient]로 보내 타겟 스펙 수신
  *  - TTS(①): 재질문·에러 안내를 [TtsClient]로 요청해 [TtsPlayer]로 재생
  *  - 업로드(⑤→④): 대표 컷 + 후보 프레임을 [FrameUploader]로 백엔드 전송
+ *  - 화면 전환(⑥): [AppScreen] 상태로 [OnboardingScreen]/[CaptureScreen]/[SettingsScreen] 전환
  *
- * 화면(⑥ 임시)은 [CaptureScreen]이 담당하고, 이 클래스는 상태 배선만 한다.
+ * 화면 자체(⑥)는 각 Screen Composable이 담당하고, 이 클래스는 상태 배선만 한다.
  */
 class MainActivity : ComponentActivity() {
 
@@ -83,8 +89,28 @@ class MainActivity : ComponentActivity() {
     private var currentRawText = ""
 
     private var permissionsGranted by mutableStateOf(false)
+    // 권한을 한 번이라도 거부당했는지 — OnboardingScreen의 "재안내" 문구/버튼 노출 여부를 가른다.
+    private var permissionDenied by mutableStateOf(false)
     private var statusText by mutableStateOf(SessionState.IDLE.description)
     private var buttonLabel by mutableStateOf("세션 시작")
+
+    // 현재 표시 중인 화면. onCreate에서 온보딩 완료 여부에 따라 초기값을 정한다.
+    // permissionsGranted(카메라 권한 전용 플래그)를 화면 전환 상태로 재사용하지 않는다.
+    private var currentScreen by mutableStateOf(AppScreen.ONBOARDING)
+    private val onboardingPrefs by lazy { getSharedPreferences(PREFS_NAME, MODE_PRIVATE) }
+
+    private val onboardingPermissionState: OnboardingPermissionState
+        get() = when {
+            permissionsGranted -> OnboardingPermissionState.GRANTED
+            permissionDenied -> OnboardingPermissionState.DENIED
+            else -> OnboardingPermissionState.NOT_REQUESTED
+        }
+
+    // S5 설정값. 순수 화면 상태일 뿐 — 영속화하지 않고, GuidanceFeedback에도 아직 반영하지 않는다.
+    // TODO(⑥): SharedPreferences 등으로 영속화 + GuidanceFeedback이 이 값을 읽어들이는 구조 필요 (이슈 #45 후속)
+    private var settingsUiState by mutableStateOf(
+        SettingsUiState(vibrationIntensity = 1f, soundVolume = 1f, speechRate = 1f)
+    )
 
     // 디버그 오버레이용 최신 추적 객체 (정식 화면에서는 음성·햅틱으로 대체)
     private var cvObjects by mutableStateOf<List<TrackedObject>>(emptyList())
@@ -106,6 +132,7 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
             permissionsGranted = results[Manifest.permission.CAMERA] == true
             if (!permissionsGranted) {
+                permissionDenied = true
                 statusText = "카메라 권한이 필요합니다"
             }
         }
@@ -196,25 +223,66 @@ class MainActivity : ComponentActivity() {
         setContent {
             SnapSightTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    if (permissionsGranted) {
-                        CaptureScreen(
-                            controller = cameraController,
-                            statusText = statusText,
-                            sessionButtonLabel = buttonLabel,
-                            onSessionButton = { sessionManager.onVolumePressed() },
-                            cvObjects = cvObjects,
+                    when (currentScreen) {
+                        AppScreen.ONBOARDING -> OnboardingScreen(
+                            permissionState = onboardingPermissionState,
+                            onRequestPermissions = { checkOrRequestPermissions() },
+                            onOpenAppSettings = { openAppSettings() },
+                            onContinue = {
+                                onboardingPrefs.edit().putBoolean(KEY_ONBOARDING_DONE, true).apply()
+                                currentScreen = AppScreen.MAIN
+                            },
                         )
-                    } else {
-                        Text(
-                            text = statusText,
-                            modifier = Modifier.padding(innerPadding).padding(24.dp),
+
+                        AppScreen.MAIN -> if (permissionsGranted) {
+                            CaptureScreen(
+                                controller = cameraController,
+                                statusText = statusText,
+                                sessionButtonLabel = buttonLabel,
+                                onSessionButton = { sessionManager.onVolumePressed() },
+                                cvObjects = cvObjects,
+                                onOpenSettings = { currentScreen = AppScreen.SETTINGS },
+                            )
+                        } else {
+                            // 온보딩 완료 후 시스템 설정에서 권한이 취소된 경우의 안전망.
+                            Text(
+                                text = statusText,
+                                modifier = Modifier.padding(innerPadding).padding(24.dp),
+                            )
+                        }
+
+                        AppScreen.SETTINGS -> SettingsScreen(
+                            state = settingsUiState,
+                            onVibrationIntensityChange = {
+                                settingsUiState = settingsUiState.copy(vibrationIntensity = it)
+                            },
+                            onSoundVolumeChange = {
+                                settingsUiState = settingsUiState.copy(soundVolume = it)
+                            },
+                            onSpeechRateChange = {
+                                settingsUiState = settingsUiState.copy(speechRate = it)
+                            },
+                            onBack = { currentScreen = AppScreen.MAIN },
                         )
                     }
                 }
             }
         }
 
-        checkOrRequestPermissions()
+        // 최초 실행(온보딩 미완료)은 OnboardingScreen 자체 버튼이 권한을 요청하므로 여기서
+        // 자동 요청하지 않는다. 재실행 시(온보딩 완료됨)는 시스템 설정에서 권한이 취소됐을 수
+        // 있어 기존과 동일하게 확인한다.
+        if (currentScreen == AppScreen.MAIN) {
+            checkOrRequestPermissions()
+        }
+    }
+
+    private fun openAppSettings() {
+        startActivity(
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", packageName, null)
+            }
+        )
     }
 
     /**
@@ -397,5 +465,7 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val TAG = "SnapSight"
         const val CV_TAG = "SnapSightCV"
+        const val PREFS_NAME = "snap_sight_prefs"
+        const val KEY_ONBOARDING_DONE = "onboarding_done"
     }
 }
