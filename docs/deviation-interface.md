@@ -1,7 +1,9 @@
 # 편차 계산 인터페이스 제안 (② → ③)
 
 > 상태: 제안 초안 — ② 담당자 최종 합의 필요
-> 구현: backend/judgment/deviation.py
+> **런타임 정본: 온디바이스 Kotlin — `frontend/.../cv/SpecDeviationCalculator.kt` (#29).**
+> `backend/judgment/deviation.py` 는 이 계약의 레퍼런스 구현·테스트 벡터로 유지된다
+> (실시간 판정은 온디바이스에서 수행 — 백엔드는 관여하지 않음).
 > 관련: docs/detection-module.md, docs/detection-api-design.md (⑤×②가 먼저 제안한 필드에 맞춤)
 
 ## 배경 / 범위
