@@ -22,4 +22,10 @@ class AutoZoomControllerTest {
         // 면적 0.19 → √(0.40/0.19) ≈ 1.451배
         assertEquals(1.4510f, AutoZoomController.requiredZoom(1.0f, 0.19f), 1e-3f)
     }
+
+    @Test
+    fun oversizedTargetZoomsOut() {
+        // 2배 줌 상태에서 면적 0.80 → 2 × √(0.40/0.80) ≈ 1.414배로 줌아웃
+        assertEquals(1.4142f, AutoZoomController.requiredZoom(2.0f, 0.80f), 1e-3f)
+    }
 }
