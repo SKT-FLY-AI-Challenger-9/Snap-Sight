@@ -357,7 +357,9 @@ class MainActivity : ComponentActivity() {
                 }
 
                 override fun onFailure(error: Throwable) {
-                    Log.w(TAG, "TTS 요청 실패: $text", error)
+                    // 백엔드 TTS 불가(키 없음·네트워크 등) 시 내장 TTS 폴백 — 안내가 아예 침묵하는 것보다 낫다
+                    Log.w(TAG, "TTS 요청 실패, 내장 TTS 폴백: $text", error)
+                    guidanceFeedback.announce(text)
                 }
             },
         )
