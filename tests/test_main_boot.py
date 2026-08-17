@@ -22,3 +22,19 @@ def test_main_fails_to_boot_without_required_env(tmp_path):
     )
     assert result.returncode != 0
     assert "ANTHROPIC_API_KEY" in result.stderr
+
+
+def test_run_resolves_server_settings_without_name_errors(monkeypatch):
+    """run()이 참조하는 이름이 전부 임포트돼 있는지 확인한다.
+
+    머지 과정에서 config import가 누락되면 앱 임포트는 성공하지만 `python -m backend.main`만
+    NameError로 죽어, 실기기 접속 경로가 조용히 막힌다.
+    """
+    import backend.main as main_module
+
+    started = {}
+    monkeypatch.setattr("uvicorn.run", lambda app, host, port: started.update(host=host, port=port))
+
+    main_module.run()
+
+    assert started == {"host": "0.0.0.0", "port": 8000}
