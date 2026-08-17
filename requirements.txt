@@ -19,6 +19,7 @@ pillow
 
 # Environment / utilities
 pydantic
+requests  # ai/tts_client.py(ElevenLabs TTS 호출)에서 직접 사용 — 다른 패키지의 간접 의존에 기대지 않는다
 
 # Testing
 pytest

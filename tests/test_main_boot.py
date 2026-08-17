@@ -11,7 +11,18 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 def test_main_fails_to_boot_without_required_env(tmp_path):
     """ANTHROPIC_API_KEY가 없는 환경에서 backend.main을 임포트하면 0이 아닌 종료 코드로 실패한다."""
-    env = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(REPO_ROOT)}
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONPATH": str(REPO_ROOT),
+        # 개발자 로컬의 .env(저장소 루트)를 load_dotenv가 읽어 키가 채워지는 것을 막는다.
+        # dotenv는 이미 존재하는 환경변수를 덮어쓰지 않으므로 빈 값으로 미리 넣어둔다
+        # (config.load_env_variable은 빈 값을 '없음'으로 취급한다).
+        "ANTHROPIC_API_KEY": "",
+    }
+    # Windows는 SYSTEMROOT가 없으면 파이썬 인터프리터 자체(winsock 초기화)가 죽어
+    # 우리가 검증하려는 에러 대신 WinError 10106이 난다.
+    if os.name == "nt" and "SYSTEMROOT" in os.environ:
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     result = subprocess.run(
         [sys.executable, "-c", "import backend.main"],
         cwd=tmp_path,
