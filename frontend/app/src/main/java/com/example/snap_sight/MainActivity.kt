@@ -46,6 +46,7 @@ import com.example.snap_sight.ux.CaptureScreen
 import com.example.snap_sight.ux.GuidanceFeedback
 import com.example.snap_sight.ux.OnboardingPermissionState
 import com.example.snap_sight.ux.OnboardingScreen
+import com.example.snap_sight.ux.SettingsRepository
 import com.example.snap_sight.ux.SettingsScreen
 import com.example.snap_sight.ux.SettingsUiState
 import com.example.snap_sight.ui.theme.SnapSightTheme
@@ -105,6 +106,7 @@ class MainActivity : ComponentActivity() {
     // permissionsGranted(카메라 권한 전용 플래그)를 화면 전환 상태로 재사용하지 않는다.
     private var currentScreen by mutableStateOf(AppScreen.ONBOARDING)
     private val appPrefs by lazy { getSharedPreferences(PREFS_NAME, MODE_PRIVATE) }
+    private val settingsRepository by lazy { SettingsRepository(appPrefs) }
 
     private val onboardingPermissionState: OnboardingPermissionState
         get() = when {
@@ -154,7 +156,7 @@ class MainActivity : ComponentActivity() {
             AppScreen.ONBOARDING
         }
 
-        settingsUiState = loadSettingsUiState()
+        settingsUiState = settingsRepository.load()
         deviationListener = guidanceFeedback // ⑥ 판정 결과를 실제 사운드/햅틱/TTS로 렌더링
         guidanceFeedback.applySettings(settingsUiState) // 저장된 설정값을 시작부터 반영
 
@@ -300,21 +302,10 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    /** appPrefs에 저장된 S5 설정값을 읽는다. 저장된 적 없으면 기본값(최대 강도·기본 속도). */
-    private fun loadSettingsUiState() = SettingsUiState(
-        vibrationIntensity = appPrefs.getFloat(KEY_VIBRATION_INTENSITY, 1f),
-        soundVolume = appPrefs.getFloat(KEY_SOUND_VOLUME, 1f),
-        speechRate = appPrefs.getFloat(KEY_SPEECH_RATE, 1f),
-    )
-
     /** S5에서 값이 바뀔 때마다 호출 — 화면 상태 갱신 + 영속화 + GuidanceFeedback 반영을 한 번에 한다. */
     private fun updateSettings(newState: SettingsUiState) {
         settingsUiState = newState
-        appPrefs.edit()
-            .putFloat(KEY_VIBRATION_INTENSITY, newState.vibrationIntensity)
-            .putFloat(KEY_SOUND_VOLUME, newState.soundVolume)
-            .putFloat(KEY_SPEECH_RATE, newState.speechRate)
-            .apply()
+        settingsRepository.save(newState)
         guidanceFeedback.applySettings(newState)
     }
 
@@ -500,8 +491,5 @@ class MainActivity : ComponentActivity() {
         const val CV_TAG = "SnapSightCV"
         const val PREFS_NAME = "snap_sight_prefs"
         const val KEY_ONBOARDING_DONE = "onboarding_done"
-        const val KEY_VIBRATION_INTENSITY = "vibration_intensity"
-        const val KEY_SOUND_VOLUME = "sound_volume"
-        const val KEY_SPEECH_RATE = "speech_rate"
     }
 }
