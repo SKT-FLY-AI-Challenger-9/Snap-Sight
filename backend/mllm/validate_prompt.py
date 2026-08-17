@@ -1,8 +1,8 @@
 """개발 중 프롬프트를 실제 이미지에 대해 수동으로 검증하기 위한 CLI 스크립트.
 
 주의: 프로덕션 클라이언트가 아니다. 재시도·프레임 버퍼 연동 없음 (별도 이슈/담당자 몫).
-반드시 이 파일이 있는 디렉터리에서 직접 실행한다 (같은 폴더의 prompts.py를 import하기 위함):
-    python validate_prompt.py \
+저장소 루트에서 모듈로 실행한다 (pyproject의 pythonpath="." 기준, 다른 backend 모듈과 동일):
+    python -m backend.mllm.validate_prompt \
         --raw-text "인물 사진 찍어줘" \
         --requirement 인원수=2명 --requirement 구도=클로즈업 \
         --representative path/to/rep.jpg \
@@ -19,7 +19,7 @@ from pathlib import Path
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
-from prompts import SYSTEM_PROMPT, FrameComparisonResult, build_comparison_prompt
+from backend.mllm.prompts import SYSTEM_PROMPT, FrameComparisonResult, build_comparison_prompt
 
 MODEL = "claude-sonnet-5"
 
