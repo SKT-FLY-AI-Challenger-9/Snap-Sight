@@ -1,8 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 개발용: 에뮬레이터에서 호스트 PC 의 FastAPI(10.0.2.2)로만 평문 HTTP 허용 -->
+<!-- 개발용: 백엔드 개발 서버가 평문 HTTP 라서 전체 허용한다.
+     실기기 테스트 시 PC LAN IP 가 매번 달라 도메인 고정이 불가능하기 때문.
+     배포 전에는 반드시 도메인 고정(https) 구성으로 되돌릴 것. -->
 <network-security-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">10.0.2.2</domain>
-        <domain includeSubdomains="false">localhost</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

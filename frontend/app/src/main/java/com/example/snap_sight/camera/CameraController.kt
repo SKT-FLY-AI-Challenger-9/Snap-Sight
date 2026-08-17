@@ -1,3 +1,6 @@
+// 이 파일: 카메라를 켜고 끄고 사진을 찍는 심장부.
+// 미리보기 연결, 초점·노출 조절, 촬영 요청까지 카메라 관련 일을 전부 여기서 처리한다.
+// 다른 모듈은 카메라를 직접 만지지 않고 이 클래스만 부르면 된다.
 package com.example.snap_sight.camera
 
 import android.content.ContentValues

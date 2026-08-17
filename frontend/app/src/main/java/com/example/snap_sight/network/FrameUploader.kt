@@ -1,3 +1,6 @@
+// 이 파일: 찍은 사진(대표 1장 + 후보 여러 장)을 백엔드 서버로 올리는 업로드 담당.
+// 전송은 화면이 멈추지 않게 뒤(백그라운드)에서 처리하고 성공/실패만 알려준다.
+// 서버 주소는 빌드 설정(BuildConfig)에서 받아온다.
 package com.example.snap_sight.network
 
 import android.os.Handler
@@ -122,7 +125,10 @@ class FrameUploader(
         private const val TAG = "FrameUploader"
         private val JPEG = "image/jpeg".toMediaType()
 
-        /** 에뮬레이터에서 호스트 PC 의 FastAPI 개발 서버. 실기기는 PC LAN IP 로 교체. */
-        const val DEFAULT_BASE_URL = "http://10.0.2.2:8000"
+        /**
+         * 빌드 설정에서 주입되는 백엔드 주소 (기본: 에뮬레이터→호스트 10.0.2.2).
+         * 실기기는 빌드 시 `-PBACKEND_BASE_URL=http://<PC LAN IP>:8000` 로 재정의한다.
+         */
+        const val DEFAULT_BASE_URL = com.example.snap_sight.BuildConfig.BACKEND_BASE_URL
     }
 }

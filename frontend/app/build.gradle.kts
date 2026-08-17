@@ -17,6 +17,12 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // 백엔드 주소 — 기본은 에뮬레이터→호스트(10.0.2.2). 실기기는 PC LAN IP 로 재정의:
+        //   .\gradlew assembleDebug "-PBACKEND_BASE_URL=http://192.168.0.10:8000"
+        val backendBaseUrl = (project.findProperty("BACKEND_BASE_URL") as String?)
+            ?: "http://10.0.2.2:8000"
+        buildConfigField("String", "BACKEND_BASE_URL", "\"$backendBaseUrl\"")
     }
 
     buildTypes {
@@ -32,6 +38,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     androidResources {
         // TFLite 모델은 mmap 으로 읽으므로(assets.openFd) 압축되면 안 된다.
