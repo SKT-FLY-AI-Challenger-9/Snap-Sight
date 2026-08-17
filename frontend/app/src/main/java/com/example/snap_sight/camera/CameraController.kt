@@ -144,6 +144,17 @@ class CameraController(private val context: Context) {
         cam.cameraControl.startFocusAndMetering(action)
     }
 
+    // 현재/최대 줌 배율. 카메라 준비 전엔 1f.
+    val zoomRatio: Float get() = camera?.cameraInfo?.zoomState?.value?.zoomRatio ?: 1f
+    val maxZoomRatio: Float get() = camera?.cameraInfo?.zoomState?.value?.maxZoomRatio ?: 1f
+
+    // 줌 배율 적용 (1.0 = 원본). 기기 지원 범위로 클램프된다.
+    fun setZoomRatio(ratio: Float) {
+        val cam = camera ?: return
+        val max = cam.cameraInfo.zoomState.value?.maxZoomRatio ?: 1f
+        cam.cameraControl.setZoomRatio(ratio.coerceIn(1f, max))
+    }
+
     /**
      * 노출 보정. [value] 는 -1.0(어둡게) ~ +1.0(밝게) 비율로 받고
      * 기기가 지원하는 인덱스 범위로 변환해 적용한다.
