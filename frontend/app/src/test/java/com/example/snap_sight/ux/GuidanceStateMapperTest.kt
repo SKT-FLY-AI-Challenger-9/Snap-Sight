@@ -35,25 +35,25 @@ class GuidanceStateMapperTest {
     @Test
     fun xExactlyAtNegativeThresholdIsCentered() {
         // 조건이 `<` 이므로 경계값 자체는 CENTERED
-        val state = GuidanceStateMapper.from(result(x = -0.1f, size = 0f))
+        val state = GuidanceStateMapper.from(result(x = -GuidanceStateMapper.MAX_ABS_X_DEVIATION, size = 0f))
         assertEquals(HorizontalAlignment.CENTERED, state.horizontal)
     }
 
     @Test
     fun xExactlyAtPositiveThresholdIsCentered() {
-        val state = GuidanceStateMapper.from(result(x = 0.1f, size = 0f))
+        val state = GuidanceStateMapper.from(result(x = GuidanceStateMapper.MAX_ABS_X_DEVIATION, size = 0f))
         assertEquals(HorizontalAlignment.CENTERED, state.horizontal)
     }
 
     @Test
     fun xJustBeyondNegativeThresholdIsLeft() {
-        val state = GuidanceStateMapper.from(result(x = -0.1001f, size = 0f))
+        val state = GuidanceStateMapper.from(result(x = -(GuidanceStateMapper.MAX_ABS_X_DEVIATION + 0.001f), size = 0f))
         assertEquals(HorizontalAlignment.LEFT, state.horizontal)
     }
 
     @Test
     fun xJustBeyondPositiveThresholdIsRight() {
-        val state = GuidanceStateMapper.from(result(x = 0.1001f, size = 0f))
+        val state = GuidanceStateMapper.from(result(x = GuidanceStateMapper.MAX_ABS_X_DEVIATION + 0.001f, size = 0f))
         assertEquals(HorizontalAlignment.RIGHT, state.horizontal)
     }
 
@@ -67,26 +67,26 @@ class GuidanceStateMapperTest {
 
     @Test
     fun sizeExactlyAtNegativeThresholdIsCentered() {
-        val state = GuidanceStateMapper.from(result(x = 0f, size = -0.05f))
+        val state = GuidanceStateMapper.from(result(x = 0f, size = -GuidanceStateMapper.MAX_ABS_SIZE_DEVIATION))
         assertEquals(DistanceAlignment.CENTERED, state.distance)
     }
 
     @Test
     fun sizeExactlyAtPositiveThresholdIsCentered() {
-        val state = GuidanceStateMapper.from(result(x = 0f, size = 0.05f))
+        val state = GuidanceStateMapper.from(result(x = 0f, size = GuidanceStateMapper.MAX_ABS_SIZE_DEVIATION))
         assertEquals(DistanceAlignment.CENTERED, state.distance)
     }
 
     @Test
     fun sizeJustBelowNegativeThresholdIsCloser() {
         // size_deviation 음수 = 목표보다 작음(=멀다)가 아니라, 계약상 음수는 "너무 멂" — CLOSER 판정 기준값 아래
-        val state = GuidanceStateMapper.from(result(x = 0f, size = -0.0501f))
+        val state = GuidanceStateMapper.from(result(x = 0f, size = -(GuidanceStateMapper.MAX_ABS_SIZE_DEVIATION + 0.001f)))
         assertEquals(DistanceAlignment.CLOSER, state.distance)
     }
 
     @Test
     fun sizeJustAboveThresholdIsFarther() {
-        val state = GuidanceStateMapper.from(result(x = 0f, size = 0.0501f))
+        val state = GuidanceStateMapper.from(result(x = 0f, size = GuidanceStateMapper.MAX_ABS_SIZE_DEVIATION + 0.001f))
         assertEquals(DistanceAlignment.FARTHER, state.distance)
     }
 

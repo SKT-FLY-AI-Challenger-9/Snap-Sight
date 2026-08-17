@@ -38,12 +38,15 @@ enum class DistanceAlignment { CLOSER, FARTHER, CENTERED }
 - `horizontal = LEFT`/`RIGHT` → 방향 안내 필요
 - `distance = CLOSER`/`FARTHER` → 거리 안내 필요
 
-## 임계값(허용 오차) — [추정, 프로토타입에서 튜닝 필요]
+## 임계값(허용 오차) — [1차 실측 캘리브레이션 완료, 이슈 #42]
 
-- `|x_deviation| <= 0.1` → CENTERED, 그 외 부호에 따라 LEFT/RIGHT
-- `|size_deviation| <= 0.05` → CENTERED, `size_deviation < -0.05` → CLOSER, `size_deviation > 0.05` → FARTHER
+- `|x_deviation| <= 0.15` → CENTERED, 그 외 부호에 따라 LEFT/RIGHT
+- `|size_deviation| <= 0.10` → CENTERED, `size_deviation < -0.10` → CLOSER, `size_deviation > 0.10` → FARTHER
 
-**두 숫자(0.1, 0.05) 모두 선행연구나 실측 데이터 근거가 없는 순수 추정치다.** 실제 기기에서 값 분포를 관찰한 뒤 조정이 필요하다.
+**근거 (갤럭시 S24, 7세션 실측 — 이슈 #42):** 사용자가 정상 조준 중일 때 편차 분포가
+|x| 중앙값 0.123 / p90 0.255, |size| 중앙값 0.086 / p90 0.115 로 관측됐다. 기존 추정치(0.1/0.05)는
+중앙값보다 작아 READY 도달률이 3%(33판정 중 1회)에 그쳤고, "안내 기준을 알 수 없다"는 사용성 문제로
+직결됐다. 중앙값 + 손떨림 여유 기준으로 상향. 도달률 재측정과 사용자 테스트 기반 미세 조정은 후속.
 
 ## 다루지 않는 것
 
