@@ -1,6 +1,8 @@
 # tests/test_orchestration.py
 """backend.mllm.orchestration의 비동기 트리거·대표 컷 교체 로직을 확인하는 테스트."""
 
+import pytest
+
 from backend.mllm.orchestration import trigger_comparison
 from backend.mllm.prompts import FrameComparisonResult
 from backend.storage.comparison_result import load_comparison_result
@@ -9,6 +11,12 @@ from backend.storage.frame_buffer import save_candidate_frame, save_representati
 REPRESENTATIVE_BYTES = b"representative-bytes"
 CANDIDATE_0_BYTES = b"candidate-0-bytes"
 CANDIDATE_1_BYTES = b"candidate-1-bytes"
+
+
+@pytest.fixture(autouse=True)
+def _no_llm_fallback(monkeypatch):
+    """저신뢰 발화가 LLM 폴백을 타지 않게 막는다 — 이 파일은 오케스트레이션만 검증한다."""
+    monkeypatch.setattr("ai.llm_fallback.resolve_with_llm", lambda *args, **kwargs: None)
 
 
 def _save_session_frames(session_id: str) -> None:
@@ -143,3 +151,39 @@ def test_trigger_comparison_passes_candidate_scores_through(tmp_path, monkeypatc
     trigger_comparison("session-scores", "인물 사진 찍어줘", candidate_scores=scores)
 
     assert received["candidate_scores"] == scores
+
+
+def test_trigger_comparison_passes_parsed_requirements(tmp_path, monkeypatch):
+    """발화에서 파싱한 요구사항을 compare_candidate_frames에 넘긴다."""
+    monkeypatch.chdir(tmp_path)
+    _save_session_frames("session-requirements")
+    received = {}
+
+    def _fake_compare(raw_text, structured_requirements, representative, candidates, **kwargs):
+        received["structured_requirements"] = structured_requirements
+        return FrameComparisonResult(improved=False, selected_frame=None, reason="개선 없음")
+
+    monkeypatch.setattr("backend.mllm.orchestration.compare_candidate_frames", _fake_compare)
+
+    trigger_comparison("session-requirements", "두 명이 클로즈업으로 찍어줘")
+
+    assert received["structured_requirements"] == {"인원수": "2명", "구도": "클로즈업"}
+
+
+def test_trigger_comparison_sends_no_requirements_when_utterance_is_unspecific(
+    tmp_path, monkeypatch
+):
+    """발화에 명시적 요구사항이 없으면 빈 딕셔너리를 넘겨 3단계 판정만 돌게 한다."""
+    monkeypatch.chdir(tmp_path)
+    _save_session_frames("session-unspecific")
+    received = {}
+
+    def _fake_compare(raw_text, structured_requirements, representative, candidates, **kwargs):
+        received["structured_requirements"] = structured_requirements
+        return FrameComparisonResult(improved=False, selected_frame=None, reason="개선 없음")
+
+    monkeypatch.setattr("backend.mllm.orchestration.compare_candidate_frames", _fake_compare)
+
+    trigger_comparison("session-unspecific", "사진 찍어줘")
+
+    assert received["structured_requirements"] == {}

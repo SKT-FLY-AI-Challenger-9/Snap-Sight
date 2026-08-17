@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.snap_sight.camera.CameraController
 import com.example.snap_sight.camera.CaptureSessionManager
+import com.example.snap_sight.camera.FrameScorer
 import com.example.snap_sight.camera.RingFrameBuffer
 import com.example.snap_sight.camera.SessionState
 import com.example.snap_sight.cv.CvFrameOutput
@@ -33,7 +34,9 @@ import com.example.snap_sight.cv.SpecDeviationCalculator
 import com.example.snap_sight.cv.TrackedObject
 import com.example.snap_sight.cv.TargetSpec
 import com.example.snap_sight.network.FrameUploader
+import com.example.snap_sight.network.TtsClient
 import com.example.snap_sight.network.UtteranceClient
+import com.example.snap_sight.tts.TtsPlayer
 import com.example.snap_sight.ux.CaptureScreen
 import com.example.snap_sight.ui.theme.SnapSightTheme
 
@@ -44,6 +47,7 @@ import com.example.snap_sight.ui.theme.SnapSightTheme
  *  - 카메라(⑤): [CameraController] + 세션 상태 머신 [CaptureSessionManager] (볼륨 버튼 트리거)
  *  - CV(②): [SnapSightFrameProcessor] — 탐지·추적 결과를 디버그 오버레이와 성능 로그로 소비
  *  - STT(①): 발화 인식 결과를 [UtteranceClient]로 보내 타겟 스펙 수신
+ *  - TTS(①): 재질문·에러 안내를 [TtsClient]로 요청해 [TtsPlayer]로 재생
  *  - 업로드(⑤→④): 대표 컷 + 후보 프레임을 [FrameUploader]로 백엔드 전송
  *
  * 화면(⑥ 임시)은 [CaptureScreen]이 담당하고, 이 클래스는 상태 배선만 한다.
@@ -54,6 +58,8 @@ class MainActivity : ComponentActivity() {
     private val sessionManager by lazy { CaptureSessionManager(this, cameraController) }
     private val frameUploader = FrameUploader()
     private val utteranceClient = UtteranceClient()
+    private val ttsClient = TtsClient()
+    private val ttsPlayer by lazy { TtsPlayer(cacheDir) }
 
     /** ② 온디바이스 CV. 결과는 분석 스레드에서 도착 — 오버레이 갱신·성능 집계는 [onCvFrameResult] 참고. */
     private val cvProcessor by lazy {
@@ -70,6 +76,10 @@ class MainActivity : ComponentActivity() {
     private var pendingSessionId: String? = null
     private var pendingRepresentative: Uri? = null
     private var pendingCandidates: List<RingFrameBuffer.Frame>? = null
+
+    // 업로드에 동봉할 발화 원문 (#36 계약의 raw_text 필수 필드).
+    // AIMING 진입 시 초기화, 타겟 스펙이 도착하면 그 rawText 로 갱신된다.
+    private var currentRawText = ""
 
     private var permissionsGranted by mutableStateOf(false)
     private var statusText by mutableStateOf(SessionState.IDLE.description)
@@ -107,7 +117,10 @@ class MainActivity : ComponentActivity() {
                 // 조준 시작 = 새 추적 세션. track_id 가 이전 세션과 섞이지 않도록 초기화한다.
                 // TargetSpec은 아직 백엔드 응답 전이라 일단 null로 시작 — onUtteranceRecognized의
                 // UtteranceClient 콜백이 도착하면 같은 세션이 아직 AIMING일 때 한 번 더 갱신한다.
-                if (state == SessionState.AIMING) cvProcessor.startNewSession(spec = null)
+                if (state == SessionState.AIMING) {
+                    currentRawText = "" // 스펙 도착 전 기본값 (발화 없는 세션은 이대로 업로드)
+                    cvProcessor.startNewSession(spec = null)
+                }
                 buttonLabel = when (state) {
                     SessionState.IDLE -> "세션 시작"
                     SessionState.LISTENING -> "발화 종료"
@@ -118,9 +131,8 @@ class MainActivity : ComponentActivity() {
             }
 
             override fun onRecognitionRetry(sessionId: String) {
-                // TODO(⑥): 여기서 "다시 말씀해주세요" 류 짧은 사운드 신호 재생.
-                // PARSING의 "처리 중 루프" 사운드와 명확히 구분돼야 함 (이슈 #32).
                 Log.i(TAG, "발화 인식 재시도 [$sessionId]")
+                speak("다시 한번 말씀해주세요")
             }
 
             override fun onUtteranceRecognized(sessionId: String, text: String?) {
@@ -200,6 +212,27 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * 짧은 안내 문구를 TTS로 재생한다 (재질문·에러 안내 등, 이슈 TTS-1).
+     *
+     * 실패해도 세션 흐름은 절대 막지 않는다 — 안내 음성 하나 때문에 촬영이 멈추면 안 되므로
+     * 실패 시 로그만 남기고 조용히 넘어간다.
+     */
+    private fun speak(text: String) {
+        ttsClient.synthesize(
+            text = text,
+            callback = object : TtsClient.Callback {
+                override fun onSuccess(audioBytes: ByteArray) {
+                    ttsPlayer.play(audioBytes)
+                }
+
+                override fun onFailure(error: Throwable) {
+                    Log.w(TAG, "TTS 요청 실패: $text", error)
+                }
+            },
+        )
+    }
+
+    /**
      * 타겟 스펙이 (네트워크 지연으로) AIMING 시작보다 늦게 도착했을 때 CV 세션에 반영한다.
      *
      * [SpeechToTextRecognizer][com.example.snap_sight.stt.SpeechToTextRecognizer] 인식 →
@@ -212,6 +245,7 @@ class MainActivity : ComponentActivity() {
             Log.i(TAG, "타겟 스펙 도착했지만 세션이 이미 지나감 [$sessionId] — 무시")
             return
         }
+        currentRawText = spec?.rawText.orEmpty()
         cvProcessor.startNewSession(spec = spec)
     }
 
@@ -280,11 +314,14 @@ class MainActivity : ComponentActivity() {
 
         frameUploader.uploadCaptureFrames(
             sessionId = sessionId,
+            rawText = currentRawText,
             representativeJpegProvider = {
                 contentResolver.openInputStream(representative)?.use { it.readBytes() }
                     ?: throw IllegalStateException("대표 컷을 읽을 수 없음: $representative")
             },
             candidates = candidates,
+            // ⑦ 휴리스틱 스코어링 — 업로드 스레드에서 계산 (후보 6장 디코딩+라플라시안)
+            candidateScoresProvider = { candidates.map { FrameScorer.blurScore(it.jpeg) } },
             callback = object : FrameUploader.Callback {
                 override fun onSuccess(result: FrameUploader.UploadResult) {
                     Log.i(TAG, "업로드 완료 [${result.sessionId}] 후보 ${result.receivedCandidateCount}장")
@@ -345,6 +382,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         sessionManager.cancel()
+        ttsPlayer.stop()
         // 분리 시 onDetached() 가 불려 TFLite 인터프리터가 해제된다.
         cameraController.setFrameProcessor(null)
     }
