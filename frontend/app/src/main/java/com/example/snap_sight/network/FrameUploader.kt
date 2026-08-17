@@ -9,6 +9,7 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -17,8 +18,10 @@ import java.util.concurrent.TimeUnit
  *
  * 백엔드 계약: POST {baseUrl}/api/capture/frames (multipart/form-data)
  *  - session_id: 텍스트
+ *  - raw_text: 발화 원문 (필수 — 의도 없는 세션은 빈 문자열, ⑧ MLLM 프롬프트 컨텍스트)
  *  - representative_frame: 대표 컷 JPEG 1장
  *  - candidate_frames: 후보 JPEG N장
+ *  - candidate_scores: 후보별 점수 dict 의 JSON 배열 (선택, 후보 순서와 매핑 — ⑦ 휴리스틱)
  * 응답: { session_id, received_candidate_count, status }  (backend/api/capture.py 참고)
  *
  * 업로드는 자체 백그라운드 스레드에서 수행하고 콜백은 메인 스레드로 돌려준다.
@@ -43,13 +46,19 @@ class FrameUploader(
 
     /**
      * 대표 컷과 후보 프레임을 업로드한다.
-     * [representativeJpegProvider] 는 백그라운드 스레드에서 호출되므로
-     * MediaStore Uri 읽기 같은 IO 를 넣어도 된다.
+     * [representativeJpegProvider] / [candidateScoresProvider] 는 백그라운드 스레드에서
+     * 호출되므로 MediaStore 읽기·이미지 디코딩 같은 무거운 작업을 넣어도 된다.
+     *
+     * @param rawText 발화 원문 — 의도 없는 세션(발화 스킵·인식 실패)은 빈 문자열
+     * @param candidateScoresProvider 후보 순서대로의 블러 의심도(0..1). null 이면 점수 미전송.
+     *        개수가 후보 수와 다르면 백엔드가 422 로 거부하므로 이때도 전송을 생략한다.
      */
     fun uploadCaptureFrames(
         sessionId: String,
+        rawText: String,
         representativeJpegProvider: () -> ByteArray,
         candidates: List<RingFrameBuffer.Frame>,
+        candidateScoresProvider: (() -> List<Float>)? = null,
         callback: Callback,
     ) {
         Thread({
@@ -59,6 +68,7 @@ class FrameUploader(
                 val bodyBuilder = MultipartBody.Builder()
                     .setType(MultipartBody.FORM)
                     .addFormDataPart("session_id", sessionId)
+                    .addFormDataPart("raw_text", rawText)
                     .addFormDataPart(
                         "representative_frame",
                         "representative.jpg",
@@ -72,16 +82,28 @@ class FrameUploader(
                     )
                 }
 
+                val scores = candidateScoresProvider?.invoke()
+                if (scores != null && scores.isNotEmpty() && scores.size == candidates.size) {
+                    val scoresJson = JSONArray()
+                    scores.forEach { scoresJson.put(JSONObject().put("blur_score", it.toDouble())) }
+                    bodyBuilder.addFormDataPart("candidate_scores", scoresJson.toString())
+                } else if (scores != null && scores.size != candidates.size) {
+                    Log.w(TAG, "후보 점수 개수 불일치(${scores.size}/${candidates.size}) — 점수 전송 생략")
+                }
+
                 val request = Request.Builder()
                     .url("$baseUrl/api/capture/frames")
                     .post(bodyBuilder.build())
                     .build()
 
                 client.newCall(request).execute().use { response ->
+                    val bodyText = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
-                        throw IllegalStateException("업로드 실패: HTTP ${response.code}")
+                        // 422 등의 원인 파악을 위해 서버 detail 을 함께 남긴다
+                        throw IllegalStateException(
+                            "업로드 실패: HTTP ${response.code} — ${bodyText.take(300)}")
                     }
-                    val json = JSONObject(response.body?.string().orEmpty())
+                    val json = JSONObject(bodyText)
                     val result = UploadResult(
                         sessionId = json.optString("session_id", sessionId),
                         receivedCandidateCount = json.optInt("received_candidate_count", -1),
