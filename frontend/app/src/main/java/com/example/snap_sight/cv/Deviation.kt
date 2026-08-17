@@ -15,7 +15,11 @@ package com.example.snap_sight.cv
 data class FramingDeviation(
     /** 기준으로 삼은 객체. 대상이 특정되지 않았으면 null. */
     val trackId: Int?,
-    /** 프레임 중심 기준 좌우 오프셋. -1(왼쪽 끝) ~ +1(오른쪽 끝), 0 이 정중앙. */
+    /**
+     * 프레임 중심 기준 좌우 오프셋. -1(왼쪽 끝) ~ +1(오른쪽 끝), 0 이 정중앙.
+     * 주의: 계약(docs/deviation-interface.md)의 x_deviation 은 -0.5~+0.5 스케일이라,
+     * 판정 시 [DeviationJudgment.judge] 에서 /2 로 환산된다. 임계값은 계약 단위 기준.
+     */
     val offsetX: Float,
     /** 프레임 중심 기준 상하 오프셋. -1(위) ~ +1(아래), 0 이 정중앙. */
     val offsetY: Float,
