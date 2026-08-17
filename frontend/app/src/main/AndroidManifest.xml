@@ -9,6 +9,8 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- ⑥ GuidanceFeedback 햅틱 안내용. 선언 없이 vibrate() 호출 시 SecurityException 크래시 -->
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
         android:networkSecurityConfig="@xml/network_security_config"
