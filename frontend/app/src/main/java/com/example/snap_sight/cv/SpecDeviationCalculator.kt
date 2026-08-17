@@ -47,11 +47,11 @@ object DeviationJudgment {
         TargetSpec.Framing.WIDE to 0.04f,
     )
 
-    // READY(촬영 가능) 후보 판정 임계값 — 초기 추정값.
+    // READY(촬영 가능) 후보 판정 임계값 — 이슈 #42 실기기 편차 분포로 1차 캘리브레이션됨
+    // (|x| p50 0.123, |size| p50 0.086 관측 → 기존 0.1/0.05로는 READY 도달률 3%).
     // 정본은 ⑥의 docs/ux/guidance-state-schema.md (CENTERED 허용 오차)이며 그 값에 맞춘다.
-    // 튜닝도 ⑥이 실제 편차 데이터·사용자 테스트로 주도한다.
-    const val READY_MAX_ABS_X_DEVIATION = 0.1f
-    const val READY_MAX_ABS_SIZE_DEVIATION = 0.05f
+    const val READY_MAX_ABS_X_DEVIATION = 0.15f
+    const val READY_MAX_ABS_SIZE_DEVIATION = 0.10f
 
     /**
      * @param deviation 파이프라인이 계산한 기하 편차. null = 겨냥할 대상 없음
