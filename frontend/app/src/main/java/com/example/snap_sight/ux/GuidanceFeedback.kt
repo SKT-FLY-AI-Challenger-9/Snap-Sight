@@ -77,8 +77,8 @@ class GuidanceFeedback(context: Context) : DeviationListener {
      * 이 값을 받아만 두고 아무 효과도 없다 — 후속 이슈에서 사운드 채널 구현과 함께 연결한다.
      */
     fun applySettings(settings: SettingsUiState) {
-        vibrationIntensity = settings.vibrationIntensity.coerceIn(0f, 1f)
-        pendingSpeechRate = settings.speechRate
+        vibrationIntensity = GuidanceFeedbackSettingsMapper.clampVibrationIntensity(settings.vibrationIntensity)
+        pendingSpeechRate = GuidanceFeedbackSettingsMapper.speechRate(settings)
         if (ttsReady) tts.setSpeechRate(pendingSpeechRate)
     }
 
@@ -116,9 +116,9 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     }
 
     private fun vibrateShort() {
-        if (vibrationIntensity <= 0f) return // 진동 강도 0 = 무음 설정, 아예 울리지 않는다
+        // null = 진동 강도 0(무음 설정) — 아예 울리지 않는다
+        val amplitude = GuidanceFeedbackSettingsMapper.vibrationAmplitude(vibrationIntensity) ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val amplitude = (vibrationIntensity * 255).toInt().coerceIn(1, 255)
             vibrator.vibrate(VibrationEffect.createOneShot(SHORT_VIBRATION_MS, amplitude))
         } else {
             @Suppress("DEPRECATION")
@@ -162,4 +162,31 @@ internal class MajorStateTracker {
             else -> null
         }
     }
+}
+
+/**
+ * [GuidanceFeedback.applySettings]가 S5 설정값을 실제 재생값으로 바꾸는 계산 부분만 뽑아낸 것.
+ * `TextToSpeech`/`Vibrator` 호출 자체는 [GuidanceFeedback]이 담당하고, 이 객체는 "무엇을 보낼지"만
+ * 계산한다 — Android 의존성이 없어 단위 테스트가 쉽다.
+ */
+internal object GuidanceFeedbackSettingsMapper {
+
+    /** [SettingsUiState.vibrationIntensity]를 0..1로 clamp한다. */
+    fun clampVibrationIntensity(intensity: Float): Float = intensity.coerceIn(0f, 1f)
+
+    /**
+     * 진동 진폭(1..255). 강도가 0 이하로 clamp되면 null — 이 경우 [GuidanceFeedback]은
+     * 아예 진동을 울리지 않는다(무음 설정).
+     */
+    fun vibrationAmplitude(intensity: Float): Int? {
+        val clamped = clampVibrationIntensity(intensity)
+        if (clamped <= 0f) return null
+        return (clamped * 255).toInt().coerceIn(1, 255)
+    }
+
+    /**
+     * [TextToSpeech.setSpeechRate]에 그대로 전달할 값. 별도 변환·clamp는 하지 않는다 —
+     * 유효 범위는 `SettingsScreen`의 슬라이더(`SPEECH_RATE_RANGE`)가 이미 보장한다.
+     */
+    fun speechRate(settings: SettingsUiState): Float = settings.speechRate
 }
