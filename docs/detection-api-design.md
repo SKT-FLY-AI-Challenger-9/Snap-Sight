@@ -1,5 +1,9 @@
 # 탐지 결과 → 판정 API 연동 기반 설계 (⑤ → ③)
 
+**[폐기됨]** 팀 결정으로 조준 중 판정은 전부 온디바이스로 확정되어 이 서버 왕복 설계는
+채택되지 않았다. 현행 계약은 `docs/deviation-interface.md`, 구현 개요는
+`docs/frontend-capture-module.md` 참고. 아래는 검토 이력 보존용 초안이다.
+
 온디바이스 탐지(`cv/YoloFrameProcessor`)가 산출한 `Detection` 을 백엔드 판정 로직(③)에
 전달하고, 조준 안내(⑥ GuidanceState)의 근거가 될 판정을 받아오기 위한 **설계 초안**이다.
 구현 전 ③ 담당자와 합의가 필요하다.
