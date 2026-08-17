@@ -34,7 +34,9 @@ import com.example.snap_sight.cv.SpecDeviationCalculator
 import com.example.snap_sight.cv.TrackedObject
 import com.example.snap_sight.cv.TargetSpec
 import com.example.snap_sight.network.FrameUploader
+import com.example.snap_sight.network.TtsClient
 import com.example.snap_sight.network.UtteranceClient
+import com.example.snap_sight.tts.TtsPlayer
 import com.example.snap_sight.ux.CaptureScreen
 import com.example.snap_sight.ui.theme.SnapSightTheme
 
@@ -45,6 +47,7 @@ import com.example.snap_sight.ui.theme.SnapSightTheme
  *  - 카메라(⑤): [CameraController] + 세션 상태 머신 [CaptureSessionManager] (볼륨 버튼 트리거)
  *  - CV(②): [SnapSightFrameProcessor] — 탐지·추적 결과를 디버그 오버레이와 성능 로그로 소비
  *  - STT(①): 발화 인식 결과를 [UtteranceClient]로 보내 타겟 스펙 수신
+ *  - TTS(①): 재질문·에러 안내를 [TtsClient]로 요청해 [TtsPlayer]로 재생
  *  - 업로드(⑤→④): 대표 컷 + 후보 프레임을 [FrameUploader]로 백엔드 전송
  *
  * 화면(⑥ 임시)은 [CaptureScreen]이 담당하고, 이 클래스는 상태 배선만 한다.
@@ -55,6 +58,8 @@ class MainActivity : ComponentActivity() {
     private val sessionManager by lazy { CaptureSessionManager(this, cameraController) }
     private val frameUploader = FrameUploader()
     private val utteranceClient = UtteranceClient()
+    private val ttsClient = TtsClient()
+    private val ttsPlayer by lazy { TtsPlayer(cacheDir) }
 
     /** ② 온디바이스 CV. 결과는 분석 스레드에서 도착 — 오버레이 갱신·성능 집계는 [onCvFrameResult] 참고. */
     private val cvProcessor by lazy {
@@ -126,9 +131,8 @@ class MainActivity : ComponentActivity() {
             }
 
             override fun onRecognitionRetry(sessionId: String) {
-                // TODO(⑥): 여기서 "다시 말씀해주세요" 류 짧은 사운드 신호 재생.
-                // PARSING의 "처리 중 루프" 사운드와 명확히 구분돼야 함 (이슈 #32).
                 Log.i(TAG, "발화 인식 재시도 [$sessionId]")
+                speak("다시 한번 말씀해주세요")
             }
 
             override fun onUtteranceRecognized(sessionId: String, text: String?) {
@@ -205,6 +209,27 @@ class MainActivity : ComponentActivity() {
         }
 
         checkOrRequestPermissions()
+    }
+
+    /**
+     * 짧은 안내 문구를 TTS로 재생한다 (재질문·에러 안내 등, 이슈 TTS-1).
+     *
+     * 실패해도 세션 흐름은 절대 막지 않는다 — 안내 음성 하나 때문에 촬영이 멈추면 안 되므로
+     * 실패 시 로그만 남기고 조용히 넘어간다.
+     */
+    private fun speak(text: String) {
+        ttsClient.synthesize(
+            text = text,
+            callback = object : TtsClient.Callback {
+                override fun onSuccess(audioBytes: ByteArray) {
+                    ttsPlayer.play(audioBytes)
+                }
+
+                override fun onFailure(error: Throwable) {
+                    Log.w(TAG, "TTS 요청 실패: $text", error)
+                }
+            },
+        )
     }
 
     /**
@@ -357,6 +382,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         sessionManager.cancel()
+        ttsPlayer.stop()
         // 분리 시 onDetached() 가 불려 TFLite 인터프리터가 해제된다.
         cameraController.setFrameProcessor(null)
     }
