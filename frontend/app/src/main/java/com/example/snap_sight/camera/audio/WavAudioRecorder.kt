@@ -1,3 +1,6 @@
+// 이 파일: 사용자의 말소리를 WAV 파일로 녹음하는 도구.
+// 음성 인식(STT)이 요구하는 형식(16kHz 모노)에 정확히 맞춰 저장한다.
+// 녹음 시작/정지만 제공하는 단순한 부품이다.
 package com.example.snap_sight.camera.audio
 
 import android.Manifest

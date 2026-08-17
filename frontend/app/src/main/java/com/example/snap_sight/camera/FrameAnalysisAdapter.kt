@@ -1,3 +1,6 @@
+// 이 파일: 카메라가 뽑아내는 영상 프레임을 AI 분석기에 건네주는 중간 다리.
+// 분석기를 실행 중에 갈아끼울 수 있게 하고,
+// 프레임 메모리를 다 쓴 뒤 돌려주는(닫는) 책임도 여기서 진다.
 package com.example.snap_sight.camera
 
 import androidx.camera.core.ImageAnalysis

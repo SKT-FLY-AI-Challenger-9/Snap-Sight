@@ -1,3 +1,6 @@
+// 이 파일: 카메라 미리보기와 버튼(세션 시작·렌즈 전환)을 그리는 화면.
+// 개발 확인용 임시 화면이라 최소한만 있다.
+// 정식 접근성 화면(⑥ 담당)이 완성되면 통째로 교체된다.
 package com.example.snap_sight.ux
 
 import androidx.camera.view.PreviewView
