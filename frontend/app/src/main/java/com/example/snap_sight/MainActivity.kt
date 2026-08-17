@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.snap_sight.camera.CameraController
 import com.example.snap_sight.camera.CaptureSessionManager
+import com.example.snap_sight.camera.FrameScorer
 import com.example.snap_sight.camera.RingFrameBuffer
 import com.example.snap_sight.camera.SessionState
 import com.example.snap_sight.cv.CvFrameOutput
@@ -76,6 +77,10 @@ class MainActivity : ComponentActivity() {
     private var pendingRepresentative: Uri? = null
     private var pendingCandidates: List<RingFrameBuffer.Frame>? = null
 
+    // 업로드에 동봉할 발화 원문 (#36 계약의 raw_text 필수 필드).
+    // AIMING 진입 시 초기화, 타겟 스펙이 도착하면 그 rawText 로 갱신된다.
+    private var currentRawText = ""
+
     private var permissionsGranted by mutableStateOf(false)
     private var statusText by mutableStateOf(SessionState.IDLE.description)
     private var buttonLabel by mutableStateOf("세션 시작")
@@ -112,10 +117,10 @@ class MainActivity : ComponentActivity() {
                 // 조준 시작 = 새 추적 세션. track_id 가 이전 세션과 섞이지 않도록 초기화한다.
                 // TargetSpec은 아직 백엔드 응답 전이라 일단 null로 시작 — onUtteranceRecognized의
                 // UtteranceClient 콜백이 도착하면 같은 세션이 아직 AIMING일 때 한 번 더 갱신한다.
-                if (state == SessionState.AIMING) cvProcessor.startNewSession(spec = null)
-                // ERROR는 재시도로 안 풀리는 상황(예: 촬영 실패)이라 TTS로 사유를 설명한다.
-                // docs/screen-design.md에 원래 정의된 "음성(TTS): 사유 설명"을 그대로 구현.
-                if (state == SessionState.ERROR) speak(state.description)
+                if (state == SessionState.AIMING) {
+                    currentRawText = "" // 스펙 도착 전 기본값 (발화 없는 세션은 이대로 업로드)
+                    cvProcessor.startNewSession(spec = null)
+                }
                 buttonLabel = when (state) {
                     SessionState.IDLE -> "세션 시작"
                     SessionState.LISTENING -> "발화 종료"
@@ -240,6 +245,7 @@ class MainActivity : ComponentActivity() {
             Log.i(TAG, "타겟 스펙 도착했지만 세션이 이미 지나감 [$sessionId] — 무시")
             return
         }
+        currentRawText = spec?.rawText.orEmpty()
         cvProcessor.startNewSession(spec = spec)
     }
 
@@ -308,11 +314,14 @@ class MainActivity : ComponentActivity() {
 
         frameUploader.uploadCaptureFrames(
             sessionId = sessionId,
+            rawText = currentRawText,
             representativeJpegProvider = {
                 contentResolver.openInputStream(representative)?.use { it.readBytes() }
                     ?: throw IllegalStateException("대표 컷을 읽을 수 없음: $representative")
             },
             candidates = candidates,
+            // ⑦ 휴리스틱 스코어링 — 업로드 스레드에서 계산 (후보 6장 디코딩+라플라시안)
+            candidateScoresProvider = { candidates.map { FrameScorer.blurScore(it.jpeg) } },
             callback = object : FrameUploader.Callback {
                 override fun onSuccess(result: FrameUploader.UploadResult) {
                     Log.i(TAG, "업로드 완료 [${result.sessionId}] 후보 ${result.receivedCandidateCount}장")
