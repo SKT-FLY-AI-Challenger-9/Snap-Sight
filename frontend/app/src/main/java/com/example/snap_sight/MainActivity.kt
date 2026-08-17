@@ -428,7 +428,13 @@ class MainActivity : ComponentActivity() {
             },
             candidates = candidates,
             // ⑦ 휴리스틱 스코어링 — 업로드 스레드에서 계산 (후보 6장 디코딩+라플라시안)
-            candidateScoresProvider = { candidates.map { FrameScorer.blurScore(it.jpeg) } },
+            candidateScoresProvider = {
+                candidates.map { FrameScorer.blurScore(it.jpeg) }.also { scores ->
+                    // 블러 기준치(SHARPNESS_REF) 캘리브레이션용 분포 데이터 — 이슈 #42
+                    Log.d(TAG, "블러 점수 [$sessionId]: " +
+                        scores.joinToString(", ") { "%.2f".format(it) })
+                }
+            },
             callback = object : FrameUploader.Callback {
                 override fun onSuccess(result: FrameUploader.UploadResult) {
                     Log.i(TAG, "업로드 완료 [${result.sessionId}] 후보 ${result.receivedCandidateCount}장")
