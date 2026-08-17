@@ -37,7 +37,10 @@ class CaptureResultResponse(BaseModel):
 async def receive_capture_frames(
     background_tasks: BackgroundTasks,
     session_id: str = Form(...),
-    raw_text: str = Form(...),
+    # 발화 없는 세션(마이크 미허용·인식 실패)은 빈 문자열이 정상 케이스다.
+    # FastAPI(python-multipart)는 빈 폼 값을 "누락"으로 처리하므로 필수로 두면
+    # 해당 세션의 업로드가 전부 422 로 거부된다 — 기본값으로 완화한다.
+    raw_text: str = Form(default=""),
     representative_frame: UploadFile = File(...),
     candidate_frames: list[UploadFile] = File(default_factory=list),
     candidate_scores: str = Form(default="[]"),
