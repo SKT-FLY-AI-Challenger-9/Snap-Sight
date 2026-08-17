@@ -101,7 +101,7 @@ class MainActivity : ComponentActivity() {
     // 현재 표시 중인 화면. onCreate에서 온보딩 완료 여부에 따라 초기값을 정한다.
     // permissionsGranted(카메라 권한 전용 플래그)를 화면 전환 상태로 재사용하지 않는다.
     private var currentScreen by mutableStateOf(AppScreen.ONBOARDING)
-    private val onboardingPrefs by lazy { getSharedPreferences(PREFS_NAME, MODE_PRIVATE) }
+    private val appPrefs by lazy { getSharedPreferences(PREFS_NAME, MODE_PRIVATE) }
 
     private val onboardingPermissionState: OnboardingPermissionState
         get() = when {
@@ -110,8 +110,8 @@ class MainActivity : ComponentActivity() {
             else -> OnboardingPermissionState.NOT_REQUESTED
         }
 
-    // S5 설정값. 순수 화면 상태일 뿐 — 영속화하지 않고, GuidanceFeedback에도 아직 반영하지 않는다.
-    // TODO(⑥): SharedPreferences 등으로 영속화 + GuidanceFeedback이 이 값을 읽어들이는 구조 필요 (이슈 #45 후속)
+    // S5 설정값 — 기본값(최대 강도·기본 속도)으로 초기화, onCreate에서 appPrefs 저장값으로 덮어쓴다.
+    // 볼륨 버튼으로 슬라이더를 조절하는 것은 범위 밖(TODO) — 이슈 #43 "남은 연동 작업" 참고.
     private var settingsUiState by mutableStateOf(
         SettingsUiState(vibrationIntensity = 1f, soundVolume = 1f, speechRate = 1f)
     )
@@ -145,13 +145,15 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        currentScreen = if (onboardingPrefs.getBoolean(KEY_ONBOARDING_DONE, false)) {
+        currentScreen = if (appPrefs.getBoolean(KEY_ONBOARDING_DONE, false)) {
             AppScreen.MAIN
         } else {
             AppScreen.ONBOARDING
         }
 
+        settingsUiState = loadSettingsUiState()
         deviationListener = guidanceFeedback // ⑥ 판정 결과를 실제 사운드/햅틱/TTS로 렌더링
+        guidanceFeedback.applySettings(settingsUiState) // 저장된 설정값을 시작부터 반영
 
         cameraController.setFrameProcessor(cvProcessor)
         sessionManager.listener = object : CaptureSessionManager.Listener {
@@ -239,7 +241,7 @@ class MainActivity : ComponentActivity() {
                             onRequestPermissions = { checkOrRequestPermissions() },
                             onOpenAppSettings = { openAppSettings() },
                             onContinue = {
-                                onboardingPrefs.edit().putBoolean(KEY_ONBOARDING_DONE, true).apply()
+                                appPrefs.edit().putBoolean(KEY_ONBOARDING_DONE, true).apply()
                                 currentScreen = AppScreen.MAIN
                             },
                         )
@@ -264,13 +266,13 @@ class MainActivity : ComponentActivity() {
                         AppScreen.SETTINGS -> SettingsScreen(
                             state = settingsUiState,
                             onVibrationIntensityChange = {
-                                settingsUiState = settingsUiState.copy(vibrationIntensity = it)
+                                updateSettings(settingsUiState.copy(vibrationIntensity = it))
                             },
                             onSoundVolumeChange = {
-                                settingsUiState = settingsUiState.copy(soundVolume = it)
+                                updateSettings(settingsUiState.copy(soundVolume = it))
                             },
                             onSpeechRateChange = {
-                                settingsUiState = settingsUiState.copy(speechRate = it)
+                                updateSettings(settingsUiState.copy(speechRate = it))
                             },
                             onBack = { currentScreen = AppScreen.MAIN },
                         )
@@ -293,6 +295,24 @@ class MainActivity : ComponentActivity() {
                 data = Uri.fromParts("package", packageName, null)
             }
         )
+    }
+
+    /** appPrefs에 저장된 S5 설정값을 읽는다. 저장된 적 없으면 기본값(최대 강도·기본 속도). */
+    private fun loadSettingsUiState() = SettingsUiState(
+        vibrationIntensity = appPrefs.getFloat(KEY_VIBRATION_INTENSITY, 1f),
+        soundVolume = appPrefs.getFloat(KEY_SOUND_VOLUME, 1f),
+        speechRate = appPrefs.getFloat(KEY_SPEECH_RATE, 1f),
+    )
+
+    /** S5에서 값이 바뀔 때마다 호출 — 화면 상태 갱신 + 영속화 + GuidanceFeedback 반영을 한 번에 한다. */
+    private fun updateSettings(newState: SettingsUiState) {
+        settingsUiState = newState
+        appPrefs.edit()
+            .putFloat(KEY_VIBRATION_INTENSITY, newState.vibrationIntensity)
+            .putFloat(KEY_SOUND_VOLUME, newState.soundVolume)
+            .putFloat(KEY_SPEECH_RATE, newState.speechRate)
+            .apply()
+        guidanceFeedback.applySettings(newState)
     }
 
     /**
@@ -477,5 +497,8 @@ class MainActivity : ComponentActivity() {
         const val CV_TAG = "SnapSightCV"
         const val PREFS_NAME = "snap_sight_prefs"
         const val KEY_ONBOARDING_DONE = "onboarding_done"
+        const val KEY_VIBRATION_INTENSITY = "vibration_intensity"
+        const val KEY_SOUND_VOLUME = "sound_volume"
+        const val KEY_SPEECH_RATE = "speech_rate"
     }
 }
