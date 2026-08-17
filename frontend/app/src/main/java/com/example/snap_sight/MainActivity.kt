@@ -40,10 +40,7 @@ import com.example.snap_sight.network.TtsClient
 import com.example.snap_sight.network.UtteranceClient
 import com.example.snap_sight.tts.TtsPlayer
 import com.example.snap_sight.ux.CaptureScreen
-import com.example.snap_sight.ux.OnboardingPermissionState
-import com.example.snap_sight.ux.OnboardingScreen
-import com.example.snap_sight.ux.SettingsScreen
-import com.example.snap_sight.ux.SettingsUiState
+import com.example.snap_sight.ux.GuidanceFeedback
 import com.example.snap_sight.ui.theme.SnapSightTheme
 
 /** S1(온보딩)/S2(홈·조준, [CaptureScreen]이 겸함)/S5(설정) — `docs/screen-design.md` 화면 목록 기준. */
@@ -128,6 +125,9 @@ class MainActivity : ComponentActivity() {
      */
     var deviationListener: DeviationListener? = null
 
+    /** ⑥ 실제 사운드·햅틱·TTS 렌더러 — [deviationListener]로 등록해서 쓴다 (아래 [onCreate]). */
+    private val guidanceFeedback by lazy { GuidanceFeedback(this) }
+
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
             permissionsGranted = results[Manifest.permission.CAMERA] == true
@@ -141,11 +141,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        currentScreen = if (onboardingPrefs.getBoolean(KEY_ONBOARDING_DONE, false)) {
-            AppScreen.MAIN
-        } else {
-            AppScreen.ONBOARDING
-        }
+        deviationListener = guidanceFeedback // ⑥ 판정 결과를 실제 사운드/햅틱/TTS로 렌더링
 
         cameraController.setFrameProcessor(cvProcessor)
         sessionManager.listener = object : CaptureSessionManager.Listener {
@@ -463,6 +459,7 @@ class MainActivity : ComponentActivity() {
         ttsPlayer.stop()
         // 분리 시 onDetached() 가 불려 TFLite 인터프리터가 해제된다.
         cameraController.setFrameProcessor(null)
+        guidanceFeedback.release()
     }
 
     private companion object {

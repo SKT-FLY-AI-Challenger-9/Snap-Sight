@@ -5,7 +5,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.api.capture import router as capture_router
+from backend.config import RESULT_POLL_INTERVAL_SECONDS
 from backend.mllm.prompts import FrameComparisonResult
+from backend.storage.frame_buffer import save_representative_frame
 
 app = FastAPI()
 app.include_router(capture_router)
@@ -155,14 +157,57 @@ def test_receive_capture_frames_saves_nothing_when_candidate_scores_invalid(tmp_
     assert not (tmp_path / "captures" / "test-session-no-partial-save").exists()
 
 
-def test_get_capture_result_returns_pending_when_not_ready(tmp_path, monkeypatch):
-    """비교 결과가 아직 저장되지 않았으면 status=pending을 반환한다."""
+def test_receive_capture_frames_accepts_empty_raw_text(tmp_path, monkeypatch):
+    """발화가 없는 세션(마이크 미허용·STT 실패)도 업로드가 성공해야 한다.
+
+    FastAPI는 빈 폼 값을 '필드 누락'으로 처리하므로, raw_text가 필수면 rawText=""를
+    보내는 앱의 업로드가 전부 422로 거부된다.
+    """
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        "backend.api.capture.trigger_comparison",
+        lambda session_id, raw_text, scores: calls.append(raw_text),
+    )
+
+    response = client.post(
+        "/api/capture/frames",
+        data={"session_id": "session-no-utterance", "raw_text": ""},
+        files=[
+            ("representative_frame", ("rep.jpg", DUMMY_JPEG, "image/jpeg")),
+            ("candidate_frames", ("cand0.jpg", DUMMY_JPEG, "image/jpeg")),
+        ],
+    )
+
+    assert response.status_code == 200
+    assert (tmp_path / "captures" / "session-no-utterance" / "representative.jpg").exists()
+    # 발화가 없어도 MLLM 비교는 진행한다 — 요구사항 없이 범용 결함 기준으로 판정하면 된다.
+    assert calls == [""]
+
+
+def test_get_capture_result_returns_pending_while_comparison_runs(tmp_path, monkeypatch):
+    """업로드는 됐지만 비교가 안 끝났으면 pending과 재조회 간격을 반환한다."""
+    monkeypatch.chdir(tmp_path)
+    save_representative_frame("session-running", "rep.jpg", DUMMY_JPEG)
+
+    response = client.get("/api/capture/session-running/result")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "pending",
+        "improved": None,
+        "reason": None,
+        "retry_after_seconds": RESULT_POLL_INTERVAL_SECONDS,
+    }
+
+
+def test_get_capture_result_returns_404_for_unknown_session(tmp_path, monkeypatch):
+    """업로드된 적 없는 세션은 404로 끊는다 — pending이면 앱이 영원히 폴링하게 된다."""
     monkeypatch.chdir(tmp_path)
 
     response = client.get("/api/capture/no-such-session/result")
 
-    assert response.status_code == 200
-    assert response.json() == {"status": "pending", "improved": None, "reason": None}
+    assert response.status_code == 404
 
 
 def test_get_capture_result_returns_done_when_ready(tmp_path, monkeypatch):
@@ -178,4 +223,9 @@ def test_get_capture_result_returns_done_when_ready(tmp_path, monkeypatch):
     response = client.get("/api/capture/session-ready/result")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "done", "improved": True, "reason": "더 낫습니다"}
+    assert response.json() == {
+        "status": "done",
+        "improved": True,
+        "reason": "더 낫습니다",
+        "retry_after_seconds": None,
+    }
