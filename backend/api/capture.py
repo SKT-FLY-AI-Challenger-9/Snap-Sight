@@ -43,6 +43,9 @@ async def receive_capture_frames(
     candidate_scores: str = Form(default="[]"),
 ) -> CaptureFramesResponse:
     """대표 컷 1장과 후보 프레임 목록을 저장하고, 후보가 있으면 MLLM 비교를 비동기로 트리거한다."""
+    # 파일을 디스크에 쓰기 전에 검증한다 — 저장 후 422로 실패하면 재시도 때 잔여 파일이 남는다.
+    scores = _parse_candidate_scores(candidate_scores, len(candidate_frames))
+
     representative_bytes = await representative_frame.read()
     save_representative_frame(session_id, representative_frame.filename, representative_bytes)
 
@@ -53,7 +56,6 @@ async def receive_capture_frames(
     logger.info(f"세션 {session_id}: 대표 컷 1장, 후보 프레임 {len(candidate_frames)}장 저장 완료")
 
     if candidate_frames:
-        scores = _parse_candidate_scores(candidate_scores)
         background_tasks.add_task(trigger_comparison, session_id, raw_text, scores)
     else:
         logger.info(f"세션 {session_id}: 후보 프레임 없음 — MLLM 비교 스킵")
@@ -74,8 +76,8 @@ async def get_capture_result(session_id: str) -> CaptureResultResponse:
     return CaptureResultResponse(status="done", improved=result.improved, reason=result.reason)
 
 
-def _parse_candidate_scores(candidate_scores: str) -> list[dict]:
-    """JSON 문자열로 전달된 온디바이스 점수를 파싱한다. 형식이 잘못되면 명확한 422로 실패한다."""
+def _parse_candidate_scores(candidate_scores: str, candidate_count: int) -> list[dict]:
+    """JSON 문자열로 전달된 온디바이스 점수를 파싱·검증한다. 형식이 잘못되면 명확한 422로 실패한다."""
     try:
         parsed = json.loads(candidate_scores)
     except json.JSONDecodeError as exc:
@@ -84,4 +86,14 @@ def _parse_candidate_scores(candidate_scores: str) -> list[dict]:
         ) from exc
     if not isinstance(parsed, list):
         raise HTTPException(status_code=422, detail="candidate_scores는 JSON 배열이어야 합니다")
+    # 점수는 후보 순서대로 candidate_N에 매핑되므로, 개수가 어긋나면 엉뚱한 후보에 붙는다.
+    # 빈 배열은 "점수를 아예 안 보냄"이라는 정상 케이스이므로 개수 검증에서 제외한다.
+    if parsed and len(parsed) != candidate_count:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"candidate_scores 개수({len(parsed)})가 "
+                f"후보 프레임 수({candidate_count})와 일치하지 않습니다"
+            ),
+        )
     return parsed

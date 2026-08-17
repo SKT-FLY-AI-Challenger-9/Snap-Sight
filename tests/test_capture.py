@@ -113,6 +113,48 @@ def test_receive_capture_frames_rejects_malformed_candidate_scores(tmp_path, mon
     assert response.status_code == 422
 
 
+def test_receive_capture_frames_rejects_candidate_scores_count_mismatch(tmp_path, monkeypatch):
+    """candidate_scores 개수가 후보 프레임 수와 다르면 422로 막는다 (점수-후보 오정렬 방지)."""
+    monkeypatch.chdir(tmp_path)
+
+    response = client.post(
+        "/api/capture/frames",
+        data={
+            "session_id": "test-session-count-mismatch",
+            "raw_text": "인물 사진 찍어줘",
+            "candidate_scores": '[{"eyes_closed_score": 0.1}]',
+        },
+        files=[
+            ("representative_frame", ("rep.jpg", DUMMY_JPEG, "image/jpeg")),
+            ("candidate_frames", ("cand0.jpg", DUMMY_JPEG, "image/jpeg")),
+            ("candidate_frames", ("cand1.jpg", DUMMY_JPEG, "image/jpeg")),
+        ],
+    )
+
+    assert response.status_code == 422
+
+
+def test_receive_capture_frames_saves_nothing_when_candidate_scores_invalid(tmp_path, monkeypatch):
+    """candidate_scores 검증에 실패하면 프레임을 디스크에 남기지 않는다."""
+    monkeypatch.chdir(tmp_path)
+
+    response = client.post(
+        "/api/capture/frames",
+        data={
+            "session_id": "test-session-no-partial-save",
+            "raw_text": "인물 사진 찍어줘",
+            "candidate_scores": "not-json",
+        },
+        files=[
+            ("representative_frame", ("rep.jpg", DUMMY_JPEG, "image/jpeg")),
+            ("candidate_frames", ("cand0.jpg", DUMMY_JPEG, "image/jpeg")),
+        ],
+    )
+
+    assert response.status_code == 422
+    assert not (tmp_path / "captures" / "test-session-no-partial-save").exists()
+
+
 def test_get_capture_result_returns_pending_when_not_ready(tmp_path, monkeypatch):
     """비교 결과가 아직 저장되지 않았으면 status=pending을 반환한다."""
     monkeypatch.chdir(tmp_path)
