@@ -1,3 +1,6 @@
+// 이 파일: 폰이 앞뒤·좌우로 얼마나 기울었는지 센서로 재는 도구.
+// 조준 중에만 켜져서 배터리를 아끼고,
+// "폰을 수평으로 들어주세요" 같은 안내에 쓸 기울기 값을 제공한다.
 package com.example.snap_sight.camera
 
 import android.content.Context

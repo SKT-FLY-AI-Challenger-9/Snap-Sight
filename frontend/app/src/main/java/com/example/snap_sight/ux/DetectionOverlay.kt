@@ -1,3 +1,6 @@
+// 이 파일: AI가 찾은 물체 위에 초록 네모와 이름표를 그려주는 덧그림.
+// 탐지가 잘 되는지 눈으로 확인하기 위한 개발·데모용이다.
+// 실제 사용자(시각장애인)용 안내는 화면이 아니라 소리·진동으로 나간다.
 package com.example.snap_sight.ux
 
 import androidx.compose.foundation.Canvas

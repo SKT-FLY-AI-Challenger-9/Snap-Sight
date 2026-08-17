@@ -1,3 +1,6 @@
+// 이 파일: 셔터 직전 1초의 프레임들을 계속 임시 저장해두는 순환 저장소.
+// 셔터가 눌리면 그 앞뒤 프레임들을 "후보 사진"으로 꺼내준다.
+// 나중에 AI가 여러 장 중 제일 나은 한 장을 고르기 위한 재료다.
 package com.example.snap_sight.camera
 
 import android.os.Handler

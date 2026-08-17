@@ -1,3 +1,6 @@
+// 이 파일: 카메라 원본 프레임(YUV 형식)을 일반 사진 파일(JPEG)로 바꾸는 변환 도구.
+// 카메라는 사진을 특수한 형식으로 주기 때문에 저장·전송 전에 변환이 필요하다.
+// 링 버퍼가 후보 프레임을 담을 때 이 변환을 쓴다.
 package com.example.snap_sight.camera
 
 import android.graphics.ImageFormat

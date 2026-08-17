@@ -1,3 +1,6 @@
+// 이 파일: 앱의 시작점이자 모든 부품을 연결하는 본부.
+// 카메라·AI 탐지·음성 인식·편차 안내·업로드를 만들어 서로 이어주고,
+// 볼륨 버튼 입력과 권한 요청도 여기서 처리한다.
 package com.example.snap_sight
 
 import android.Manifest
