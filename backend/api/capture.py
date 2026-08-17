@@ -44,7 +44,9 @@ class CaptureResultResponse(BaseModel):
 async def receive_capture_frames(
     background_tasks: BackgroundTasks,
     session_id: str = Form(...),
-    raw_text: str = Form(...),
+    # 발화 없는 세션(마이크 미허용·STT 실패)이 정상 케이스라 필수로 두지 않는다.
+    # FastAPI는 빈 폼 값을 "필드 누락"으로 처리하므로 Form(...)이면 rawText=""가 422로 거부된다.
+    raw_text: str = Form(default=""),
     representative_frame: UploadFile = File(...),
     candidate_frames: list[UploadFile] = File(default_factory=list),
     candidate_scores: str = Form(default="[]"),
