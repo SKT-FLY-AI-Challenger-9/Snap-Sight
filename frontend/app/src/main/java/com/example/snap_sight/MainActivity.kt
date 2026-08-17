@@ -44,6 +44,10 @@ import com.example.snap_sight.network.UtteranceClient
 import com.example.snap_sight.tts.TtsPlayer
 import com.example.snap_sight.ux.CaptureScreen
 import com.example.snap_sight.ux.GuidanceFeedback
+import com.example.snap_sight.ux.OnboardingPermissionState
+import com.example.snap_sight.ux.OnboardingScreen
+import com.example.snap_sight.ux.SettingsScreen
+import com.example.snap_sight.ux.SettingsUiState
 import com.example.snap_sight.ui.theme.SnapSightTheme
 
 /** S1(온보딩)/S2(홈·조준, [CaptureScreen]이 겸함)/S5(설정) — `docs/screen-design.md` 화면 목록 기준. */
