@@ -185,6 +185,8 @@ uvicorn backend.main:app --reload
 
 기본적으로 `http://127.0.0.1:8000`에서 실행되며, `POST /api/capture/frames`로 대표 컷·후보 프레임을 업로드할 수 있다. `.env`가 없거나 `ANTHROPIC_API_KEY`가 비어 있으면 서버 기동 시 명확한 에러 메시지와 함께 종료된다.
 
+실기기에서 접속하는 방법과 결과 조회 폴링 정책은 [docs/backend-local-setup.md](docs/backend-local-setup.md) 참고.
+
 ### 모바일 앱 (Android)
 
 Android 프로젝트는 `frontend/`에 있다. Android Studio로 열거나 CLI로 빌드한다.
