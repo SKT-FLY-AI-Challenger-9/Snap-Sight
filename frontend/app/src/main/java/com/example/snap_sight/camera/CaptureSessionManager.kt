@@ -1,3 +1,6 @@
+// 이 파일: 촬영 한 번을 "세션"이라는 진행표로 관리한다.
+// 대기 → 발화 듣기 → 해석 → 조준 → 촬영 → 저장 순서로 상태를 옮기고,
+// 볼륨 버튼이 눌리면 지금 상태에 맞는 동작(시작/발화 종료/셔터)으로 바꿔준다.
 package com.example.snap_sight.camera
 
 import android.Manifest

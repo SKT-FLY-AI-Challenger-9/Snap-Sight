@@ -1,3 +1,6 @@
+// 이 파일: 사용자가 말한 문장을 백엔드로 보내는 통신 담당.
+// 백엔드가 문장을 해석해 "무엇을 찍고 싶은지"(타겟 스펙)로 돌려주면 받아온다.
+// 서버가 응답하지 못해도 촬영 흐름이 멈추지 않게 실패를 조용히 처리한다.
 package com.example.snap_sight.network
 
 import android.os.Handler

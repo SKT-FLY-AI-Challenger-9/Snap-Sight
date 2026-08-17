@@ -1,3 +1,6 @@
+// 이 파일: 찍은 사진(대표 1장 + 후보 여러 장)을 백엔드 서버로 올리는 업로드 담당.
+// 전송은 화면이 멈추지 않게 뒤(백그라운드)에서 처리하고 성공/실패만 알려준다.
+// 서버 주소는 빌드 설정(BuildConfig)에서 받아온다.
 package com.example.snap_sight.network
 
 import android.os.Handler
