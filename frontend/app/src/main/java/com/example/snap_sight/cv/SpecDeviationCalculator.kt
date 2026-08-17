@@ -48,9 +48,10 @@ object DeviationJudgment {
     )
 
     // READY(촬영 가능) 후보 판정 임계값 — 초기 추정값.
-    // ⑥이 실제 편차 데이터·사용자 테스트로 튜닝한다 (docs/ux/feedback-mapping.md).
-    const val READY_MAX_ABS_X_DEVIATION = 0.08f
-    const val READY_MAX_ABS_SIZE_DEVIATION = 0.10f
+    // 정본은 ⑥의 docs/ux/guidance-state-schema.md (CENTERED 허용 오차)이며 그 값에 맞춘다.
+    // 튜닝도 ⑥이 실제 편차 데이터·사용자 테스트로 주도한다.
+    const val READY_MAX_ABS_X_DEVIATION = 0.1f
+    const val READY_MAX_ABS_SIZE_DEVIATION = 0.05f
 
     /**
      * @param deviation 파이프라인이 계산한 기하 편차. null = 겨냥할 대상 없음
