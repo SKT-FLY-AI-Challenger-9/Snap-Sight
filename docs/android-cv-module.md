@@ -35,8 +35,9 @@ cv/
 ├── ByteTrackLiteTracker.kt     ByteTrack-lite Kotlin 포팅 (2단계 association)
 ├── CvPipeline.kt               detect → extensions → track → threshold
 ├── YuvToRgbConverter.kt        YUV_420_888 → 회전 보정 upright RGB888
-├── TargetSpec.kt               ① 의도 스펙 (파싱·보관만, 해석 안 함)
-├── TargetSelector.kt           의도 기반 후보 선택 확장 자리
+├── TargetSpec.kt               ① 의도 스펙 (파싱·검증)
+├── ObjectTaxonomy.kt           class ID ↔ canonical label 매핑 (ai/taxonomy 포팅)
+├── TargetSelector.kt           의도 기반 후보 선택 (target_selection.py 포팅)
 ├── Deviation.kt                편차 계산 확장 자리
 ├── CvOutput.kt                 CvFrameOutput / ObjectStreamListener
 ├── SnapSightFrameProcessor.kt  CameraX 진입점 (FrameProcessor 구현)
@@ -55,8 +56,8 @@ ImageProxy (YUV_420_888, rotationDegrees)
   → DetectionExtension[]     향후 person → face 확장 지점
   → ByteTrackLiteTracker     다중 객체 ID 연결
   → 출력 confidence threshold
-  → TargetSelector           (현재 pass-through)
-  → DeviationCalculator      (현재 no-op)
+  → Objects365TargetSelector 의도(TargetSpec) 기반 후보 선택 — tracking 뒤에 적용
+  → DeviationCalculator      (현재 no-op, ⑤ 이슈 #29 진행 중)
   → CvFrameOutput            objectsJson() = 위 공개 계약
 ```
 
@@ -77,15 +78,28 @@ cv.startNewSession(spec = null)
 `MainActivity` 에 이미 배선돼 있고, `CaptureSessionManager` 가 `AIMING` 으로 들어갈 때
 `startNewSession()` 이 호출된다.
 
-## 의도(TargetSpec)를 아직 쓰지 않는 이유와 확장 방법
+## 의도(TargetSpec) 기반 후보 선택
 
-CV 는 지금 의도를 **파싱·보관·전달만** 하고 해석하지 않는다. 이유는 두 가지다.
+`Objects365TargetSelector` 가 `ai/on_device_cv/target_selection.py` 를 포팅한 기본 selector 다.
+`create()` 가 detector 와 **같은 라벨 자산**으로 `ObjectTaxonomy` 를 만들어 붙이므로 별도 배선이
+필요 없다. 규칙은 `ai/target_spec_schema.md` 의 "On-device CV 적용 규칙" 과 같다.
 
-- ① STT/NLU 연동이 아직 없다. 없는 입력을 가정하고 선택 로직을 넣으면 검증할 수 없다.
-- 의도가 **항상 있을 수 없다.** 마이크 권한이 없거나 발화를 건너뛴 세션에서는 의도 자체가
-  존재하지 않는다 (`CaptureSessionManager.startSession()` 참고). null 이 정상 경로다.
+- `status != ok` → `unresolved`, 후보 없음 (임의 선택 금지)
+- `landscape` → `scene_only`, 객체 target 을 만들지 않음
+- `person` → person 후보만 / `object` → non-person 후보, `objectLabel` 이 있으면 해당 class 만
+- 요청 개수보다 적으면 `searching`, 같으면 `selected`, 많으면 `ambiguous` —
+  TargetSpec 에 개체 식별자가 없으므로 임의의 top-N 을 고르지 않는다
 
-그래서 진입점을 null-safe 하게 고정해 두었다.
+결과는 `CvFrameOutput.selection` (`state`/`candidates`/`countStatus`)으로 나가며, **공개 `objects`
+스키마는 바뀌지 않는다.** **선택은 tracking 뒤에 적용된다** — 세션 중 의도가 바뀌어도 이미
+추적 중인 객체의 `track_id` 는 새로 발급되지 않는다. 이 순서를 깨면 안 된다.
+
+의도가 **항상 있을 수는 없다.** 마이크 권한이 없거나 발화를 건너뛴 세션에서는 의도 자체가
+존재하지 않는다 (`CaptureSessionManager.startSession()` 참고). null 이 정상 경로이며, 이때
+selector 는 `disabled` 상태로 전체 객체를 그대로 통과시킨다. 라벨 자산이 없어 taxonomy 를
+만들 수 없을 때도 `PassThroughTargetSelector` 로 물러나 같은 방식으로 동작한다.
+
+진입점은 null-safe 하게 고정돼 있다.
 
 ```kotlin
 cv.setTargetSpec(null)                 // 의도 없는 세션 — 정상
@@ -94,21 +108,6 @@ cv.setTargetSpecJson(sttResponseJson)  // 깨진 payload 도 예외 없이 무�
 
 `TargetSpec.fromJsonOrNull(json, onError)` 는 null·빈 문자열·스키마 위반을 전부 삼키고 null 을
 돌려준다. 발화 파싱이 실패했다고 카메라 루프가 멈추면 안 되기 때문이다.
-
-붙일 때 할 일은 **selector 구현 하나 교체**가 전부다.
-
-```kotlin
-class Objects365TargetSelector : TargetSelector {
-    override fun select(frameResult: FrameResult, spec: TargetSpec?): TargetSelection { … }
-}
-
-SnapSightFrameProcessor.create(context, listener, selector = Objects365TargetSelector())
-```
-
-규칙은 `ai/target_spec_schema.md` 의 "On-device CV 적용 규칙" 과
-`ai/on_device_cv/target_selection.py` 에 이미 확정돼 있으므로 그대로 포팅하면 된다.
-**선택은 반드시 tracking 뒤에 적용한다.** 앞에 두면 세션 중 의도가 바뀔 때마다 이미 추적 중인
-객체의 `track_id` 가 새로 발급된다.
 
 ## 편차 계산 확장 자리
 
@@ -253,6 +252,7 @@ cd frontend
 | `ByteTrackLiteTrackerTest.kt` | ID 연속성, 입력 순서 변경, 저신뢰 복구, 일시 가림, 만료 후 새 ID, label flicker, reset, timestamp 계약 |
 | `CvPipelineTest.kt` | 출력 threshold, extension 삽입, reset, 로드 멱등성, 모델 부재 |
 | `TargetSpecTest.kt` | 의도 null·깨진 payload 안전 처리, v0.1/v0.2 파싱, pass-through selector |
+| `Objects365TargetSelectorTest.kt` | `tests/test_target_selection.py` 미러 — 의도별 후보 선택, count 판정, taxonomy 라벨 파싱 패리티 |
 | `YoloOutputDecoderTest.kt` | layout 판별, letterbox 역변환, 좌표 단위(정규화/픽셀) 판별, 검출 0개 프레임에서 오판 방지, e2e 중복 보존, 범위 밖 class ID·비정상 박스 처리 |
 | `InputTensorSpecTest.kt` | NHWC/NCHW 판별, 채널 인덱싱(인터리브 vs 평면), 전 요소 중복·누락 없음 |
 
@@ -267,7 +267,7 @@ cd frontend
 | detector | Ultralytics PyTorch `.pt` | TFLite `.tflite` |
 | 좌표 | float64 | 계약은 Float, tracker 내부 연산은 Double |
 | 할당 solver | NumPy + 자체 JV 구현 | 같은 알고리즘의 순수 Kotlin 포팅 |
-| 의도 선택 | `TargetSelector` 구현 완료 | 확장 자리만 (pass-through) |
+| 의도 선택 | `TargetSelector` 구현 완료 | `Objects365TargetSelector` — 같은 규칙의 Kotlin 포팅 |
 
 association 의미와 임계값 기본값은 양쪽이 같다. 한쪽을 고치면 반드시 다른 쪽도 고친다.
 

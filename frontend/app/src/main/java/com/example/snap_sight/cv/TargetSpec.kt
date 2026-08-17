@@ -5,10 +5,8 @@ import org.json.JSONObject
 /**
  * ① STT/NLU 가 만드는 의도 스펙. `ai/target_spec_schema.md` v0.1/v0.2 의 Kotlin 표현.
  *
- * **현재 단계에서 CV 는 이 값을 해석하지 않는다.** 파싱·보관·전달만 하고,
- * 후보 선택은 [PassThroughTargetSelector] 가 전체 객체를 그대로 통과시킨다.
- * ① 연동이 끝나면 `ai/on_device_cv/target_selection.py` 를 포팅한 selector 로
- * [TargetSelector] 구현만 갈아끼우면 되고, 이 파일과 파이프라인은 그대로 둔다.
+ * 후보 선택은 [Objects365TargetSelector] (`ai/on_device_cv/target_selection.py` 포팅)가
+ * tracking 뒤에 수행한다. 이 파일은 파싱·검증만 담당하고 선택 규칙을 알지 못한다.
  *
  * 값이 항상 null 일 수 있다는 게 계약이다 — 마이크 권한이 없거나 발화를 건너뛴 세션
  * (`CaptureSessionManager.startSession()` 참고)에서는 의도 자체가 존재하지 않는다.

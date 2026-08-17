@@ -131,7 +131,7 @@ frontend/                     # ⑤⑥ Android 네이티브 앱
     │   │   ├── Contracts.kt       # 공개 JSON 계약 (Python contracts.py 와 1:1)
     │   │   ├── TfLiteYoloDetector.kt  # TFLite 에 의존하는 유일한 파일
     │   │   ├── ByteTrackLiteTracker.kt
-    │   │   ├── TargetSelector.kt  # 의도 기반 선택 확장 자리 (현재 pass-through)
+    │   │   ├── TargetSelector.kt  # 의도 기반 후보 선택 (target_selection.py 포팅)
     │   │   ├── Deviation.kt       # 편차 계산 확장 자리 (현재 no-op)
     │   │   └── SnapSightFrameProcessor.kt  # CameraX 진입점
     │   ├── network/              # ⑤ 백엔드 API 클라이언트
