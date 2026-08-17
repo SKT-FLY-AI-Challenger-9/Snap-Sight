@@ -25,7 +25,11 @@ import com.example.snap_sight.camera.CaptureSessionManager
 import com.example.snap_sight.camera.RingFrameBuffer
 import com.example.snap_sight.camera.SessionState
 import com.example.snap_sight.cv.CvFrameOutput
+import com.example.snap_sight.cv.DeviationJudgment
+import com.example.snap_sight.cv.DeviationListener
+import com.example.snap_sight.cv.DeviationResult
 import com.example.snap_sight.cv.SnapSightFrameProcessor
+import com.example.snap_sight.cv.SpecDeviationCalculator
 import com.example.snap_sight.cv.TrackedObject
 import com.example.snap_sight.cv.TargetSpec
 import com.example.snap_sight.network.FrameUploader
@@ -53,7 +57,11 @@ class MainActivity : ComponentActivity() {
 
     /** ② 온디바이스 CV. 결과는 분석 스레드에서 도착 — 오버레이 갱신·성능 집계는 [onCvFrameResult] 참고. */
     private val cvProcessor by lazy {
-        SnapSightFrameProcessor.create(this, listener = { output -> onCvFrameResult(output) })
+        SnapSightFrameProcessor.create(
+            this,
+            listener = { output -> onCvFrameResult(output) },
+            deviationCalculator = SpecDeviationCalculator(), // ④ 기하 편차 — 파이프라인 안에서 계산
+        )
     }
     private var lastCvLogMs = 0L
 
@@ -73,6 +81,12 @@ class MainActivity : ComponentActivity() {
     // CV 성능 측정용 롤링 창 (분석 스레드에서 갱신, 로그 시점에 집계)
     private val cvLatencies = ArrayDeque<Long>()
     private var cvAnalyzedCount = 0
+
+    /**
+     * ⑥ 연결 지점 — AIMING 중 매 분석 프레임의 편차 결과가 이 리스너로 전달된다.
+     * CV 분석 스레드에서 호출되므로 UI/햅틱 접근 시 스레드 전환은 구현체 책임.
+     */
+    var deviationListener: DeviationListener? = null
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
@@ -212,6 +226,15 @@ class MainActivity : ComponentActivity() {
         if (!output.analyzed) return
         runOnUiThread { cvObjects = output.objects } // 디버그 오버레이 갱신
 
+        // ④ 편차 판정 — 파이프라인이 계산한 기하 편차를 계약 형태로 해석. 조준 중에만 의미가 있다.
+        val deviation = if (sessionManager.state == SessionState.AIMING) {
+            DeviationJudgment.judge(
+                deviation = output.deviation,
+                framing = output.targetSpec?.framing ?: TargetSpec.Framing.FULL_BODY,
+            )
+        } else null
+        deviation?.let { deviationListener?.onDeviation(it) }
+
         // 성능 측정: emit 은 처리 종료 직후 동기 호출이므로 now - timestampMs = 파이프라인 지연
         val latencyMs = System.currentTimeMillis() - output.timestampMs
         synchronized(cvLatencies) {
@@ -236,6 +259,14 @@ class MainActivity : ComponentActivity() {
         Log.d(CV_TAG, "성능: %.1f fps, 지연 %dms (p50 %d / p95 %d, 최근 %d프레임 창)".format(
             fps, latencyMs, p50, p95, cvLatencies.size))
         Log.d(CV_TAG, "객체 ${output.objects.size}개 ${output.objectsJson()}")
+        deviation?.let {
+            if (it.subjectDetected) {
+                Log.d(CV_TAG, "편차: x=%+.3f size=%+.3f ready후보=%b".format(
+                    it.xDeviation, it.sizeDeviation, DeviationJudgment.isReadyCandidate(it)))
+            } else {
+                Log.d(CV_TAG, "편차: 피사체 없음 (LOST 후보)")
+            }
+        }
     }
 
     /** 대표 컷과 후보 프레임이 모두 모이면 백엔드로 업로드 (⑤→④). */
