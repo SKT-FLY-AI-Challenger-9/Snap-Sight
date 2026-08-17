@@ -1,6 +1,8 @@
 # tests/test_orchestration.py
 """backend.mllm.orchestration의 비동기 트리거·대표 컷 교체 로직을 확인하는 테스트."""
 
+import pytest
+
 from backend.mllm.orchestration import trigger_comparison
 from backend.mllm.prompts import FrameComparisonResult
 from backend.storage.comparison_result import load_comparison_result
@@ -9,6 +11,12 @@ from backend.storage.frame_buffer import save_candidate_frame, save_representati
 REPRESENTATIVE_BYTES = b"representative-bytes"
 CANDIDATE_0_BYTES = b"candidate-0-bytes"
 CANDIDATE_1_BYTES = b"candidate-1-bytes"
+
+
+@pytest.fixture(autouse=True)
+def _no_llm_fallback(monkeypatch):
+    """저신뢰 발화가 LLM 폴백을 타지 않게 막는다 — 이 파일은 오케스트레이션만 검증한다."""
+    monkeypatch.setattr("ai.llm_fallback.resolve_with_llm", lambda *args, **kwargs: None)
 
 
 def _save_session_frames(session_id: str) -> None:

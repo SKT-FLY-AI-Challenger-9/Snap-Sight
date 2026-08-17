@@ -1,7 +1,7 @@
 # backend/mllm/target_requirements.py
 """①의 TargetSpec을 MLLM 비교 프롬프트가 기대하는 structured_requirements로 변환한다."""
 
-from ai.slot_parser import parse_target_spec
+from ai.llm_fallback import resolve_target_spec
 from ai.target_spec import Framing, SubjectType, TargetSpec, TargetSpecStatus
 from backend.utils.logger import load_logger
 
@@ -21,6 +21,9 @@ LANDSCAPE_SUBJECT = "풍경"
 def build_requirements_from_text(session_id: str, raw_text: str) -> dict[str, str]:
     """발화 원문을 TargetSpec으로 파싱해 프롬프트용 요구사항으로 변환한다.
 
+    규칙 기반 파서가 저신뢰로 판정하면 resolve_target_spec이 LLM 폴백까지 태운다 —
+    OBJECT_LABEL_KEYWORDS에 없는 표현도 스펙으로 뽑히도록 커버리지를 넓히기 위함이다.
+
     파싱에 실패해도 예외를 올리지 않는다 — 요구사항 없이도 MLLM은 범용 결함 기준(3단계)으로
     비교할 수 있으므로, 발화 해석 실패가 비교 자체를 막아서는 안 된다.
     """
@@ -28,7 +31,7 @@ def build_requirements_from_text(session_id: str, raw_text: str) -> dict[str, st
         return {}
 
     try:
-        spec = parse_target_spec(raw_text, session_id)
+        spec = resolve_target_spec(raw_text, session_id)
     except (TypeError, ValueError) as exc:
         logger.error(f"세션 {session_id}: 발화 파싱 실패로 요구사항 없이 비교 진행 — {exc}")
         return {}
