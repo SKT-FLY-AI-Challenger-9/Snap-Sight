@@ -35,6 +35,7 @@ import com.example.snap_sight.cv.TargetSpec
 import com.example.snap_sight.network.FrameUploader
 import com.example.snap_sight.network.UtteranceClient
 import com.example.snap_sight.ux.CaptureScreen
+import com.example.snap_sight.ux.GuidanceFeedback
 import com.example.snap_sight.ui.theme.SnapSightTheme
 
 /**
@@ -88,6 +89,9 @@ class MainActivity : ComponentActivity() {
      */
     var deviationListener: DeviationListener? = null
 
+    /** ⑥ 실제 사운드·햅틱·TTS 렌더러 — [deviationListener]로 등록해서 쓴다 (아래 [onCreate]). */
+    private val guidanceFeedback by lazy { GuidanceFeedback(this) }
+
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
             permissionsGranted = results[Manifest.permission.CAMERA] == true
@@ -99,6 +103,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        deviationListener = guidanceFeedback // ⑥ 판정 결과를 실제 사운드/햅틱/TTS로 렌더링
 
         cameraController.setFrameProcessor(cvProcessor)
         sessionManager.listener = object : CaptureSessionManager.Listener {
@@ -347,6 +353,7 @@ class MainActivity : ComponentActivity() {
         sessionManager.cancel()
         // 분리 시 onDetached() 가 불려 TFLite 인터프리터가 해제된다.
         cameraController.setFrameProcessor(null)
+        guidanceFeedback.release()
     }
 
     private companion object {
