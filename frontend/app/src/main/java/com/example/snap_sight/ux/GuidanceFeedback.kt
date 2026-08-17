@@ -41,17 +41,10 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     @Volatile
     private var ttsReady = false
 
-    // S5 설정에서 조절하는 값들 — applySettings() 전까지는 기본값(최대 강도·기본 속도)으로 동작한다.
-    @Volatile
-    private var vibrationIntensity = 1f
-    @Volatile
-    private var pendingSpeechRate = 1f
-
     private val tts: TextToSpeech = TextToSpeech(appContext) { status ->
         ttsReady = status == TextToSpeech.SUCCESS
         if (ttsReady) {
             tts.language = Locale.KOREAN
-            tts.setSpeechRate(pendingSpeechRate)
         } else {
             Log.w(TAG, "TTS 초기화 실패 — 상태 변화 음성 안내가 비활성화됩니다")
         }
@@ -64,23 +57,6 @@ class GuidanceFeedback(context: Context) : DeviationListener {
             @Suppress("DEPRECATION")
             appContext.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
         }
-
-    /**
-     * S5 설정값을 실제 렌더링에 반영한다 (이슈 #54).
-     *
-     * [SettingsUiState.vibrationIntensity]는 진동 진폭(1..255)으로, [SettingsUiState.speechRate]는
-     * [TextToSpeech.setSpeechRate]로 각각 매핑한다.
-     *
-     * **[SettingsUiState.soundVolume]은 아직 적용 대상이 없다** — 이 클래스는 연속 피드백을
-     * 진동으로만 렌더링하고, 비언어 사운드(톤/비프) 채널 자체가 구현돼 있지 않다(KDoc 상단의
-     * "사운드·햅틱"은 설계 의도이지 현재 구현 상태가 아니다). 사운드 채널을 추가하기 전까지는
-     * 이 값을 받아만 두고 아무 효과도 없다 — 후속 이슈에서 사운드 채널 구현과 함께 연결한다.
-     */
-    fun applySettings(settings: SettingsUiState) {
-        vibrationIntensity = settings.vibrationIntensity.coerceIn(0f, 1f)
-        pendingSpeechRate = settings.speechRate
-        if (ttsReady) tts.setSpeechRate(pendingSpeechRate)
-    }
 
     override fun onDeviation(result: DeviationResult) {
         val state = GuidanceStateMapper.from(result)
@@ -116,10 +92,8 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     }
 
     private fun vibrateShort() {
-        if (vibrationIntensity <= 0f) return // 진동 강도 0 = 무음 설정, 아예 울리지 않는다
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val amplitude = (vibrationIntensity * 255).toInt().coerceIn(1, 255)
-            vibrator.vibrate(VibrationEffect.createOneShot(SHORT_VIBRATION_MS, amplitude))
+            vibrator.vibrate(VibrationEffect.createOneShot(SHORT_VIBRATION_MS, VibrationEffect.DEFAULT_AMPLITUDE))
         } else {
             @Suppress("DEPRECATION")
             vibrator.vibrate(SHORT_VIBRATION_MS)
