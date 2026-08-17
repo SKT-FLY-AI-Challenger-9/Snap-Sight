@@ -5,6 +5,7 @@ from pathlib import Path
 
 from backend.mllm.client import compare_candidate_frames
 from backend.mllm.prompts import FrameComparisonResult
+from backend.mllm.target_requirements import build_requirements_from_text
 from backend.storage.comparison_result import save_comparison_result
 from backend.storage.frame_buffer import load_session_frame_paths
 from backend.utils.logger import load_logger
@@ -43,8 +44,13 @@ def _run_comparison(
 ) -> FrameComparisonResult:
     """MLLM 비교를 실행하고, 대표 컷 교체까지 마친 뒤 실제 반영 결과를 반환한다."""
     representative, candidates = load_session_frame_paths(session_id)
+    structured_requirements = build_requirements_from_text(session_id, raw_text)
     result = compare_candidate_frames(
-        raw_text, {}, representative, candidates, candidate_scores=candidate_scores
+        raw_text,
+        structured_requirements,
+        representative,
+        candidates,
+        candidate_scores=candidate_scores,
     )
     if not result.improved:
         return result

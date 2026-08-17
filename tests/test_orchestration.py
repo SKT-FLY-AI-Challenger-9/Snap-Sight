@@ -143,3 +143,39 @@ def test_trigger_comparison_passes_candidate_scores_through(tmp_path, monkeypatc
     trigger_comparison("session-scores", "인물 사진 찍어줘", candidate_scores=scores)
 
     assert received["candidate_scores"] == scores
+
+
+def test_trigger_comparison_passes_parsed_requirements(tmp_path, monkeypatch):
+    """발화에서 파싱한 요구사항을 compare_candidate_frames에 넘긴다."""
+    monkeypatch.chdir(tmp_path)
+    _save_session_frames("session-requirements")
+    received = {}
+
+    def _fake_compare(raw_text, structured_requirements, representative, candidates, **kwargs):
+        received["structured_requirements"] = structured_requirements
+        return FrameComparisonResult(improved=False, selected_frame=None, reason="개선 없음")
+
+    monkeypatch.setattr("backend.mllm.orchestration.compare_candidate_frames", _fake_compare)
+
+    trigger_comparison("session-requirements", "두 명이 클로즈업으로 찍어줘")
+
+    assert received["structured_requirements"] == {"인원수": "2명", "구도": "클로즈업"}
+
+
+def test_trigger_comparison_sends_no_requirements_when_utterance_is_unspecific(
+    tmp_path, monkeypatch
+):
+    """발화에 명시적 요구사항이 없으면 빈 딕셔너리를 넘겨 3단계 판정만 돌게 한다."""
+    monkeypatch.chdir(tmp_path)
+    _save_session_frames("session-unspecific")
+    received = {}
+
+    def _fake_compare(raw_text, structured_requirements, representative, candidates, **kwargs):
+        received["structured_requirements"] = structured_requirements
+        return FrameComparisonResult(improved=False, selected_frame=None, reason="개선 없음")
+
+    monkeypatch.setattr("backend.mllm.orchestration.compare_candidate_frames", _fake_compare)
+
+    trigger_comparison("session-unspecific", "사진 찍어줘")
+
+    assert received["structured_requirements"] == {}
