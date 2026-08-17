@@ -122,7 +122,10 @@ class FrameUploader(
         private const val TAG = "FrameUploader"
         private val JPEG = "image/jpeg".toMediaType()
 
-        /** 에뮬레이터에서 호스트 PC 의 FastAPI 개발 서버. 실기기는 PC LAN IP 로 교체. */
-        const val DEFAULT_BASE_URL = "http://10.0.2.2:8000"
+        /**
+         * 빌드 설정에서 주입되는 백엔드 주소 (기본: 에뮬레이터→호스트 10.0.2.2).
+         * 실기기는 빌드 시 `-PBACKEND_BASE_URL=http://<PC LAN IP>:8000` 로 재정의한다.
+         */
+        const val DEFAULT_BASE_URL = com.example.snap_sight.BuildConfig.BACKEND_BASE_URL
     }
 }
