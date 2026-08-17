@@ -21,7 +21,8 @@ import androidx.camera.core.ImageProxy
  * 설계 규칙:
  *  - 모델 자산이 없어도 앱은 죽지 않는다. 로드 실패 시 "검출 0개" 로 계속 돌면서
  *    카메라·세션·업로드 경로를 그대로 검증할 수 있게 한다.
- *  - 의도(TargetSpec)는 [setTargetSpec] 로 받기만 하고 아직 해석하지 않는다. 항상 null 일 수 있다.
+ *  - 의도(TargetSpec)는 [setTargetSpec] 로 받고 [Objects365TargetSelector] 가 tracking 뒤에
+ *    후보를 고른다. 항상 null 일 수 있으며, null 세션은 전체 객체를 그대로 내보낸다.
  *  - 편차 계산은 [DeviationCalculator] 로 분리돼 있고 기본값은 아무것도 하지 않는다.
  */
 class SnapSightFrameProcessor(
@@ -53,7 +54,8 @@ class SnapSightFrameProcessor(
     /**
      * 세션 의도를 설정한다. **null 허용이 계약이다** — 마이크 권한이 없거나 발화를 건너뛴
      * 세션에서는 의도 자체가 없다 (`CaptureSessionManager.startSession()` 참고).
-     * 현재는 보관·전달만 하며 검출 결과에 영향을 주지 않는다.
+     * 다음 프레임부터 selector 가 이 스펙으로 후보를 고른다. tracking 상태는 건드리지 않으므로
+     * 세션 중 의도가 바뀌어도 기존 `track_id` 는 유지된다. 공개 `objects` 계약도 영향 없다.
      */
     fun setTargetSpec(spec: TargetSpec?) {
         targetSpec = spec
@@ -179,6 +181,10 @@ class SnapSightFrameProcessor(
         /**
          * 기본 구성(TFLite detector + ByteTrackLite tracker)으로 프로세서를 만든다.
          * 모델 자산이 없으면 첫 프레임에서 로드에 실패하고 빈 결과를 계속 내보낸다.
+         *
+         * selector 를 넘기지 않으면 detector 와 같은 라벨 자산으로 [Objects365TargetSelector] 를
+         * 만든다. 라벨 자산이 없거나 깨져 있으면 [PassThroughTargetSelector] 로 물러난다 —
+         * 의도 해석이 안 된다고 카메라 루프가 죽으면 안 되기 때문이다.
          */
         fun create(
             context: Context,
@@ -188,7 +194,7 @@ class SnapSightFrameProcessor(
             trackerConfig: ByteTrackLiteConfig = ByteTrackLiteConfig(),
             pipelineConfig: PipelineConfig = PipelineConfig(),
             extensions: List<DetectionExtension> = emptyList(),
-            selector: TargetSelector = PassThroughTargetSelector(),
+            selector: TargetSelector? = null,
             deviationCalculator: DeviationCalculator = NoDeviationCalculator(),
         ): SnapSightFrameProcessor {
             if (detectorConfig.minimumConfidence != trackerConfig.minimumMatchingConfidence) {
@@ -208,10 +214,24 @@ class SnapSightFrameProcessor(
                 ),
                 listener = listener,
                 config = config,
-                selector = selector,
+                selector = selector ?: defaultSelector(context, detectorConfig.labelsAsset),
                 deviationCalculator = deviationCalculator,
             )
         }
+
+        /**
+         * detector 와 **같은** 라벨 자산으로 taxonomy 를 만들어 selector 와 detector 의
+         * class ID 해석이 어긋날 수 없게 한다. 자산이 없으면 pass-through 로 물러난다.
+         */
+        private fun defaultSelector(context: Context, labelsAsset: String): TargetSelector =
+            try {
+                val raw = context.applicationContext.assets.open(labelsAsset)
+                    .use { it.readBytes().toString(Charsets.UTF_8) }
+                Objects365TargetSelector(ObjectTaxonomy.fromLabelsText(raw))
+            } catch (t: Throwable) {
+                Log.w(TAG, "라벨 자산($labelsAsset)으로 taxonomy 생성 실패 — 의도 선택 없이 pass-through 로 동작", t)
+                PassThroughTargetSelector()
+            }
     }
 }
 
