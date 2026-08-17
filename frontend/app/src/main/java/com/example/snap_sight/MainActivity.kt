@@ -41,10 +41,6 @@ import com.example.snap_sight.network.UtteranceClient
 import com.example.snap_sight.tts.TtsPlayer
 import com.example.snap_sight.ux.CaptureScreen
 import com.example.snap_sight.ux.GuidanceFeedback
-import com.example.snap_sight.ux.OnboardingPermissionState
-import com.example.snap_sight.ux.OnboardingScreen
-import com.example.snap_sight.ux.SettingsScreen
-import com.example.snap_sight.ux.SettingsUiState
 import com.example.snap_sight.ui.theme.SnapSightTheme
 
 /** S1(온보딩)/S2(홈·조준, [CaptureScreen]이 겸함)/S5(설정) — `docs/screen-design.md` 화면 목록 기준. */
@@ -145,11 +141,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        currentScreen = if (appPrefs.getBoolean(KEY_ONBOARDING_DONE, false)) {
-            AppScreen.MAIN
-        } else {
-            AppScreen.ONBOARDING
-        }
+        deviationListener = guidanceFeedback // ⑥ 판정 결과를 실제 사운드/햅틱/TTS로 렌더링
 
         settingsUiState = loadSettingsUiState()
         deviationListener = guidanceFeedback // ⑥ 판정 결과를 실제 사운드/햅틱/TTS로 렌더링
