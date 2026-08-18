@@ -25,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.snap_sight.camera.AutoZoomController
 import com.example.snap_sight.camera.CameraController
 import com.example.snap_sight.camera.CaptureSessionManager
 import com.example.snap_sight.camera.FrameScorer
@@ -34,6 +35,7 @@ import com.example.snap_sight.cv.CvFrameOutput
 import com.example.snap_sight.cv.DeviationJudgment
 import com.example.snap_sight.cv.DeviationListener
 import com.example.snap_sight.cv.DeviationResult
+import com.example.snap_sight.cv.LabelMatchTargetSelector
 import com.example.snap_sight.cv.SnapSightFrameProcessor
 import com.example.snap_sight.cv.SpecDeviationCalculator
 import com.example.snap_sight.cv.TrackedObject
@@ -84,6 +86,7 @@ class MainActivity : ComponentActivity() {
             this,
             listener = { output -> onCvFrameResult(output) },
             deviationCalculator = SpecDeviationCalculator(), // ④ 기하 편차 — 파이프라인 안에서 계산
+            selector = LabelMatchTargetSelector(), // 발화 라벨 매칭 (임시 — ② 정식 포팅 시 교체)
         )
     }
     private var lastCvLogMs = 0L
@@ -139,6 +142,9 @@ class MainActivity : ComponentActivity() {
     /** ⑥ 실제 사운드·햅틱·TTS 렌더러 — [deviationListener]로 등록해서 쓴다 (아래 [onCreate]). */
     private val guidanceFeedback by lazy { GuidanceFeedback(this) }
 
+    // 자동 줌인 (이슈 #67) — AIMING 중 타겟 점유율 기반, 세션 시작 시 리셋
+    private val autoZoom by lazy { AutoZoomController(cameraController) }
+
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
             permissionsGranted = results[Manifest.permission.CAMERA] == true
@@ -172,6 +178,7 @@ class MainActivity : ComponentActivity() {
                 if (state == SessionState.AIMING) {
                     currentRawText = "" // 스펙 도착 전 기본값 (발화 없는 세션은 이대로 업로드)
                     cvProcessor.startNewSession(spec = null)
+                    autoZoom.reset() // 이전 세션의 줌 원상 복귀
                 }
                 buttonLabel = when (state) {
                     SessionState.IDLE -> "세션 시작"
@@ -392,6 +399,11 @@ class MainActivity : ComponentActivity() {
             )
         } else null
         deviation?.let { deviationListener?.onDeviation(it) }
+
+        // 자동 줌인: 조준 중 타겟이 너무 작으면(20% 미만) 40% 목표로 당긴다 (이슈 #67)
+        if (sessionManager.state == SessionState.AIMING) {
+            output.deviation?.let { autoZoom.onTargetArea(it.areaRatio) }
+        }
 
         // 성능 측정: emit 은 처리 종료 직후 동기 호출이므로 now - timestampMs = 파이프라인 지연
         val latencyMs = System.currentTimeMillis() - output.timestampMs
