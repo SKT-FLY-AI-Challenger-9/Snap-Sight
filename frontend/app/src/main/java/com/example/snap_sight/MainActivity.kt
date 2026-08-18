@@ -38,6 +38,7 @@ import com.example.snap_sight.cv.SnapSightFrameProcessor
 import com.example.snap_sight.cv.SpecDeviationCalculator
 import com.example.snap_sight.cv.TrackedObject
 import com.example.snap_sight.cv.TargetSpec
+import com.example.snap_sight.network.CaptureResultClient
 import com.example.snap_sight.network.FrameUploader
 import com.example.snap_sight.network.TtsClient
 import com.example.snap_sight.network.UtteranceClient
@@ -75,6 +76,7 @@ class MainActivity : ComponentActivity() {
     private val utteranceClient = UtteranceClient()
     private val ttsClient = TtsClient()
     private val ttsPlayer by lazy { TtsPlayer(cacheDir) }
+    private val resultClient = CaptureResultClient()
 
     /** ② 온디바이스 CV. 결과는 분석 스레드에서 도착 — 오버레이 갱신·성능 집계는 [onCvFrameResult] 참고. */
     private val cvProcessor by lazy {
@@ -310,6 +312,28 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * ⑧ 촬영 완료 후 MLLM 비교 결과를 폴링해 교체 여부를 음성으로 알린다.
+     *
+     * 파이프라인 마지막 단계 — 실패·타임아웃은 로그만 남기고 조용히 넘어간다
+     * (사진은 이미 기기와 서버에 저장돼 있어 사용자 손해가 없다).
+     */
+    private fun pollComparisonResult(sessionId: String) {
+        resultClient.pollResult(sessionId, object : CaptureResultClient.Callback {
+            override fun onDone(result: CaptureResultClient.ComparisonResult) {
+                Log.i(TAG, "MLLM 비교 완료 [$sessionId] improved=${result.improved} (${result.reason})")
+                speak(
+                    if (result.improved) "더 나은 순간의 사진으로 교체했어요"
+                    else "사진 저장이 완료됐어요"
+                )
+            }
+
+            override fun onGaveUp(reason: String) {
+                Log.w(TAG, "MLLM 결과 폴링 중단 [$sessionId]: $reason")
+            }
+        })
+    }
+
+    /**
      * 짧은 안내 문구를 TTS로 재생한다 (재질문·에러 안내 등, 이슈 TTS-1).
      *
      * 실패해도 세션 흐름은 절대 막지 않는다 — 안내 음성 하나 때문에 촬영이 멈추면 안 되므로
@@ -324,7 +348,9 @@ class MainActivity : ComponentActivity() {
                 }
 
                 override fun onFailure(error: Throwable) {
-                    Log.w(TAG, "TTS 요청 실패: $text", error)
+                    // 백엔드 TTS 불가(키 없음·네트워크 등) 시 내장 TTS 폴백 — 안내가 아예 침묵하는 것보다 낫다
+                    Log.w(TAG, "TTS 요청 실패, 내장 TTS 폴백: $text", error)
+                    guidanceFeedback.announce(text)
                 }
             },
         )
@@ -429,6 +455,7 @@ class MainActivity : ComponentActivity() {
             callback = object : FrameUploader.Callback {
                 override fun onSuccess(result: FrameUploader.UploadResult) {
                     Log.i(TAG, "업로드 완료 [${result.sessionId}] 후보 ${result.receivedCandidateCount}장")
+                    pollComparisonResult(result.sessionId)
                 }
 
                 override fun onFailure(error: Throwable) {

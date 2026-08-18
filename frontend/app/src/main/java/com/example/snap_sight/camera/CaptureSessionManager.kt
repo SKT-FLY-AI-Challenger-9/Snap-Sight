@@ -83,6 +83,9 @@ class CaptureSessionManager(
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // PARSING 무한대기 방지 타임아웃 (finishListening 참고). 콜백 도착·취소 시 해제된다.
+    private var parsingTimeout: Runnable? = null
+
     init {
         cameraController.captureEventListener = this
         cameraController.setFrameSink(ringBuffer)
@@ -149,11 +152,13 @@ class CaptureSessionManager(
         moveTo(SessionState.LISTENING)
         speechRecognizer.start(object : SpeechToTextRecognizer.Listener {
             override fun onRecognized(text: String) {
+                clearParsingTimeout()
                 moveTo(SessionState.AIMING)
                 listener?.onUtteranceRecognized(sessionId, text)
             }
 
             override fun onError(message: String) {
+                clearParsingTimeout()
                 if (!isRetry) {
                     Log.w(TAG, "발화 인식 실패, 1회 재시도: $message")
                     listener?.onRecognitionRetry(sessionId)
@@ -171,6 +176,24 @@ class CaptureSessionManager(
     private fun finishListening() {
         moveTo(SessionState.PARSING)
         speechRecognizer.stop()
+
+        // 안전장치: 기기에 따라 stop() 후 인식 콜백이 영영 안 오는 경우가 있다
+        // (갤럭시 S24 실기기에서 관측 — 이슈 #42 실측). 타임아웃 없이는 PARSING에 갇혀
+        // 시각장애인 사용자가 멈춘 화면을 영문도 모른 채 기다리게 되므로,
+        // 일정 시간 응답이 없으면 인식 실패로 간주하고 일반 촬영 모드로 진행한다.
+        val timeoutSessionId = sessionId
+        parsingTimeout = Runnable {
+            if (state != SessionState.PARSING || sessionId != timeoutSessionId) return@Runnable
+            Log.w(TAG, "발화 인식 응답 없음(${PARSING_TIMEOUT_MS}ms) — 실패로 간주하고 진행 [$timeoutSessionId]")
+            speechRecognizer.cancel()
+            moveTo(SessionState.AIMING)
+            listener?.onUtteranceRecognized(timeoutSessionId, null)
+        }.also { mainHandler.postDelayed(it, PARSING_TIMEOUT_MS) }
+    }
+
+    private fun clearParsingTimeout() {
+        parsingTimeout?.let { mainHandler.removeCallbacks(it) }
+        parsingTimeout = null
     }
 
     private fun shutter() {
@@ -210,5 +233,9 @@ class CaptureSessionManager(
 
     private companion object {
         const val TAG = "CaptureSession"
+
+        // 발화 종료 후 인식 결과를 기다리는 최대 시간. 정상 인식은 1~3초 내 도착하고,
+        // 이 시간을 넘기면 기기 인식 서비스가 응답하지 않는 상태로 본다 (실측: S24 무한대기 관측).
+        const val PARSING_TIMEOUT_MS = 8_000L
     }
 }

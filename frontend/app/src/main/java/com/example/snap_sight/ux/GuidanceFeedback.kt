@@ -115,6 +115,13 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
     }
 
+    /**
+     * 임의 안내 문구를 내장 TTS로 재생한다 — 백엔드 TTS(ElevenLabs, TTS-1)가
+     * 실패했을 때의 폴백 채널 (예: 개발 환경에 API 키가 없을 때).
+     * 설정된 음성 속도([applySettings])를 그대로 따른다.
+     */
+    fun announce(text: String) = speak(text)
+
     private fun vibrateShort() {
         // null = 진동 강도 0(무음 설정) — 아예 울리지 않는다
         val amplitude = GuidanceFeedbackSettingsMapper.vibrationAmplitude(vibrationIntensity) ?: return
