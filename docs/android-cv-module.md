@@ -57,7 +57,7 @@ ImageProxy (YUV_420_888, rotationDegrees)
   → ByteTrackLiteTracker     다중 객체 ID 연결
   → 출력 confidence threshold
   → Objects365TargetSelector 의도(TargetSpec) 기반 후보 선택 — tracking 뒤에 적용
-  → DeviationCalculator      (현재 no-op, ⑤ 이슈 #29 진행 중)
+  → DeviationCalculator      ⑤ SpecDeviationCalculator 구현 완료 (계약: docs/deviation-interface.md)
   → CvFrameOutput            objectsJson() = 위 공개 계약
 ```
 
