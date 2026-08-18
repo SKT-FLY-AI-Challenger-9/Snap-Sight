@@ -40,7 +40,9 @@ enum class DistanceAlignment { CLOSER, FARTHER, CENTERED }
 
 ## 임계값(허용 오차) — [1차 실측 캘리브레이션 완료, 이슈 #42]
 
-- `|x_deviation| <= 0.15` → CENTERED, 그 외 부호에 따라 LEFT/RIGHT
+- `|x_deviation| <= 0.20` → CENTERED, 그 외 부호에 따라 LEFT/RIGHT (2026-08-19 실사용 피드백 "기준이 너무 빡셈"으로 0.15 → 0.20 완화)
+- (additive, 2026-08-19) `vertical`: `y_deviation` 이 있을 때만 — `|y_deviation| <= 0.25` [추정] → CENTERED, 음수(피사체가 위) → UP, 양수 → DOWN. `isReady` 판정에는 포함하지 않는다
+- READY 유지 히스테리시스(안내 정책 `GuidancePolicy`): 한 번 READY 에 들어오면 각 편차가 임계값 × 1.5 를 넘기 전까지 READY 로 유지 (손떨림 튐 방지)
 - `|size_deviation| <= 0.10` → CENTERED, `size_deviation < -0.10` → CLOSER, `size_deviation > 0.10` → FARTHER
 
 **근거 (갤럭시 S24, 7세션 실측 — 이슈 #42):** 사용자가 정상 조준 중일 때 편차 분포가

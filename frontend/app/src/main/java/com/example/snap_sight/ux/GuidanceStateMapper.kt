@@ -14,8 +14,16 @@ import com.example.snap_sight.cv.DeviationResult
  */
 object GuidanceStateMapper {
 
-    const val MAX_ABS_X_DEVIATION = 0.15f
+    /** 2026-08-19 실사용 피드백으로 0.15 → 0.20 완화 (프레임 폭의 ±20% 안이면 CENTERED). */
+    const val MAX_ABS_X_DEVIATION = 0.20f
     const val MAX_ABS_SIZE_DEVIATION = 0.10f
+    /** 수직 허용 오차 [추정] — 세로 구도는 여유를 더 둔다(전신은 중심이 아래로 치우치기 쉬움). */
+    const val MAX_ABS_Y_DEVIATION = 0.25f
+    /**
+     * READY 유지 히스테리시스 — 한 번 READY 에 들어오면 임계값의 이 배수를 넘어야 벗어난 것으로 본다.
+     * 손떨림으로 READY ↔ 방향 안내가 튀는 것을 막는다. [GuidancePolicy] 가 쓴다.
+     */
+    const val READY_EXIT_FACTOR = 1.5f
 
     fun from(result: DeviationResult): GuidanceState {
         if (!result.subjectDetected) {
@@ -34,6 +42,14 @@ object GuidanceStateMapper {
             size > MAX_ABS_SIZE_DEVIATION -> DistanceAlignment.FARTHER
             else -> DistanceAlignment.CENTERED
         }
-        return GuidanceState(detected = true, horizontal = horizontal, distance = distance)
+        // y: 음수 = 피사체가 프레임 중심보다 위 → 카메라를 위로 올려야 한다
+        val vertical = result.yDeviation?.let { y ->
+            when {
+                y < -MAX_ABS_Y_DEVIATION -> VerticalAlignment.UP
+                y > MAX_ABS_Y_DEVIATION -> VerticalAlignment.DOWN
+                else -> VerticalAlignment.CENTERED
+            }
+        }
+        return GuidanceState(detected = true, horizontal = horizontal, distance = distance, vertical = vertical)
     }
 }

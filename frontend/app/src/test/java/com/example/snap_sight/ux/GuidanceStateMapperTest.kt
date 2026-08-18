@@ -30,6 +30,24 @@ class GuidanceStateMapperTest {
         assertFalse(state.isReady)
     }
 
+    // --- 수직 축 (additive, READY 판정 제외) ---
+
+    @Test
+    fun verticalIsNullWhenNoYDeviation() {
+        assertNull(GuidanceStateMapper.from(result(x = 0f, size = 0f)).vertical)
+    }
+
+    @Test
+    fun verticalMapsUpDownCenteredAndDoesNotAffectReady() {
+        fun withY(y: Float) = GuidanceStateMapper.from(
+            DeviationResult(subjectDetected = true, xDeviation = 0f, sizeDeviation = 0f, yDeviation = y)
+        )
+        assertEquals(VerticalAlignment.UP, withY(-0.30f).vertical)
+        assertEquals(VerticalAlignment.DOWN, withY(0.30f).vertical)
+        assertEquals(VerticalAlignment.CENTERED, withY(0.10f).vertical)
+        assertTrue(withY(-0.30f).isReady) // 수직은 READY 판정에 포함되지 않는다
+    }
+
     // --- 수평 축 경계값 ---
 
     @Test
@@ -97,13 +115,13 @@ class GuidanceStateMapperTest {
         val ready = GuidanceStateMapper.from(result(x = 0f, size = 0f))
         assertTrue(ready.isReady)
 
-        val offHorizontal = GuidanceStateMapper.from(result(x = 0.2f, size = 0f))
+        val offHorizontal = GuidanceStateMapper.from(result(x = 0.3f, size = 0f))
         assertFalse(offHorizontal.isReady)
 
         val offDistance = GuidanceStateMapper.from(result(x = 0f, size = 0.2f))
         assertFalse(offDistance.isReady)
 
-        val offBoth = GuidanceStateMapper.from(result(x = 0.2f, size = -0.2f))
+        val offBoth = GuidanceStateMapper.from(result(x = 0.3f, size = -0.2f))
         assertFalse(offBoth.isReady)
     }
 
