@@ -43,14 +43,37 @@ class SpecDeviationCalculatorTest {
     // --- SpecDeviationCalculator: 기하 편차 ---
 
     @Test
-    fun picksHighestConfidenceCandidate() {
-        val weak = tracked(trackId = 1, confidence = 0.3f, xMin = 0f, yMin = 0f, xMax = 0.2f, yMax = 0.2f)
-        // 중심 (0.5, 0.5), 면적 0.12 근처
-        val strong = tracked(trackId = 2, confidence = 0.9f, xMin = 0.3f, yMin = 0.35f, xMax = 0.7f, yMax = 0.65f)
-        val deviation = calculator.compute(selection(weak, strong), spec())!!
+    fun picksLargestCandidateWhenNothingIsSticky() {
+        // 작은 것이 신뢰도는 더 높지만, 첫 선택은 면적 최대(가장 가깝고 두드러진 대상)
+        val small = tracked(trackId = 1, confidence = 0.95f, xMin = 0f, yMin = 0f, xMax = 0.2f, yMax = 0.2f)
+        // 중심 (0.5, 0.5), 면적 0.12
+        val large = tracked(trackId = 2, confidence = 0.6f, xMin = 0.3f, yMin = 0.35f, xMax = 0.7f, yMax = 0.65f)
+        val deviation = calculator.compute(selection(small, large), spec())!!
         assertEquals(2, deviation.trackId)
         assertEquals(0f, deviation.offsetX, 1e-5f)
         assertEquals(0.4f * 0.3f, deviation.areaRatio, 1e-5f)
+    }
+
+    @Test
+    fun keepsTheSameTargetWhileItRemainsACandidate() {
+        val a = tracked(trackId = 1, xMin = 0.1f, yMin = 0.1f, xMax = 0.4f, yMax = 0.6f) // 면적 0.15
+        val b = tracked(trackId = 2, xMin = 0.6f, yMin = 0.1f, xMax = 0.9f, yMax = 0.5f) // 면적 0.12
+        assertEquals(1, calculator.compute(selection(a, b), spec())!!.trackId)
+        // 다음 프레임에 b 가 더 커져도(면적 0.24) 타겟은 a 유지 → 안내가 튀지 않는다
+        val bBigger = tracked(trackId = 2, xMin = 0.5f, yMin = 0.1f, xMax = 0.9f, yMax = 0.7f)
+        assertEquals(1, calculator.compute(selection(a, bBigger), spec())!!.trackId)
+        // a 가 사라지면 남은 b 로 갈아타고, 이후엔 b 가 sticky (a 가 돌아와도 안내가 다시 튀지 않는다)
+        assertEquals(2, calculator.compute(selection(bBigger), spec())!!.trackId)
+        assertEquals(2, calculator.compute(selection(a, bBigger), spec())!!.trackId)
+    }
+
+    @Test
+    fun resetForgetsTheStickyTarget() {
+        val a = tracked(trackId = 1, xMin = 0.1f, yMin = 0.1f, xMax = 0.4f, yMax = 0.6f)
+        val b = tracked(trackId = 2, xMin = 0.5f, yMin = 0.1f, xMax = 0.9f, yMax = 0.7f)
+        assertEquals(1, calculator.compute(selection(a), spec())!!.trackId)
+        calculator.reset()
+        assertEquals(2, calculator.compute(selection(a, b), spec())!!.trackId)
     }
 
     @Test
@@ -133,6 +156,9 @@ class SpecDeviationCalculatorTest {
     fun readyCandidateWithinBothThresholds() {
         val ready = DeviationJudgment.judge(geo(0.52f, 0.15f), TargetSpec.Framing.FULL_BODY)
         assertTrue(DeviationJudgment.isReadyCandidate(ready))
+        // x 0.20 완화: centerX 0.68 → xDeviation 0.18 → READY 후보
+        val nearEdge = DeviationJudgment.judge(geo(0.68f, 0.12f), TargetSpec.Framing.FULL_BODY)
+        assertTrue(DeviationJudgment.isReadyCandidate(nearEdge))
 
         val offCenter = DeviationJudgment.judge(geo(0.8f, 0.12f), TargetSpec.Framing.FULL_BODY)
         assertFalse(DeviationJudgment.isReadyCandidate(offCenter))
