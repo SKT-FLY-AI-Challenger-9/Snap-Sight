@@ -71,4 +71,20 @@ class GuidanceFeedbackSettingsMapperTest {
         assertEquals(1.5f, GuidanceFeedbackSettingsMapper.speechRate(settings(speechRate = 1.5f)), 1e-6f)
         assertEquals(0.5f, GuidanceFeedbackSettingsMapper.speechRate(settings(speechRate = 0.5f)), 1e-6f)
     }
+
+    // --- toneVolume ---
+
+    @Test
+    fun toneVolumeZeroIsNull() {
+        assertNull(GuidanceFeedbackSettingsMapper.toneVolume(0f))
+        assertNull(GuidanceFeedbackSettingsMapper.toneVolume(-1f))
+    }
+
+    @Test
+    fun toneVolumeScalesToPercentAndClamps() {
+        assertEquals(100, GuidanceFeedbackSettingsMapper.toneVolume(1f))
+        assertEquals(50, GuidanceFeedbackSettingsMapper.toneVolume(0.5f))
+        assertEquals(1, GuidanceFeedbackSettingsMapper.toneVolume(0.001f))
+        assertEquals(100, GuidanceFeedbackSettingsMapper.toneVolume(3f))
+    }
 }
