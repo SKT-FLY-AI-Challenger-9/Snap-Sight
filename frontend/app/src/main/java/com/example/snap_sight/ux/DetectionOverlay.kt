@@ -22,8 +22,8 @@ import com.example.snap_sight.cv.TrackedObject
  * 개발·데모 검증용 — 정식 화면(⑥)에서는 시각 요소가 아니라 음성·햅틱으로 안내한다.
  *
  * 좌표 매핑: bbox 는 정방향 프레임 기준 0..1 정규화(x_min..y_max)이고,
- * PreviewView 기본 scaleType(FILL_CENTER)은 프레임을 균등 확대해 화면을 채우고
- * 넘치는 부분을 잘라낸다 → 같은 변환을 적용해야 박스가 미리보기와 일치한다.
+ * PreviewView 는 FIT_CENTER(CaptureScreen 참고) — 프레임 전체가 화면 안에 들어오도록 균등 축소·중앙 정렬
+ * (남는 부분은 검은 띠) → 같은 변환을 적용해야 박스가 미리보기와 일치한다.
  *
  * @param frameAspect 정방향 분석 프레임의 가로/세로 비 (기본 480x640 세로 = 0.75)
  */
@@ -46,16 +46,16 @@ fun DetectionOverlay(
     Canvas(modifier = modifier.fillMaxSize()) {
         if (frameAspect <= 0f || objects.isEmpty()) return@Canvas
 
-        // FILL_CENTER: 프레임이 화면을 다 덮도록 확대 후 중앙 정렬 (넘친 만큼 크롭)
+        // FIT_CENTER: 프레임 전체가 화면 안에 들어오도록 축소 후 중앙 정렬 (남는 부분은 레터박스)
         val viewAspect = size.width / size.height
         val shownWidth: Float
         val shownHeight: Float
         if (frameAspect > viewAspect) {
-            shownHeight = size.height
-            shownWidth = size.height * frameAspect
-        } else {
             shownWidth = size.width
             shownHeight = size.width / frameAspect
+        } else {
+            shownHeight = size.height
+            shownWidth = size.height * frameAspect
         }
         val offsetX = (size.width - shownWidth) / 2f
         val offsetY = (size.height - shownHeight) / 2f

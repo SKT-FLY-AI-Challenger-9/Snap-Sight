@@ -47,7 +47,12 @@ fun CaptureScreen(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val previewView = remember { PreviewView(context) }
+    // FIT_CENTER: 촬영 프레임(센서 3:4)을 자르지 않고 그대로 보여준다(위아래 검은 띠).
+    // 기본값 FILL_CENTER 는 화면을 채우려고 프레임 위아래를 잘라내서 "화면과 찍힌 사진이 다르다"는
+    // 피드백의 원인이었다. CV 판정·자동 줌·저장되는 사진은 모두 이 전체 프레임 기준이다.
+    val previewView = remember {
+        PreviewView(context).apply { scaleType = PreviewView.ScaleType.FIT_CENTER }
+    }
 
     DisposableEffect(Unit) {
         controller.start(lifecycleOwner, previewView)

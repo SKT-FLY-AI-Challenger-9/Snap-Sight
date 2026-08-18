@@ -144,15 +144,21 @@ class CameraController(private val context: Context) {
         cam.cameraControl.startFocusAndMetering(action)
     }
 
-    // 현재/최대 줌 배율. 카메라 준비 전엔 1f.
+    // 현재/최소/최대 줌 배율. 카메라 준비 전엔 1f. 초광각을 논리 카메라로 묶은 기기는 min 이 1 미만(예: 0.6).
     val zoomRatio: Float get() = camera?.cameraInfo?.zoomState?.value?.zoomRatio ?: 1f
+    val minZoomRatio: Float get() = camera?.cameraInfo?.zoomState?.value?.minZoomRatio ?: 1f
     val maxZoomRatio: Float get() = camera?.cameraInfo?.zoomState?.value?.maxZoomRatio ?: 1f
 
-    // 줌 배율 적용 (1.0 = 원본). 기기 지원 범위로 클램프된다.
+    /**
+     * 줌 배율 적용 (1.0 = 기본 렌즈). 기기 지원 범위 [min, max] 로 클램프된다 —
+     * 1 미만(초광각)을 지원하지 않는 기기에서는 0.6 을 넘겨도 1.0 이 된다.
+     */
     fun setZoomRatio(ratio: Float) {
         val cam = camera ?: return
-        val max = cam.cameraInfo.zoomState.value?.maxZoomRatio ?: 1f
-        cam.cameraControl.setZoomRatio(ratio.coerceIn(1f, max))
+        val state = cam.cameraInfo.zoomState.value
+        val min = state?.minZoomRatio ?: 1f
+        val max = state?.maxZoomRatio ?: 1f
+        cam.cameraControl.setZoomRatio(ratio.coerceIn(min, max))
     }
 
     /**
@@ -197,8 +203,24 @@ class CameraController(private val context: Context) {
             contentValues,
         ).build()
 
+        // 이슈 "맞으면 확대된 사진이 안 찍힘" 재현용 — 셔터 시점의 실제 줌 배율을 남긴다.
+        Log.i(TAG, "셔터: zoom=%.2f (min %.2f / max %.2f)".format(zoomRatio, minZoomRatio, maxZoomRatio))
         captureEventListener?.onShutter()
 
+        // 광각(1.0 미만)은 피사체 찾기용이지 촬영 배율이 아니다. 아직 광각이면 1.0 으로 맞춘 뒤 찍는다.
+        val cam = camera
+        if (cam != null && zoomRatio < 1f - 0.01f) {
+            val zoomFuture = cam.cameraControl.setZoomRatio(1f)
+            zoomFuture.addListener({
+                Log.i(TAG, "셔터 전 줌 1.0 복귀 완료 → 촬영")
+                doTakePicture(capture, outputOptions)
+            }, ContextCompat.getMainExecutor(context))
+            return
+        }
+        doTakePicture(capture, outputOptions)
+    }
+
+    private fun doTakePicture(capture: ImageCapture, outputOptions: ImageCapture.OutputFileOptions) {
         capture.takePicture(
             outputOptions,
             ContextCompat.getMainExecutor(context),

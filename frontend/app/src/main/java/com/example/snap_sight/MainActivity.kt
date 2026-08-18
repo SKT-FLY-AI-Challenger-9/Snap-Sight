@@ -35,10 +35,10 @@ import com.example.snap_sight.cv.CvFrameOutput
 import com.example.snap_sight.cv.DeviationJudgment
 import com.example.snap_sight.cv.DeviationListener
 import com.example.snap_sight.cv.DeviationResult
-import com.example.snap_sight.cv.LabelMatchTargetSelector
 import com.example.snap_sight.cv.SnapSightFrameProcessor
 import com.example.snap_sight.cv.SpecDeviationCalculator
 import com.example.snap_sight.cv.TrackedObject
+import com.example.snap_sight.cv.TargetSelectionState
 import com.example.snap_sight.cv.TargetSpec
 import com.example.snap_sight.network.CaptureResultClient
 import com.example.snap_sight.network.FrameUploader
@@ -80,13 +80,17 @@ class MainActivity : ComponentActivity() {
     private val ttsPlayer by lazy { TtsPlayer(cacheDir) }
     private val resultClient = CaptureResultClient()
 
+    /** ④ 기하 편차 계산기 — 세션마다 [SpecDeviationCalculator.reset] 으로 타겟 기억을 지운다. */
+    private val deviationCalculator = SpecDeviationCalculator()
+
     /** ② 온디바이스 CV. 결과는 분석 스레드에서 도착 — 오버레이 갱신·성능 집계는 [onCvFrameResult] 참고. */
     private val cvProcessor by lazy {
         SnapSightFrameProcessor.create(
             this,
             listener = { output -> onCvFrameResult(output) },
-            deviationCalculator = SpecDeviationCalculator(), // ④ 기하 편차 — 파이프라인 안에서 계산
-            selector = LabelMatchTargetSelector(), // 발화 라벨 매칭 (임시 — ② 정식 포팅 시 교체)
+            deviationCalculator = deviationCalculator, // ④ 기하 편차 — 파이프라인 안에서 계산
+            // selector 생략 = detector 와 같은 라벨 자산으로 Objects365TargetSelector 생성
+            // (person/object/landscape 구분, canonical objectLabel class 매칭, 못 찾으면 후보 없음)
         )
     }
     private var lastCvLogMs = 0L
@@ -148,6 +152,7 @@ class MainActivity : ComponentActivity() {
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
             permissionsGranted = results[Manifest.permission.CAMERA] == true
+            if (permissionsGranted) announceWelcomeOnce()
             if (!permissionsGranted) {
                 permissionDenied = true
                 statusText = "카메라 권한이 필요합니다"
@@ -166,6 +171,8 @@ class MainActivity : ComponentActivity() {
 
         settingsUiState = settingsRepository.load()
         deviationListener = guidanceFeedback // ⑥ 판정 결과를 실제 사운드/햅틱/TTS로 렌더링
+        // 줌인 여유가 있으면 "가까이" 대신 자동 줌이 처리한다 — 음성과 줌이 서로 싸우지 않게
+        guidanceFeedback.zoomHandlesDistance = { sessionManager.state == SessionState.AIMING && autoZoom.canZoomIn }
         guidanceFeedback.applySettings(settingsUiState) // 저장된 설정값을 시작부터 반영
 
         cameraController.setFrameProcessor(cvProcessor)
@@ -178,7 +185,24 @@ class MainActivity : ComponentActivity() {
                 if (state == SessionState.AIMING) {
                     currentRawText = "" // 스펙 도착 전 기본값 (발화 없는 세션은 이대로 업로드)
                     cvProcessor.startNewSession(spec = null)
-                    autoZoom.reset() // 이전 세션의 줌 원상 복귀
+                    autoZoom.reset() // 넓게(0.6배, 기기 최소 배율) 시작해 피사체를 먼저 찾는다
+                    guidanceFeedback.resetSession() // 이전 세션의 READY/LOST "이미 말했음" 상태 초기화
+                    deviationCalculator.reset() // 이전 세션의 타겟(track_id) 기억 초기화
+                }
+                // ⑥ 세션 이벤트 안내 — 즉시성이 중요해 내장 TTS 로 바로 말한다 (실사용 피드백 #2·#3)
+                when (state) {
+                    SessionState.LISTENING -> guidanceFeedback.announce("무엇을 찍을지 말씀해 주세요")
+                    SessionState.AIMING -> guidanceFeedback.announce("카메라를 비춰 주세요. 볼륨 버튼으로 촬영합니다")
+                    SessionState.CAPTURING -> guidanceFeedback.playShutter()
+                    SessionState.SAVED -> {
+                        guidanceFeedback.announce("촬영했습니다")
+                        autoZoom.reset() // 촬영이 끝나면 다시 0.6배 광각으로
+                    }
+                    SessionState.ERROR -> {
+                        guidanceFeedback.announce("촬영에 실패했습니다. 볼륨 버튼을 눌러 처음으로 돌아갑니다")
+                        autoZoom.reset()
+                    }
+                    else -> Unit
                 }
                 buttonLabel = when (state) {
                     SessionState.IDLE -> "세션 시작"
@@ -340,6 +364,43 @@ class MainActivity : ComponentActivity() {
         })
     }
 
+    private var welcomed = false
+    private var wentToBackground = false
+    private var sessionCancelledInBackground = false
+
+    /** 앱 진입(권한 확인 완료) 시 1회 — 시각장애 사용자가 첫 화면에서 할 일을 알 수 있게 한다 (실사용 피드백 #2). */
+    private fun announceWelcomeOnce() {
+        if (welcomed) return
+        welcomed = true
+        guidanceFeedback.announce(WELCOME_TEXT)
+    }
+
+    /**
+     * 홈으로 나가면 진행 중이던 세션은 취소한다 — 카메라가 lifecycle 로 이미 해제돼 조준·촬영이 이어질 수 없고,
+     * 돌아왔을 때 어디였는지 알 수 없는 상태로 남기는 것보다 처음부터 다시 시작하는 편이 안전하다.
+     */
+    override fun onStop() {
+        super.onStop()
+        wentToBackground = true
+        if (sessionManager.state != SessionState.IDLE) {
+            sessionManager.cancel()
+            sessionCancelledInBackground = true
+        }
+    }
+
+    /** 홈에 갔다 돌아왔을 때도 지금 할 일을 다시 알려준다 (실사용 피드백 — 첫 실행만 안내되던 문제). */
+    override fun onResume() {
+        super.onResume()
+        if (!wentToBackground) return
+        wentToBackground = false
+        if (currentScreen != AppScreen.MAIN || !permissionsGranted) return
+        guidanceFeedback.announce(
+            if (sessionCancelledInBackground) "스냅사이트로 돌아왔습니다. 진행 중이던 촬영은 취소됐어요. 볼륨 버튼을 눌러 다시 시작하세요"
+            else "스냅사이트로 돌아왔습니다. 볼륨 버튼을 눌러 시작하세요"
+        )
+        sessionCancelledInBackground = false
+    }
+
     /**
      * 짧은 안내 문구를 TTS로 재생한다 (재질문·에러 안내 등, 이슈 TTS-1).
      *
@@ -389,7 +450,13 @@ class MainActivity : ComponentActivity() {
      */
     private fun onCvFrameResult(output: CvFrameOutput) {
         if (!output.analyzed) return
-        runOnUiThread { cvObjects = output.objects } // 디버그 오버레이 갱신
+        // 디버그 오버레이: 의도가 해석된 세션(selection 활성)에서는 의도에 맞는 후보만 그린다.
+        // 의도 없음/pass-through(DISABLED)면 전체 객체.
+        val overlayObjects = output.selection
+            ?.takeIf { it.state != TargetSelectionState.DISABLED }
+            ?.candidates
+            ?: output.objects
+        runOnUiThread { cvObjects = overlayObjects }
 
         // ④ 편차 판정 — 파이프라인이 계산한 기하 편차를 계약 형태로 해석. 조준 중에만 의미가 있다.
         val deviation = if (sessionManager.state == SessionState.AIMING) {
@@ -400,9 +467,22 @@ class MainActivity : ComponentActivity() {
         } else null
         deviation?.let { deviationListener?.onDeviation(it) }
 
-        // 자동 줌인: 조준 중 타겟이 너무 작으면(20% 미만) 40% 목표로 당긴다 (이슈 #67)
+        // 세션 배율: 0.6배(찾기용)로 시작 → 수평이 5프레임 안정되면 1.0배로 복귀. 면적 기반 자동 줌인은
+        // AutoZoomController.ZOOM_IN_ENABLED 로 꺼져 있다 (깊이 판단 부정확 — 후처리 붙인 뒤 재검토).
         if (sessionManager.state == SessionState.AIMING) {
-            output.deviation?.let { autoZoom.onTargetArea(it.areaRatio) }
+            val framing = output.targetSpec?.framing ?: TargetSpec.Framing.FULL_BODY
+            val ready = deviation?.let { DeviationJudgment.isReadyCandidate(it) } ?: false
+            val aligned = deviation?.xDeviation?.let {
+                kotlin.math.abs(it) <= DeviationJudgment.READY_MAX_ABS_X_DEVIATION
+            } ?: false
+            output.deviation?.let {
+                autoZoom.onTargetArea(
+                    areaRatio = it.areaRatio,
+                    targetArea = DeviationJudgment.TARGET_AREA_RATIO.getValue(framing),
+                    aligned = aligned,
+                    hold = ready,
+                )
+            }
         }
 
         // 성능 측정: emit 은 처리 종료 직후 동기 호출이므로 now - timestampMs = 파이프라인 지연
@@ -485,6 +565,7 @@ class MainActivity : ComponentActivity() {
         }
         if (allGranted) {
             permissionsGranted = true
+            announceWelcomeOnce()
         } else {
             permissionLauncher.launch(required)
         }
@@ -532,6 +613,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private companion object {
+        const val WELCOME_TEXT = "스냅사이트입니다. 볼륨 버튼을 눌러 시작하세요"
         const val TAG = "SnapSight"
         const val CV_TAG = "SnapSightCV"
         const val PREFS_NAME = "snap_sight_prefs"
