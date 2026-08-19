@@ -43,6 +43,7 @@ import com.example.snap_sight.cv.TrackedObject
 import com.example.snap_sight.cv.TargetSelectionState
 import com.example.snap_sight.cv.TargetSpec
 import com.example.snap_sight.network.CaptureResultClient
+import com.example.snap_sight.network.DescriptionLookup
 import com.example.snap_sight.network.FrameUploader
 import com.example.snap_sight.network.TtsClient
 import com.example.snap_sight.network.UtteranceClient
@@ -82,6 +83,7 @@ class MainActivity : ComponentActivity() {
     private val ttsClient = TtsClient()
     private val ttsPlayer by lazy { TtsPlayer(cacheDir) }
     private val resultClient = CaptureResultClient()
+    private val descriptionLookup by lazy { DescriptionLookup(this) }
 
     /** ④ 기하 편차 계산기 — 세션마다 [SpecDeviationCalculator.reset] 으로 타겟 기억을 지운다. */
     private val deviationCalculator = SpecDeviationCalculator()
@@ -386,7 +388,8 @@ class MainActivity : ComponentActivity() {
         galleryPhotos = null
         currentScreen = AppScreen.GALLERY
         Thread({
-            val photos = PhotoLibrary.loadRecentPhotos(this)
+            descriptionLookup.beginBatch()
+            val photos = PhotoLibrary.loadRecentPhotos(this, describe = descriptionLookup::get)
             runOnUiThread { galleryPhotos = photos }
         }, "SnapSight-GalleryLoad").start()
     }
