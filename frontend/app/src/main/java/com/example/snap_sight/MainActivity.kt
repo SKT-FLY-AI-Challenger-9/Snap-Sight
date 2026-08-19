@@ -352,10 +352,12 @@ class MainActivity : ComponentActivity() {
         resultClient.pollResult(sessionId, object : CaptureResultClient.Callback {
             override fun onDone(result: CaptureResultClient.ComparisonResult) {
                 Log.i(TAG, "MLLM 비교 완료 [$sessionId] improved=${result.improved} (${result.reason})")
-                speak(
+                val headline =
                     if (result.improved) "더 나은 순간의 사진으로 교체했어요"
                     else "사진 저장이 완료됐어요"
-                )
+                // 비교 사유도 이어 낭독 — 정식 사진 설명 낭독(S4, ⑥)이 붙기 전 임시 (#74)
+                val reason = result.reason?.takeIf { it.isNotBlank() }
+                speak(if (reason != null) "$headline. $reason" else headline)
             }
 
             override fun onGaveUp(reason: String) {
