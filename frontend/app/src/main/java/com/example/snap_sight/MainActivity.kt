@@ -152,6 +152,9 @@ class MainActivity : ComponentActivity() {
 
     // 사진 찾기 화면 데이터 — GALLERY 진입 시 백그라운드로 로드 (#78)
     private var galleryPhotos by mutableStateOf<List<GalleryPhoto>?>(null)
+    // 재진입 시 이전 라벨링 스레드의 늦은 갱신을 무시하기 위한 세대 번호
+    @Volatile
+    private var galleryLoadGeneration = 0
 
     // 디버그 오버레이용 최신 추적 객체 (정식 화면에서는 음성·햅틱으로 대체)
     private var cvObjects by mutableStateOf<List<TrackedObject>>(emptyList())
@@ -469,10 +472,28 @@ class MainActivity : ComponentActivity() {
     private fun openGallery() {
         galleryPhotos = null
         currentScreen = AppScreen.GALLERY
+        val generation = ++galleryLoadGeneration
         Thread({
             descriptionLookup.beginBatch()
             val photos = PhotoLibrary.loadRecentPhotos(this, describe = descriptionLookup::get)
-            runOnUiThread { galleryPhotos = photos }
+            runOnUiThread { if (generation == galleryLoadGeneration) galleryPhotos = photos }
+            // 2차 패스: 사진마다 AI 라벨('장소·피사체')·설명을 받아 카드에 채운다 — 도착하는 대로 갱신 (#78)
+            photos.forEachIndexed { index, photo ->
+                if (generation != galleryLoadGeneration) return@forEachIndexed
+                val labeled = descriptionLookup.labelForPhoto(photo.uri.toString(), photo.thumbnail)
+                    ?: return@forEachIndexed
+                runOnUiThread {
+                    if (generation != galleryLoadGeneration) return@runOnUiThread
+                    galleryPhotos = galleryPhotos?.toMutableList()?.also { list ->
+                        if (index < list.size) {
+                            list[index] = list[index].copy(
+                                title = labeled.first,
+                                description = labeled.second,
+                            )
+                        }
+                    }
+                }
+            }
         }, "SnapSight-GalleryLoad").start()
     }
 

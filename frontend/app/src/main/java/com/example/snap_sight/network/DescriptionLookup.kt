@@ -3,10 +3,15 @@
 package com.example.snap_sight.network
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.util.Log
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.util.concurrent.TimeUnit
 
 class DescriptionLookup(
@@ -52,6 +57,52 @@ class DescriptionLookup(
             }
         } catch (t: Throwable) {
             Log.w(TAG, "설명 조회 실패 — 이번 로드는 캐시만 사용 [$sessionId]: ${t.message}")
+            serverUnreachable = true
+            null
+        }
+    }
+
+    // 라벨 생성은 Haiku 호출이라 수십 초 걸릴 수 있어 조회용과 별도 타임아웃을 쓴다
+    private val labelClient = OkHttpClient.Builder()
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(90, TimeUnit.SECONDS)
+        .build()
+
+    /**
+     * 사진첩 카드용 라벨('장소·피사체')·설명 — [cacheKey]로 캐시하고, 없으면 썸네일을
+     * 서버에 보내 생성한다. 실패·서버 불통이면 null (자리표시 유지). 백그라운드 스레드 전용.
+     */
+    fun labelForPhoto(cacheKey: String, thumbnail: Bitmap?): Pair<String, String>? {
+        prefs.getString("label:$cacheKey", null)?.let { cached ->
+            val newline = cached.indexOf('\n')
+            if (newline > 0) return cached.take(newline) to cached.substring(newline + 1)
+        }
+        if (serverUnreachable || thumbnail == null) return null
+        val result = fetchLabel(thumbnail) ?: return null
+        prefs.edit().putString("label:$cacheKey", "${result.first}\n${result.second}").apply()
+        return result
+    }
+
+    private fun fetchLabel(thumbnail: Bitmap): Pair<String, String>? {
+        val buffer = ByteArrayOutputStream()
+        thumbnail.compress(Bitmap.CompressFormat.JPEG, 85, buffer)
+        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart(
+                "photo", "photo.jpg",
+                buffer.toByteArray().toRequestBody("image/jpeg".toMediaType()),
+            )
+            .build()
+        val request = Request.Builder().url("$baseUrl/api/photos/describe").post(body).build()
+        return try {
+            labelClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return null
+                val obj = JSONObject(response.body?.string().orEmpty())
+                val label = obj.optString("label").takeIf { it.isNotBlank() } ?: return null
+                val description = obj.optString("description").takeIf { it.isNotBlank() } ?: return null
+                label to description
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "사진 라벨링 실패 — 이번 로드는 캐시만 사용: ${t.message}")
             serverUnreachable = true
             null
         }

@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from anthropic import Anthropic, APIConnectionError, APIStatusError
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from backend.mllm.client import _downscaled_jpeg
@@ -90,3 +91,46 @@ def load_description(session_id: str) -> dict | None:
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+LABEL_SYSTEM_PROMPT = (
+    "시각장애 사용자의 사진첩을 정리하는 역할이다. 사진을 보고 label과 description을 만든다. "
+    "label은 '장소·피사체' 꼴의 12자 이내 요약(예: '바닷가·친구 2명', '카페·커피'), "
+    "description은 한두 문장의 존댓말 설명이다. 확실하지 않은 세부는 지어내지 않는다."
+)
+
+
+class PhotoLabel(BaseModel):
+    """사진첩 카드용 라벨+설명 응답 스키마."""
+
+    label: str
+    description: str
+
+
+def label_photo_bytes(image_bytes: bytes) -> PhotoLabel | None:
+    """사진 바이트를 받아 사진첩용 라벨·설명을 생성한다. 실패 시 None."""
+    client = Anthropic()
+    data = base64.standard_b64encode(image_bytes).decode("utf-8")
+    try:
+        response = client.messages.parse(
+            model=MODEL_ID,
+            max_tokens=MAX_TOKENS,
+            system=LABEL_SYSTEM_PROMPT,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "이 사진의 label과 description을 만들어줘:"},
+                        {
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": "image/jpeg", "data": data},
+                        },
+                    ],
+                }
+            ],
+            output_format=PhotoLabel,
+        )
+    except (APIConnectionError, APIStatusError) as exc:
+        logger.error(f"사진 라벨링 API 호출 실패: {exc}")
+        return None
+    return response.parsed_output
