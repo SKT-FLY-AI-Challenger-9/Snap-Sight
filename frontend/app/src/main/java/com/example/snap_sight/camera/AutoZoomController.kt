@@ -19,6 +19,9 @@ class AutoZoomController(private val cameraController: CameraController) {
     @Volatile
     private var alignedStreak = 0
 
+    @Volatile
+    private var noTargetStreak = 0
+
     /**
      * CV 분석 스레드에서 매 프레임 호출된다.
      *
@@ -29,6 +32,7 @@ class AutoZoomController(private val cameraController: CameraController) {
      * @param hold       true 면 줌을 건드리지 않는다 (READY 유지 중)
      */
     fun onTargetArea(areaRatio: Float, targetArea: Float, aligned: Boolean, hold: Boolean = false) {
+        noTargetStreak = 0
         alignedStreak = if (aligned) alignedStreak + 1 else 0
         if (alignedStreak < ALIGN_FRAMES) return
         val current = cameraController.zoomRatio
@@ -48,6 +52,21 @@ class AutoZoomController(private val cameraController: CameraController) {
     }
 
     /**
+     * AIMING 중 타겟을 못 잡은 프레임마다 호출 — 광각(1.0 미만)에서 [NO_TARGET_FRAMES] 연속 실패하면
+     * 기본 배율 1.0 으로 복귀한다. 광각은 인식률이 낮아 "못 봐서 광각을 못 벗어나는" 악순환을 끊는 폴백.
+     */
+    fun onNoTarget() {
+        noTargetStreak++
+        if (noTargetStreak < NO_TARGET_FRAMES) return
+        noTargetStreak = 0
+        if (cameraController.zoomRatio < BASE_ZOOM - ZOOM_EPS) {
+            lastZoomAtMs = System.currentTimeMillis()
+            cameraController.setZoomRatio(BASE_ZOOM)
+            Log.i("SnapSightZoom", "광각 탐색 실패 — 기본 배율 %.1f 로 복귀".format(BASE_ZOOM))
+        }
+    }
+
+    /**
      * 줌인 여유가 남아 있는지 — GuidancePolicy 가 "가까이" 대신 줌에 맡길지 판단하는 데 쓴다.
      * 자동 줌인이 꺼져 있으면 항상 false (음성이 그대로 안내한다).
      */
@@ -59,6 +78,7 @@ class AutoZoomController(private val cameraController: CameraController) {
     fun reset() {
         lastZoomAtMs = 0L
         alignedStreak = 0
+        noTargetStreak = 0
         cameraController.setZoomRatio(SESSION_START_ZOOM)
         Log.i(
             "SnapSightZoom",
@@ -82,6 +102,8 @@ class AutoZoomController(private val cameraController: CameraController) {
         const val TRIGGER_MARGIN = 0.10f
         /** 줌인 전 수평 정렬이 유지돼야 하는 연속 분석 프레임 수. */
         const val ALIGN_FRAMES = 5
+        /** 광각에서 1.0배 복귀까지 허용하는 연속 타겟 미탐지 프레임 수 (약 2초 @ 3fps). */
+        const val NO_TARGET_FRAMES = 6
         const val SESSION_START_ZOOM = 0.6f
         /** 피사체를 찾은 뒤 돌아오는 기본 배율. 촬영은 항상 이 값 이상에서 한다. */
         const val BASE_ZOOM = 1.0f
