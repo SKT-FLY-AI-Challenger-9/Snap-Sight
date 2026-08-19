@@ -24,18 +24,22 @@ interface FrameSink {
  */
 internal class FrameAnalysisAdapter : ImageAnalysis.Analyzer {
 
-    @Volatile
+    // 추론 중 detach(TFLite 해제)가 끼어들면 네이티브 크래시 — onFrame과 교체를 배타 실행한다
+    private val processorLock = Any()
+
     private var processor: FrameProcessor? = null
 
     @Volatile
     private var sink: FrameSink? = null
 
     fun setProcessor(next: FrameProcessor?) {
-        val prev = processor
-        if (prev === next) return
-        processor = next
-        prev?.onDetached()
-        next?.onAttached()
+        synchronized(processorLock) {
+            val prev = processor
+            if (prev === next) return
+            processor = next
+            prev?.onDetached()
+            next?.onAttached()
+        }
     }
 
     fun setSink(next: FrameSink?) {
@@ -46,7 +50,7 @@ internal class FrameAnalysisAdapter : ImageAnalysis.Analyzer {
         image.use { proxy ->
             val rotation = proxy.imageInfo.rotationDegrees
             sink?.onFrame(proxy, rotation, System.currentTimeMillis())
-            processor?.onFrame(proxy, rotation)
+            synchronized(processorLock) { processor?.onFrame(proxy, rotation) }
         }
     }
 }
