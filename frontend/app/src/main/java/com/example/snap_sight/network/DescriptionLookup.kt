@@ -68,22 +68,37 @@ class DescriptionLookup(
         .readTimeout(90, TimeUnit.SECONDS)
         .build()
 
+    /** 사진첩 카드용 라벨 결과 — 대분류(추억/음식/인물)·'장소·피사체' 라벨·설명. */
+    data class PhotoLabel(val category: String, val label: String, val description: String)
+
     /**
-     * 사진첩 카드용 라벨('장소·피사체')·설명 — [cacheKey]로 캐시하고, 없으면 썸네일을
+     * 사진첩 카드용 대분류·라벨·설명 — [cacheKey]로 캐시하고, 없으면 썸네일을
      * 서버에 보내 생성한다. 실패·서버 불통이면 null (자리표시 유지). 백그라운드 스레드 전용.
      */
-    fun labelForPhoto(cacheKey: String, thumbnail: Bitmap?): Pair<String, String>? {
-        prefs.getString("label:$cacheKey", null)?.let { cached ->
-            val newline = cached.indexOf('\n')
-            if (newline > 0) return cached.take(newline) to cached.substring(newline + 1)
+    fun labelForPhoto(cacheKey: String, thumbnail: Bitmap?): PhotoLabel? {
+        prefs.getString("label2:$cacheKey", null)?.let { cached ->
+            try {
+                val obj = JSONObject(cached)
+                return PhotoLabel(
+                    category = obj.getString("category"),
+                    label = obj.getString("label"),
+                    description = obj.getString("description"),
+                )
+            } catch (_: Throwable) {
+                // 깨진 캐시는 무시하고 새로 받는다
+            }
         }
         if (serverUnreachable || thumbnail == null) return null
         val result = fetchLabel(thumbnail) ?: return null
-        prefs.edit().putString("label:$cacheKey", "${result.first}\n${result.second}").apply()
+        val cachePayload = JSONObject()
+            .put("category", result.category)
+            .put("label", result.label)
+            .put("description", result.description)
+        prefs.edit().putString("label2:$cacheKey", cachePayload.toString()).apply()
         return result
     }
 
-    private fun fetchLabel(thumbnail: Bitmap): Pair<String, String>? {
+    private fun fetchLabel(thumbnail: Bitmap): PhotoLabel? {
         val buffer = ByteArrayOutputStream()
         thumbnail.compress(Bitmap.CompressFormat.JPEG, 85, buffer)
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)
@@ -99,7 +114,11 @@ class DescriptionLookup(
                 val obj = JSONObject(response.body?.string().orEmpty())
                 val label = obj.optString("label").takeIf { it.isNotBlank() } ?: return null
                 val description = obj.optString("description").takeIf { it.isNotBlank() } ?: return null
-                label to description
+                PhotoLabel(
+                    category = obj.optString("category").takeIf { it.isNotBlank() } ?: "추억",
+                    label = label,
+                    description = description,
+                )
             }
         } catch (t: Throwable) {
             Log.w(TAG, "사진 라벨링 실패 — 이번 로드는 캐시만 사용: ${t.message}")

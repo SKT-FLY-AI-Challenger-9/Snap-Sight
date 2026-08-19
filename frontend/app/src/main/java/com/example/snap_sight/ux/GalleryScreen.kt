@@ -4,6 +4,7 @@ package com.example.snap_sight.ux
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -61,9 +62,12 @@ fun GalleryScreen(
     onVoiceSearch: () -> Unit = {},
 ) {
     var query by rememberSaveable { mutableStateOf("") }
-    val filtered = photos?.filter {
-        query.isBlank() || it.title.contains(query) || it.description.contains(query) ||
-            it.dateText.contains(query)
+    var categoryFilter by rememberSaveable { mutableStateOf("전체") }
+    val filtered = photos?.filter { photo ->
+        val matchesQuery = query.isBlank() || photo.title.contains(query) ||
+            photo.description.contains(query) || photo.dateText.contains(query)
+        val matchesCategory = categoryFilter == "전체" || photo.category == categoryFilter
+        matchesQuery && matchesCategory
     }
 
     Column(
@@ -134,8 +138,29 @@ fun GalleryScreen(
             text = "AI가 사진 속 사람·장소·상황을 기준으로 자동 정리했어요.",
             style = MaterialTheme.typography.bodySmall,
             color = GalleryTextSecondary,
-            modifier = Modifier.padding(top = 8.dp, bottom = 12.dp),
+            modifier = Modifier.padding(top = 8.dp, bottom = 10.dp),
         )
+
+        // 대분류 필터 (추억/음식/인물) — 라벨링 결과 category와 1:1
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 12.dp)) {
+            listOf("전체", "추억", "음식", "인물").forEach { name ->
+                val selected = categoryFilter == name
+                Text(
+                    text = name,
+                    color = if (selected) GalleryBackground else GalleryTextPrimary,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .background(
+                            if (selected) GalleryAccent else GalleryCard,
+                            RoundedCornerShape(20.dp),
+                        )
+                        .clickable { categoryFilter = name }
+                        .padding(horizontal = 14.dp, vertical = 7.dp)
+                        .semantics { contentDescription = "$name 사진 보기" },
+                )
+            }
+        }
 
         when {
             filtered == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -179,6 +204,14 @@ private fun PhotoCard(photo: GalleryPhoto) {
                 Box(Modifier.size(72.dp).background(GalleryBackground, RoundedCornerShape(12.dp)))
             }
             Column(modifier = Modifier.padding(start = 14.dp)) {
+                photo.category?.let { category ->
+                    Text(
+                        text = category,
+                        color = GalleryAccent,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
                 Text(
                     text = photo.title,
                     style = MaterialTheme.typography.titleSmall,

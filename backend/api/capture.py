@@ -83,8 +83,9 @@ async def receive_capture_frames(
 
 
 class PhotoLabelResponse(BaseModel):
-    """POST /api/photos/describe 응답 스키마 — 사진첩 카드용 라벨·설명."""
+    """POST /api/photos/describe 응답 스키마 — 사진첩 카드용 대분류·라벨·설명."""
 
+    category: str | None
     label: str | None
     description: str | None
 
@@ -98,6 +99,7 @@ async def describe_photo_upload(photo: UploadFile = File(...)) -> PhotoLabelResp
     image_bytes = await photo.read()
     result = label_photo_bytes(image_bytes)
     return PhotoLabelResponse(
+        category=result.category if result else None,
         label=result.label if result else None,
         description=result.description if result else None,
     )

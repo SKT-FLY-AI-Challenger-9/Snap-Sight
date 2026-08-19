@@ -94,15 +94,20 @@ def load_description(session_id: str) -> dict | None:
 
 
 LABEL_SYSTEM_PROMPT = (
-    "시각장애 사용자의 사진첩을 정리하는 역할이다. 사진을 보고 label과 description을 만든다. "
+    "시각장애 사용자의 사진첩을 정리하는 역할이다. 사진을 보고 category, label, description을 만든다. "
+    "category는 반드시 '인물'(사람이 주인공), '음식'(음식·음료가 주인공), '추억'(그 외 풍경·물건·장소) 중 하나다. "
     "label은 '장소·피사체' 꼴의 12자 이내 요약(예: '바닷가·친구 2명', '카페·커피'), "
     "description은 한두 문장의 존댓말 설명이다. 확실하지 않은 세부는 지어내지 않는다."
 )
 
+# 대분류는 앱 필터와 1:1 — 모델이 다른 값을 내면 '추억'으로 정규화한다
+PHOTO_CATEGORIES = ("인물", "음식", "추억")
+
 
 class PhotoLabel(BaseModel):
-    """사진첩 카드용 라벨+설명 응답 스키마."""
+    """사진첩 카드용 카테고리+라벨+설명 응답 스키마."""
 
+    category: str
     label: str
     description: str
 
@@ -133,4 +138,7 @@ def label_photo_bytes(image_bytes: bytes) -> PhotoLabel | None:
     except (APIConnectionError, APIStatusError) as exc:
         logger.error(f"사진 라벨링 API 호출 실패: {exc}")
         return None
-    return response.parsed_output
+    result = response.parsed_output
+    if result is not None and result.category not in PHOTO_CATEGORIES:
+        result = result.model_copy(update={"category": "추억"})
+    return result

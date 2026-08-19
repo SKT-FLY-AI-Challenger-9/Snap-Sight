@@ -156,6 +156,9 @@ class MainActivity : ComponentActivity() {
     @Volatile
     private var galleryLoadGeneration = 0
 
+    // 셔터 순간의 탐지 객체 — 서버 설명(수십 초)보다 먼저 들려줄 즉시 상황 안내의 재료
+    private var shutterObjects: List<TrackedObject> = emptyList()
+
     // 디버그 오버레이용 최신 추적 객체 (정식 화면에서는 음성·햅틱으로 대체)
     private var cvObjects by mutableStateOf<List<TrackedObject>>(emptyList())
 
@@ -225,9 +228,12 @@ class MainActivity : ComponentActivity() {
                 when (state) {
                     SessionState.LISTENING -> guidanceFeedback.announce("무엇을 찍을지 말씀해 주세요")
                     SessionState.AIMING -> guidanceFeedback.announce("카메라를 비춰 주세요. 볼륨 버튼으로 촬영합니다")
-                    SessionState.CAPTURING -> guidanceFeedback.playShutter()
+                    SessionState.CAPTURING -> {
+                        shutterObjects = cvObjects // 즉시 상황 안내용 스냅샷 (#80)
+                        guidanceFeedback.playShutter()
+                    }
                     SessionState.SAVED -> {
-                        guidanceFeedback.announce("촬영했습니다")
+                        guidanceFeedback.announce(instantCaptureSummary(shutterObjects))
                         autoZoom.reset() // 촬영이 끝나면 다시 0.6배 광각으로
                     }
                     SessionState.ERROR -> {
@@ -451,6 +457,20 @@ class MainActivity : ComponentActivity() {
     private var wentToBackground = false
     private var sessionCancelledInBackground = false
 
+    /** 촬영 순간 온디바이스 탐지 결과로 만드는 즉시 상황 안내 — 서버 설명을 기다리지 않고 바로 들려준다. */
+    private fun instantCaptureSummary(objects: List<TrackedObject>): String {
+        if (objects.isEmpty()) return "촬영했습니다"
+        val parts = objects.groupBy { it.label.lowercase() }.entries.take(3).map { (label, group) ->
+            val name = KOREAN_LABELS[label] ?: label
+            when {
+                label == "person" -> "$name ${group.size}명"
+                group.size > 1 -> "$name ${group.size}개"
+                else -> name
+            }
+        }
+        return "찰칵. ${parts.joinToString(", ")} 사진을 찍었어요"
+    }
+
     /** 촬영 직후 결과 화면(S4) 준비 — 사진은 백그라운드에서 축소 로드한다 (#80). */
     private fun showResultScreen(uri: Uri) {
         lastResultRawText = currentRawText
@@ -487,8 +507,9 @@ class MainActivity : ComponentActivity() {
                     galleryPhotos = galleryPhotos?.toMutableList()?.also { list ->
                         if (index < list.size) {
                             list[index] = list[index].copy(
-                                title = labeled.first,
-                                description = labeled.second,
+                                title = labeled.label,
+                                description = labeled.description,
+                                category = labeled.category,
                             )
                         }
                     }
@@ -763,6 +784,16 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val WELCOME_TEXT = "스냅사이트입니다. 볼륨 버튼을 눌러 시작하세요"
         const val TAG = "SnapSight"
+
+        // 즉시 상황 안내용 자주 나오는 라벨 한글 표기 — 없는 라벨은 영문 그대로 읽는다
+        private val KOREAN_LABELS = mapOf(
+            "person" to "사람", "laptop" to "노트북", "cup" to "컵", "bottle" to "병",
+            "chair" to "의자", "desk" to "책상", "monitor/tv" to "모니터", "cell phone" to "휴대폰",
+            "book" to "책", "handbag/satchel" to "가방", "backpack" to "백팩", "cake" to "케이크",
+            "dog" to "강아지", "cat" to "고양이", "flower" to "꽃", "glasses" to "안경",
+            "keyboard" to "키보드", "mouse" to "마우스", "plate" to "접시", "bowl/basin" to "그릇",
+            "wine glass" to "와인잔", "car" to "자동차", "potted plant" to "화분", "bread" to "빵",
+        )
         const val CV_TAG = "SnapSightCV"
         const val PREFS_NAME = "snap_sight_prefs"
         const val KEY_ONBOARDING_DONE = "onboarding_done"
