@@ -9,7 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Uploa
 from pydantic import BaseModel
 
 from backend.config import RESULT_POLL_INTERVAL_SECONDS
-from backend.mllm.description import load_description, trigger_description
+from backend.mllm.description import label_photo_bytes, load_description, trigger_description
 from backend.mllm.orchestration import trigger_comparison
 from backend.storage.comparison_result import load_comparison_result
 from backend.storage.frame_buffer import (
@@ -79,6 +79,27 @@ async def receive_capture_frames(
         session_id=session_id,
         received_candidate_count=len(candidate_frames),
         status="saved",
+    )
+
+
+class PhotoLabelResponse(BaseModel):
+    """POST /api/photos/describe 응답 스키마 — 사진첩 카드용 라벨·설명."""
+
+    label: str | None
+    description: str | None
+
+
+@router.post("/api/photos/describe", response_model=PhotoLabelResponse)
+async def describe_photo_upload(photo: UploadFile = File(...)) -> PhotoLabelResponse:
+    """사진 한 장을 받아 사진첩 카드용 라벨('장소·피사체')과 설명을 생성한다 (#78 라벨링).
+
+    동기 호출이다 — 앱 사진첩 로더가 카드별로 순차 요청·캐시하므로 폴링 규약이 필요 없다.
+    생성 실패는 null 필드로 반환한다 (앱은 자리표시 유지)."""
+    image_bytes = await photo.read()
+    result = label_photo_bytes(image_bytes)
+    return PhotoLabelResponse(
+        label=result.label if result else None,
+        description=result.description if result else None,
     )
 
 
