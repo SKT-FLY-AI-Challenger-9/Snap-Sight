@@ -44,6 +44,7 @@ fun CaptureScreen(
     onSessionButton: () -> Unit,
     cvObjects: List<TrackedObject> = emptyList(),
     onOpenSettings: () -> Unit = {},
+    onOpenGallery: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -103,6 +104,12 @@ fun CaptureScreen(
                 modifier = Modifier.semantics { contentDescription = "전면 후면 카메라 전환" },
             ) {
                 Text("렌즈 전환")
+            }
+            Button(
+                onClick = onOpenGallery,
+                modifier = Modifier.semantics { contentDescription = "사진 찾기 화면 열기" },
+            ) {
+                Text("사진 찾기")
             }
             Button(
                 onClick = onOpenSettings,

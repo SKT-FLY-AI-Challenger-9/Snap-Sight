@@ -29,6 +29,8 @@ import com.example.snap_sight.camera.AutoZoomController
 import com.example.snap_sight.camera.CameraController
 import com.example.snap_sight.camera.CaptureSessionManager
 import com.example.snap_sight.camera.FrameScorer
+import com.example.snap_sight.camera.GalleryPhoto
+import com.example.snap_sight.camera.PhotoLibrary
 import com.example.snap_sight.camera.RingFrameBuffer
 import com.example.snap_sight.camera.SessionState
 import com.example.snap_sight.cv.CvFrameOutput
@@ -46,6 +48,7 @@ import com.example.snap_sight.network.TtsClient
 import com.example.snap_sight.network.UtteranceClient
 import com.example.snap_sight.tts.TtsPlayer
 import com.example.snap_sight.ux.CaptureScreen
+import com.example.snap_sight.ux.GalleryScreen
 import com.example.snap_sight.ux.GuidanceFeedback
 import com.example.snap_sight.ux.OnboardingPermissionState
 import com.example.snap_sight.ux.OnboardingScreen
@@ -55,7 +58,7 @@ import com.example.snap_sight.ux.SettingsUiState
 import com.example.snap_sight.ui.theme.SnapSightTheme
 
 /** S1(온보딩)/S2(홈·조준, [CaptureScreen]이 겸함)/S5(설정) — `docs/screen-design.md` 화면 목록 기준. */
-private enum class AppScreen { ONBOARDING, MAIN, SETTINGS }
+private enum class AppScreen { ONBOARDING, MAIN, SETTINGS, GALLERY }
 
 /**
  * 모듈 배선 호스트.
@@ -129,6 +132,9 @@ class MainActivity : ComponentActivity() {
     private var settingsUiState by mutableStateOf(
         SettingsUiState(vibrationIntensity = 1f, soundVolume = 1f, speechRate = 1f)
     )
+
+    // 사진 찾기 화면 데이터 — GALLERY 진입 시 백그라운드로 로드 (#78)
+    private var galleryPhotos by mutableStateOf<List<GalleryPhoto>?>(null)
 
     // 디버그 오버레이용 최신 추적 객체 (정식 화면에서는 음성·햅틱으로 대체)
     private var cvObjects by mutableStateOf<List<TrackedObject>>(emptyList())
@@ -292,6 +298,7 @@ class MainActivity : ComponentActivity() {
                                 onSessionButton = { sessionManager.onVolumePressed() },
                                 cvObjects = cvObjects,
                                 onOpenSettings = { currentScreen = AppScreen.SETTINGS },
+                                onOpenGallery = { openGallery() },
                             )
                         } else {
                             // 온보딩 완료 후 시스템 설정에서 권한이 취소된 경우의 안전망.
@@ -313,6 +320,12 @@ class MainActivity : ComponentActivity() {
                                 updateSettings(settingsUiState.copy(speechRate = it))
                             },
                             onBack = { currentScreen = AppScreen.MAIN },
+                        )
+
+                        AppScreen.GALLERY -> GalleryScreen(
+                            photos = galleryPhotos,
+                            onBack = { currentScreen = AppScreen.MAIN },
+                            onVoiceSearch = { speak("음성으로 찾기는 준비 중이에요") },
                         )
                     }
                 }
@@ -367,6 +380,16 @@ class MainActivity : ComponentActivity() {
     private var welcomed = false
     private var wentToBackground = false
     private var sessionCancelledInBackground = false
+
+    /** 사진 찾기 진입 — 목록은 매번 새로 읽는다 (촬영 직후 돌아와도 최신이 보이게). */
+    private fun openGallery() {
+        galleryPhotos = null
+        currentScreen = AppScreen.GALLERY
+        Thread({
+            val photos = PhotoLibrary.loadRecentPhotos(this)
+            runOnUiThread { galleryPhotos = photos }
+        }, "SnapSight-GalleryLoad").start()
+    }
 
     /** 앱 진입(권한 확인 완료) 시 1회 — 시각장애 사용자가 첫 화면에서 할 일을 알 수 있게 한다 (실사용 피드백 #2). */
     private fun announceWelcomeOnce() {
