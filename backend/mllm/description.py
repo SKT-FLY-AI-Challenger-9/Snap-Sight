@@ -20,12 +20,13 @@ load_dotenv()
 logger = load_logger("mllm_description.log")
 
 MODEL_ID = "claude-haiku-4-5-20251001"
-MAX_TOKENS = 150
+MAX_TOKENS = 400
 DESCRIPTION_FILENAME = "description.json"
 
 SYSTEM_PROMPT = (
-    "시각장애 사용자가 방금 찍은 사진을 들려주는 역할이다. "
-    "무엇이 어디에 어떻게 찍혔는지 한 문장(60자 이내)으로, '~이 있어요' 같은 존댓말로 설명한다. "
+    "시각장애 사용자가 방금 찍은 사진을 들려주는 역할이다. 2~3문장, 존댓말로 설명한다. "
+    "첫 문장은 주인공(무엇이 어디에 어떤 모습으로)을, 다음 문장은 주변과 배경을, "
+    "여유가 되면 색감·분위기를 덧붙인다. 눈이 보이지 않아도 장면이 그려지게 구체적으로 말하되, "
     "확실하지 않은 세부는 지어내지 않는다."
 )
 
