@@ -3,11 +3,13 @@
 저장 완료 후 MLLM 후보 비교를 비동기로 트리거하는 API 라우터."""
 
 import json
+import threading
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from backend.config import RESULT_POLL_INTERVAL_SECONDS
+from backend.mllm.description import load_description, trigger_description
 from backend.mllm.orchestration import trigger_comparison
 from backend.storage.comparison_result import load_comparison_result
 from backend.storage.frame_buffer import (
@@ -65,6 +67,9 @@ async def receive_capture_frames(
 
     logger.info(f"세션 {session_id}: 대표 컷 1장, 후보 프레임 {len(candidate_frames)}장 저장 완료")
 
+    # 한 줄 사진 설명(Haiku)은 별도 스레드로 — BackgroundTasks는 순차 실행이라 비교와 병렬이 안 된다 (#76)
+    threading.Thread(target=trigger_description, args=(session_id,), daemon=True).start()
+
     if candidate_frames:
         background_tasks.add_task(trigger_comparison, session_id, raw_text, scores)
     else:
@@ -74,6 +79,31 @@ async def receive_capture_frames(
         session_id=session_id,
         received_candidate_count=len(candidate_frames),
         status="saved",
+    )
+
+
+class CaptureDescriptionResponse(BaseModel):
+    """GET /api/capture/{session_id}/description 응답 스키마."""
+
+    status: str
+    description: str | None
+    retry_after_seconds: int | None = None
+
+
+@router.get("/api/capture/{session_id}/description", response_model=CaptureDescriptionResponse)
+async def get_capture_description(session_id: str) -> CaptureDescriptionResponse:
+    """대표 컷 한 줄 설명을 조회한다. 규약은 result와 동일 — 미존재 세션 404, 생성 중 pending."""
+    payload = load_description(session_id)
+    if payload is not None:
+        return CaptureDescriptionResponse(
+            status="done", description=payload.get("description"), retry_after_seconds=None
+        )
+
+    if not session_exists(session_id):
+        raise HTTPException(status_code=404, detail=f"세션 '{session_id}'을 찾을 수 없습니다")
+
+    return CaptureDescriptionResponse(
+        status="pending", description=None, retry_after_seconds=1
     )
 
 
