@@ -4,6 +4,7 @@
 package com.example.snap_sight
 
 import android.Manifest
+import android.graphics.Bitmap
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -15,6 +16,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
@@ -52,6 +54,8 @@ import com.example.snap_sight.tts.TtsPlayer
 import com.example.snap_sight.ux.CaptureScreen
 import com.example.snap_sight.ux.GalleryScreen
 import com.example.snap_sight.ux.GuidanceFeedback
+import com.example.snap_sight.ux.HomeScreen
+import com.example.snap_sight.ux.ResultScreen
 import com.example.snap_sight.ux.OnboardingPermissionState
 import com.example.snap_sight.ux.OnboardingScreen
 import com.example.snap_sight.ux.SettingsRepository
@@ -137,6 +141,15 @@ class MainActivity : ComponentActivity() {
         SettingsUiState(vibrationIntensity = 1f, soundVolume = 1f, speechRate = 1f)
     )
 
+    // 시안 화면 전환용 상태 (#80) — 세션 상태·발화·조준 안내·결과 화면 데이터
+    private var sessionState by mutableStateOf(SessionState.IDLE)
+    private var sessionRawText by mutableStateOf("")
+    private var guidanceText by mutableStateOf("")
+    private var showResult by mutableStateOf(false)
+    private var lastResultPhoto by mutableStateOf<Bitmap?>(null)
+    private var lastResultRawText by mutableStateOf("")
+    private var lastResultDescription by mutableStateOf<String?>(null)
+
     // 사진 찾기 화면 데이터 — GALLERY 진입 시 백그라운드로 로드 (#78)
     private var galleryPhotos by mutableStateOf<List<GalleryPhoto>?>(null)
 
@@ -188,7 +201,13 @@ class MainActivity : ComponentActivity() {
         cameraController.setFrameProcessor(cvProcessor)
         sessionManager.listener = object : CaptureSessionManager.Listener {
             override fun onStateChanged(state: SessionState) {
+                sessionState = state
                 statusText = state.description
+                if (state == SessionState.LISTENING) {
+                    showResult = false
+                    sessionRawText = ""
+                    guidanceText = ""
+                }
                 // 조준 시작 = 새 추적 세션. track_id 가 이전 세션과 섞이지 않도록 초기화한다.
                 // TargetSpec은 아직 백엔드 응답 전이라 일단 null로 시작 — onUtteranceRecognized의
                 // UtteranceClient 콜백이 도착하면 같은 세션이 아직 AIMING일 때 한 번 더 갱신한다.
@@ -267,6 +286,7 @@ class MainActivity : ComponentActivity() {
                 Log.i(TAG, "대표 컷 저장 [$sessionId]: $uri")
                 pendingSessionId = sessionId
                 pendingRepresentative = uri
+                showResultScreen(uri)
                 maybeUploadFrames()
             }
 
@@ -295,15 +315,39 @@ class MainActivity : ComponentActivity() {
                         )
 
                         AppScreen.MAIN -> if (permissionsGranted) {
-                            CaptureScreen(
-                                controller = cameraController,
-                                statusText = statusText,
-                                sessionButtonLabel = buttonLabel,
-                                onSessionButton = { sessionManager.onVolumePressed() },
-                                cvObjects = cvObjects,
-                                onOpenSettings = { currentScreen = AppScreen.SETTINGS },
-                                onOpenGallery = { openGallery() },
-                            )
+                            // 카메라는 항상 아래에 살아 있고(볼륨 트리거·수명주기 유지), 홈/결과가 위에 덮인다
+                            Box {
+                                CaptureScreen(
+                                    controller = cameraController,
+                                    statusText = statusText,
+                                    rawText = sessionRawText,
+                                    guidanceText = guidanceText,
+                                    onCancel = { sessionManager.cancel() },
+                                    cvObjects = cvObjects,
+                                    showOverlays = sessionState != SessionState.IDLE && !showResult,
+                                )
+                                when {
+                                    showResult -> ResultScreen(
+                                        photo = lastResultPhoto,
+                                        rawText = lastResultRawText,
+                                        description = lastResultDescription,
+                                        onReplayDescription = {
+                                            speak(lastResultDescription ?: "아직 설명을 만드는 중이에요")
+                                        },
+                                        onConfirm = { showResult = false },
+                                        onRetake = {
+                                            showResult = false
+                                            sessionManager.onVolumePressed()
+                                        },
+                                    )
+                                    sessionState == SessionState.IDLE -> HomeScreen(
+                                        onStartSession = { sessionManager.onVolumePressed() },
+                                        onOpenGallery = { openGallery() },
+                                        onOpenSettings = { currentScreen = AppScreen.SETTINGS },
+                                    )
+                                    else -> Unit
+                                }
+                            }
                         } else {
                             // 온보딩 완료 후 시스템 설정에서 권한이 취소된 경우의 안전망.
                             Text(
@@ -370,7 +414,10 @@ class MainActivity : ComponentActivity() {
         descriptionClient.pollDescription(sessionId, object : PhotoDescriptionClient.Callback {
             override fun onDone(description: String?) {
                 Log.i(TAG, "사진 설명 도착 [$sessionId]: $description")
-                description?.let { speak(it) }
+                description?.let {
+                    lastResultDescription = it
+                    speak(it)
+                }
             }
 
             override fun onGaveUp(reason: String) {
@@ -400,6 +447,23 @@ class MainActivity : ComponentActivity() {
     private var welcomed = false
     private var wentToBackground = false
     private var sessionCancelledInBackground = false
+
+    /** 촬영 직후 결과 화면(S4) 준비 — 사진은 백그라운드에서 축소 로드한다 (#80). */
+    private fun showResultScreen(uri: Uri) {
+        lastResultRawText = currentRawText
+        lastResultDescription = null
+        lastResultPhoto = null
+        showResult = true
+        Thread({
+            val bitmap = try {
+                contentResolver.loadThumbnail(uri, android.util.Size(1080, 1080), null)
+            } catch (t: Throwable) {
+                Log.w(TAG, "결과 사진 로드 실패: $uri", t)
+                null
+            }
+            runOnUiThread { lastResultPhoto = bitmap }
+        }, "SnapSight-ResultPhoto").start()
+    }
 
     /** 사진 찾기 진입 — 목록은 매번 새로 읽는다 (촬영 직후 돌아와도 최신이 보이게). */
     private fun openGallery() {
@@ -482,6 +546,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         currentRawText = spec?.rawText.orEmpty()
+        sessionRawText = currentRawText
         cvProcessor.startNewSession(spec = spec)
     }
 
@@ -530,6 +595,20 @@ class MainActivity : ComponentActivity() {
             } else {
                 autoZoom.onNoTarget() // 광각에서 계속 못 찾으면 1.0배 복귀 (탐색 실패 폴백)
             }
+
+            // 시안 S3 하단 안내 카드 문구 (#80) — 음성·햅틱(⑥)과 같은 판정을 화면 텍스트로도 보여준다
+            val xDev = deviation?.xDeviation
+            val sizeDev = deviation?.sizeDeviation
+            val text = when {
+                xDev == null || sizeDev == null -> "피사체를 찾고 있어요"
+                ready -> "지금이에요! 볼륨 버튼을 누르세요"
+                xDev < -DeviationJudgment.READY_MAX_ABS_X_DEVIATION -> "카메라를 조금 왼쪽으로 이동해주세요"
+                xDev > DeviationJudgment.READY_MAX_ABS_X_DEVIATION -> "카메라를 조금 오른쪽으로 이동해주세요"
+                sizeDev < -DeviationJudgment.READY_MAX_ABS_SIZE_DEVIATION -> "조금 더 가까이 가주세요"
+                sizeDev > DeviationJudgment.READY_MAX_ABS_SIZE_DEVIATION -> "조금 뒤로 물러나주세요"
+                else -> "좋아요, 그대로 유지해주세요"
+            }
+            runOnUiThread { guidanceText = text }
         }
 
         // 성능 측정: emit 은 처리 종료 직후 동기 호출이므로 now - timestampMs = 파이프라인 지연
