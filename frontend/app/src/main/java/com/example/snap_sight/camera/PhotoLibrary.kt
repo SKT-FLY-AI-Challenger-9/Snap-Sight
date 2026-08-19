@@ -29,8 +29,14 @@ object PhotoLibrary {
     private const val MAX_PHOTOS = 30
     private val THUMBNAIL_SIZE = Size(256, 256)
 
-    /** Pictures/SnapSight의 사진을 최신순으로 최대 [MAX_PHOTOS]장 읽는다. 백그라운드 스레드에서 호출할 것. */
-    fun loadRecentPhotos(context: Context): List<GalleryPhoto> {
+    /**
+     * Pictures/SnapSight의 사진을 최신순으로 최대 [MAX_PHOTOS]장 읽는다. 백그라운드 스레드에서 호출할 것.
+     * [describe]는 파일명에 심긴 세션 ID로 AI 설명을 돌려준다 (없으면 null → 자리표시 문구).
+     */
+    fun loadRecentPhotos(
+        context: Context,
+        describe: (sessionId: String) -> String? = { null },
+    ): List<GalleryPhoto> {
         val photos = mutableListOf<GalleryPhoto>()
         val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         val projection = arrayOf(
@@ -48,18 +54,20 @@ object PhotoLibrary {
                 "${MediaStore.Images.Media.DATE_ADDED} DESC",
             )?.use { cursor ->
                 val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
                 val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
                 while (cursor.moveToNext() && photos.size < MAX_PHOTOS) {
                     val id = cursor.getLong(idCol)
                     val addedAt = Date(cursor.getLong(dateCol) * 1000L)
                     val uri = ContentUris.withAppendedId(collection, id)
+                    val sessionId = sessionIdFromDisplayName(cursor.getString(nameCol))
                     photos.add(
                         GalleryPhoto(
                             uri = uri,
                             thumbnail = loadThumbnail(context, uri),
                             title = titleFormat.format(addedAt) + " 촬영",
                             dateText = dateFormat.format(addedAt),
-                            description = "설명을 준비 중이에요",
+                            description = sessionId?.let(describe) ?: "설명을 준비 중이에요",
                         )
                     )
                 }
@@ -80,6 +88,12 @@ object PhotoLibrary {
     } catch (t: Throwable) {
         Log.w(TAG, "썸네일 로드 실패: $uri", t)
         null
+    }
+
+    /** "SnapSight_s_20260819_145301.jpg" → "s_20260819_145301". 세션 ID가 안 심긴 옛 사진은 null. */
+    internal fun sessionIdFromDisplayName(displayName: String?): String? {
+        val stem = displayName?.removePrefix("SnapSight_")?.substringBeforeLast('.') ?: return null
+        return stem.takeIf { it.startsWith("s_") }
     }
 
     private val titleFormat = SimpleDateFormat("M월 d일 H시 m분", Locale.KOREAN)
