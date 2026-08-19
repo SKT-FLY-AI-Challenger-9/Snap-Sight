@@ -203,7 +203,7 @@ class CaptureSessionManager(
             Log.i(TAG, "후보 프레임 ${candidates.size}장 수집 [$shutterSessionId]")
             listener?.onCandidatesCollected(shutterSessionId, candidates)
         }
-        cameraController.takePhoto()
+        cameraController.takePhoto(shutterSessionId)
     }
 
     // ---- CaptureEventListener (CameraController 가 메인 스레드에서 호출) ----
