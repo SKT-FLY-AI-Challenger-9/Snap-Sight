@@ -6,6 +6,7 @@ package com.example.snap_sight
 import android.Manifest
 import android.graphics.Bitmap
 import android.content.Intent
+import android.media.AudioManager
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
@@ -44,6 +45,7 @@ import com.example.snap_sight.cv.SpecDeviationCalculator
 import com.example.snap_sight.cv.TrackedObject
 import com.example.snap_sight.cv.TargetSelectionState
 import com.example.snap_sight.cv.TargetSpec
+import com.example.snap_sight.network.BackendConfig
 import com.example.snap_sight.network.CaptureResultClient
 import com.example.snap_sight.network.DescriptionLookup
 import com.example.snap_sight.network.FrameUploader
@@ -149,6 +151,12 @@ class MainActivity : ComponentActivity() {
     private var lastResultPhoto by mutableStateOf<Bitmap?>(null)
     private var lastResultRawText by mutableStateOf("")
     private var lastResultDescription by mutableStateOf<String?>(null)
+    // 시안 S4의 한 줄 요약·판정 표 — 서버 설명을 기다리지 않고 셔터 순간 온디바이스 탐지로 채운다 (#80)
+    private var lastResultHeadline by mutableStateOf<String?>(null)
+    private var lastResultDetails by mutableStateOf<List<Pair<String, String>>>(emptyList())
+
+    // 설정 화면의 백엔드 서버 주소 입력값 — 돌아가기 시 BackendConfig에 적용·저장한다
+    private var backendUrlInput by mutableStateOf("")
 
     // 사진 찾기 화면 데이터 — GALLERY 진입 시 백그라운드로 로드 (#78)
     private var galleryPhotos by mutableStateOf<List<GalleryPhoto>?>(null)
@@ -199,6 +207,8 @@ class MainActivity : ComponentActivity() {
         }
 
         settingsUiState = settingsRepository.load()
+        BackendConfig.load(appPrefs) // 저장된 서버 주소 재정의 복원 (없으면 빌드 주입값)
+        backendUrlInput = BackendConfig.storedOverride(appPrefs)
         deviationListener = guidanceFeedback // ⑥ 판정 결과를 실제 사운드/햅틱/TTS로 렌더링
         // 줌인 여유가 있으면 "가까이" 대신 자동 줌이 처리한다 — 음성과 줌이 서로 싸우지 않게
         guidanceFeedback.zoomHandlesDistance = { sessionManager.state == SessionState.AIMING && autoZoom.canZoomIn }
@@ -274,6 +284,7 @@ class MainActivity : ComponentActivity() {
                     return
                 }
                 Log.i(TAG, "발화 인식 완료 [$sessionId]: $text")
+                sessionRawText = text // 시안(v31): 해석하는 동안 홈 마이크 아래에 발화 원문을 보여준다
                 utteranceClient.sendUtterance(
                     sessionId = sessionId,
                     rawText = text,
@@ -333,13 +344,19 @@ class MainActivity : ComponentActivity() {
                                     guidanceText = guidanceText,
                                     onCancel = { sessionManager.cancel() },
                                     cvObjects = cvObjects,
-                                    showOverlays = sessionState != SessionState.IDLE && !showResult,
+                                    // 청취/해석 단계는 홈이 위에 떠 있으므로 조준부터만 오버레이를 켠다
+                                    showOverlays = sessionState != SessionState.IDLE &&
+                                        sessionState != SessionState.LISTENING &&
+                                        sessionState != SessionState.PARSING &&
+                                        !showResult,
                                 )
                                 when {
                                     showResult -> ResultScreen(
                                         photo = lastResultPhoto,
                                         rawText = lastResultRawText,
                                         description = lastResultDescription,
+                                        headline = lastResultHeadline,
+                                        details = lastResultDetails,
                                         onReplayDescription = {
                                             speak(lastResultDescription ?: "아직 설명을 만드는 중이에요")
                                         },
@@ -349,10 +366,16 @@ class MainActivity : ComponentActivity() {
                                             sessionManager.onVolumePressed()
                                         },
                                     )
-                                    sessionState == SessionState.IDLE -> HomeScreen(
+                                    // 시안(v31): 발화 청취·해석까지는 홈 위에서 마이크가 파랗게
+                                    // 활성화된 채 진행되고, 조준(AIMING)부터 카메라 UI가 드러난다
+                                    sessionState == SessionState.IDLE ||
+                                        sessionState == SessionState.LISTENING ||
+                                        sessionState == SessionState.PARSING -> HomeScreen(
                                         onStartSession = { sessionManager.onVolumePressed() },
                                         onOpenGallery = { openGallery() },
                                         onOpenSettings = { currentScreen = AppScreen.SETTINGS },
+                                        isListening = sessionState != SessionState.IDLE,
+                                        recognizedText = sessionRawText,
                                     )
                                     else -> Unit
                                 }
@@ -376,7 +399,15 @@ class MainActivity : ComponentActivity() {
                             onSpeechRateChange = {
                                 updateSettings(settingsUiState.copy(speechRate = it))
                             },
-                            onBack = { currentScreen = AppScreen.MAIN },
+                            serverUrl = backendUrlInput,
+                            onServerUrlChange = { backendUrlInput = it },
+                            onBack = {
+                                // 돌아가기 = 서버 주소 적용 시점 — 정규화된 값을 저장하고 입력칸에도 반영
+                                val applied = BackendConfig.save(appPrefs, backendUrlInput)
+                                backendUrlInput = BackendConfig.storedOverride(appPrefs)
+                                Log.i(TAG, "백엔드 주소 적용: $applied")
+                                currentScreen = AppScreen.MAIN
+                            },
                         )
 
                         AppScreen.GALLERY -> GalleryScreen(
@@ -471,11 +502,29 @@ class MainActivity : ComponentActivity() {
         return "찰칵. ${parts.joinToString(", ")} 사진을 찍었어요"
     }
 
+    /** 셔터 순간 탐지 객체로 시안 S4의 판정 표 행을 만든다 — 아는 값(사람 수·피사체)만 채운다. */
+    private fun resultDetails(objects: List<TrackedObject>): List<Pair<String, String>> {
+        if (objects.isEmpty()) return emptyList()
+        val rows = mutableListOf<Pair<String, String>>()
+        val personCount = objects.count { it.label.equals("person", ignoreCase = true) }
+        if (personCount > 0) rows += "사람" to "${personCount}명"
+        val others = objects.filterNot { it.label.equals("person", ignoreCase = true) }
+            .groupBy { it.label.lowercase() }.entries.take(3)
+            .map { (label, group) ->
+                val name = KOREAN_LABELS[label] ?: label
+                if (group.size > 1) "$name ${group.size}개" else name
+            }
+        if (others.isNotEmpty()) rows += "피사체" to others.joinToString(", ")
+        return rows
+    }
+
     /** 촬영 직후 결과 화면(S4) 준비 — 사진은 백그라운드에서 축소 로드한다 (#80). */
     private fun showResultScreen(uri: Uri) {
         lastResultRawText = currentRawText
         lastResultDescription = null
         lastResultPhoto = null
+        lastResultHeadline = instantCaptureSummary(shutterObjects).removePrefix("찰칵. ")
+        lastResultDetails = resultDetails(shutterObjects)
         showResult = true
         Thread({
             val bitmap = try {
@@ -488,6 +537,19 @@ class MainActivity : ComponentActivity() {
         }, "SnapSight-ResultPhoto").start()
     }
 
+    /**
+     * 발화·설명 텍스트 기반 대분류 판정 — 사람 언급이 있으면 '인물', 음식·음료 언급이 있으면
+     * '음식', 둘 다 없으면 null(호출부가 서버 판정·기본값 사용). MLLM 판정이 '추억'으로
+     * 쏠리는 문제를 결정적 규칙으로 보정한다 (실사용 피드백).
+     */
+    private fun classifyCategory(vararg texts: String?): String? {
+        val joined = texts.filterNotNull().joinToString(" ")
+        if (joined.isBlank()) return null
+        if (PERSON_KEYWORDS.any { joined.contains(it) }) return "인물"
+        if (FOOD_KEYWORDS.any { joined.contains(it) }) return "음식"
+        return null
+    }
+
     /** 사진 찾기 진입 — 목록은 매번 새로 읽는다 (촬영 직후 돌아와도 최신이 보이게). */
     private fun openGallery() {
         galleryPhotos = null
@@ -496,6 +558,11 @@ class MainActivity : ComponentActivity() {
         Thread({
             descriptionLookup.beginBatch()
             val photos = PhotoLibrary.loadRecentPhotos(this, describe = descriptionLookup::get)
+                // 세션 설명이 이미 있는 사진은 라벨링을 기다리지 않고 바로 분류한다
+                .map { photo ->
+                    classifyCategory(photo.title, photo.description)
+                        ?.let { photo.copy(category = it) } ?: photo
+                }
             runOnUiThread { if (generation == galleryLoadGeneration) galleryPhotos = photos }
             // 2차 패스: 사진마다 AI 라벨('장소·피사체')·설명을 받아 카드에 채운다 — 도착하는 대로 갱신 (#78)
             photos.forEachIndexed { index, photo ->
@@ -509,7 +576,10 @@ class MainActivity : ComponentActivity() {
                             list[index] = list[index].copy(
                                 title = labeled.label,
                                 description = labeled.description,
-                                category = labeled.category,
+                                // 키워드 규칙이 서버(MLLM) 판정보다 우선 — 인물 > 음식 > 서버 판정
+                                category = classifyCategory(
+                                    labeled.label, labeled.description, list[index].description,
+                                ) ?: labeled.category,
                             )
                         }
                     }
@@ -538,9 +608,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 미디어 볼륨이 무음이면 최소 가청 수준(60%)으로 올린다.
+     *
+     * 안내 음성(백엔드 TTS mp3·내장 TTS)은 모두 STREAM_MUSIC으로 나가는데, 이 앱은 볼륨
+     * 버튼을 세션 제어로 가로채므로 사용자가 앱 안에서 볼륨을 올릴 방법이 없다. 시각장애
+     * 사용자는 "무음이라 안 들리는" 상태를 인지하기도 어려워 앱이 직접 보정한다 (실사용
+     * 피드백 — 촬영 후 상황 설명이 재생됐지만 볼륨 0이라 들리지 않던 문제).
+     */
+    private fun ensureAudibleMediaVolume() {
+        val audio = getSystemService(AUDIO_SERVICE) as AudioManager
+        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val floor = (max * 6) / 10
+        if (audio.getStreamVolume(AudioManager.STREAM_MUSIC) < floor) {
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC, floor, 0)
+            Log.i(TAG, "미디어 볼륨이 낮아 $floor/$max 로 보정")
+        }
+    }
+
     /** 홈에 갔다 돌아왔을 때도 지금 할 일을 다시 알려준다 (실사용 피드백 — 첫 실행만 안내되던 문제). */
     override fun onResume() {
         super.onResume()
+        ensureAudibleMediaVolume()
         if (!wentToBackground) return
         wentToBackground = false
         if (currentScreen != AppScreen.MAIN || !permissionsGranted) return
@@ -793,6 +882,17 @@ class MainActivity : ComponentActivity() {
             "dog" to "강아지", "cat" to "고양이", "flower" to "꽃", "glasses" to "안경",
             "keyboard" to "키보드", "mouse" to "마우스", "plate" to "접시", "bowl/basin" to "그릇",
             "wine glass" to "와인잔", "car" to "자동차", "potted plant" to "화분", "bread" to "빵",
+        )
+        // 대분류 키워드 규칙 (인물 > 음식) — 발화·라벨·설명 텍스트에서 찾는다.
+        // '차'는 자동차·기차와 겹쳐 단독으로 쓰지 않고 녹차·홍차·찻잔으로 한정한다.
+        private val PERSON_KEYWORDS = listOf(
+            "사람", "아들", "딸", "아이", "아기", "가족", "친구", "남성", "여성",
+            "남자", "여자", "인물", "얼굴", "커플", "부모", "엄마", "아빠",
+        )
+        private val FOOD_KEYWORDS = listOf(
+            "음식", "커피", "라떼", "아메리카노", "녹차", "홍차", "찻잔", "음료", "주스",
+            "케이크", "빵", "디저트", "밥", "식사", "요리", "접시", "식탁", "메뉴",
+            "과일", "파스타", "피자", "치킨", "샐러드", "맥주", "와인",
         )
         const val CV_TAG = "SnapSightCV"
         const val PREFS_NAME = "snap_sight_prefs"
