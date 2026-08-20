@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import base64
+import io
 from pathlib import Path
 
+from PIL import Image
 from anthropic import Anthropic, APIConnectionError, APIStatusError
 from dotenv import load_dotenv
 
@@ -18,6 +20,8 @@ logger = load_logger("mllm_client.log")
 
 MODEL_ID = "claude-opus-5"
 MAX_TOKENS = 1024
+# Anthropic 권장 최대 변(1568px) — 이보다 크면 서버가 어차피 축소하므로 원본 전송은 시간 낭비 (#76)
+MAX_IMAGE_DIM = 1568
 
 
 class MllmClientError(Exception):
@@ -83,10 +87,21 @@ def _build_image_content(representative_frame: Path, candidate_frames: list[Path
 
 
 def _encode_image(path: Path) -> dict:
-    """이미지 파일을 base64로 인코딩해 Anthropic 메시지 콘텐츠 블록으로 만든다."""
-    data = base64.standard_b64encode(path.read_bytes()).decode("utf-8")
-    media_type = "image/jpeg" if path.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+    """이미지를 필요 시 축소한 뒤 base64로 인코딩해 Anthropic 메시지 콘텐츠 블록으로 만든다."""
+    data = base64.standard_b64encode(_downscaled_jpeg(path)).decode("utf-8")
     return {
         "type": "image",
-        "source": {"type": "base64", "media_type": media_type, "data": data},
+        "source": {"type": "base64", "media_type": "image/jpeg", "data": data},
     }
+
+
+def _downscaled_jpeg(path: Path) -> bytes:
+    """긴 변이 [MAX_IMAGE_DIM]을 넘으면 그 크기로 줄여 JPEG 재인코딩한다. 작으면 원본 그대로."""
+    raw = path.read_bytes()
+    with Image.open(io.BytesIO(raw)) as img:
+        if max(img.size) <= MAX_IMAGE_DIM:
+            return raw
+        img.thumbnail((MAX_IMAGE_DIM, MAX_IMAGE_DIM))
+        buffer = io.BytesIO()
+        img.convert("RGB").save(buffer, format="JPEG", quality=85)
+        return buffer.getvalue()
