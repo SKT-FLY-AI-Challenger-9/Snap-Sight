@@ -45,6 +45,7 @@ import com.example.snap_sight.cv.TargetSpec
 import com.example.snap_sight.network.CaptureResultClient
 import com.example.snap_sight.network.DescriptionLookup
 import com.example.snap_sight.network.FrameUploader
+import com.example.snap_sight.network.PhotoDescriptionClient
 import com.example.snap_sight.network.TtsClient
 import com.example.snap_sight.network.UtteranceClient
 import com.example.snap_sight.tts.TtsPlayer
@@ -83,7 +84,7 @@ class MainActivity : ComponentActivity() {
     private val ttsClient = TtsClient()
     private val ttsPlayer by lazy { TtsPlayer(cacheDir) }
     private val resultClient = CaptureResultClient()
-    private val descriptionLookup by lazy { DescriptionLookup(this) }
+    private val descriptionClient = PhotoDescriptionClient()
 
     /** ④ 기하 편차 계산기 — 세션마다 [SpecDeviationCalculator.reset] 으로 타겟 기억을 지운다. */
     private val deviationCalculator = SpecDeviationCalculator()
@@ -363,14 +364,30 @@ class MainActivity : ComponentActivity() {
      * 파이프라인 마지막 단계 — 실패·타임아웃은 로그만 남기고 조용히 넘어간다
      * (사진은 이미 기기와 서버에 저장돼 있어 사용자 손해가 없다).
      */
+    /** 촬영 직후 대표 컷 한 줄 설명을 폴링해 먼저 낭독한다 — 비교 결과(수십 초)보다 빨리 도착한다 (#76). */
+    private fun pollPhotoDescription(sessionId: String) {
+        descriptionClient.pollDescription(sessionId, object : PhotoDescriptionClient.Callback {
+            override fun onDone(description: String?) {
+                Log.i(TAG, "사진 설명 도착 [$sessionId]: $description")
+                description?.let { speak(it) }
+            }
+
+            override fun onGaveUp(reason: String) {
+                Log.w(TAG, "사진 설명 폴링 중단 [$sessionId]: $reason")
+            }
+        })
+    }
+
     private fun pollComparisonResult(sessionId: String) {
         resultClient.pollResult(sessionId, object : CaptureResultClient.Callback {
             override fun onDone(result: CaptureResultClient.ComparisonResult) {
                 Log.i(TAG, "MLLM 비교 완료 [$sessionId] improved=${result.improved} (${result.reason})")
-                speak(
+                val headline =
                     if (result.improved) "더 나은 순간의 사진으로 교체했어요"
                     else "사진 저장이 완료됐어요"
-                )
+                // 비교 사유도 이어 낭독 — 정식 사진 설명 낭독(S4, ⑥)이 붙기 전 임시 (#74)
+                val reason = result.reason?.takeIf { it.isNotBlank() }
+                speak(if (reason != null) "$headline. $reason" else headline)
             }
 
             override fun onGaveUp(reason: String) {
@@ -501,13 +518,16 @@ class MainActivity : ComponentActivity() {
             val aligned = deviation?.xDeviation?.let {
                 kotlin.math.abs(it) <= DeviationJudgment.READY_MAX_ABS_X_DEVIATION
             } ?: false
-            output.deviation?.let {
+            val dev = output.deviation
+            if (dev != null) {
                 autoZoom.onTargetArea(
-                    areaRatio = it.areaRatio,
+                    areaRatio = dev.areaRatio,
                     targetArea = DeviationJudgment.TARGET_AREA_RATIO.getValue(framing),
                     aligned = aligned,
                     hold = ready,
                 )
+            } else {
+                autoZoom.onNoTarget() // 광각에서 계속 못 찾으면 1.0배 복귀 (탐색 실패 폴백)
             }
         }
 
@@ -573,6 +593,7 @@ class MainActivity : ComponentActivity() {
             callback = object : FrameUploader.Callback {
                 override fun onSuccess(result: FrameUploader.UploadResult) {
                     Log.i(TAG, "업로드 완료 [${result.sessionId}] 후보 ${result.receivedCandidateCount}장")
+                    pollPhotoDescription(result.sessionId)
                     pollComparisonResult(result.sessionId)
                 }
 
