@@ -30,7 +30,8 @@ import java.util.concurrent.TimeUnit
  * 업로드는 자체 백그라운드 스레드에서 수행하고 콜백은 메인 스레드로 돌려준다.
  */
 class FrameUploader(
-    private val baseUrl: String = DEFAULT_BASE_URL,
+    // null이면 요청 시점에 BackendConfig.baseUrl을 읽는다 — 설정에서 서버 주소를 바꿔도 즉시 반영
+    private val baseUrl: String? = null,
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
@@ -95,7 +96,7 @@ class FrameUploader(
                 }
 
                 val request = Request.Builder()
-                    .url("$baseUrl/api/capture/frames")
+                    .url("${baseUrl ?: BackendConfig.baseUrl}/api/capture/frames")
                     .post(bodyBuilder.build())
                     .build()
 

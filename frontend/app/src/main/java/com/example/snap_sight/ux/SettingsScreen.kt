@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -42,6 +43,9 @@ fun SettingsScreen(
     onSoundVolumeChange: (Float) -> Unit,
     onSpeechRateChange: (Float) -> Unit,
     onBack: () -> Unit,
+    // 백엔드 서버 주소 재정의 (시연장 Wi-Fi 변경 대비) — 적용·저장 시점은 호출부(돌아가기) 책임
+    serverUrl: String = "",
+    onServerUrlChange: (String) -> Unit = {},
 ) {
     Column(
         modifier = Modifier
@@ -68,6 +72,23 @@ fun SettingsScreen(
             valueRange = SPEECH_RATE_RANGE,
             formatValue = { "${(it * 100).roundToInt()}퍼센트 속도" },
         )
+
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Text(text = "백엔드 서버 주소", style = MaterialTheme.typography.bodyLarge)
+            OutlinedTextField(
+                value = serverUrl,
+                onValueChange = onServerUrlChange,
+                singleLine = true,
+                placeholder = { Text("예: 192.168.10.104:8000 (비우면 빌드 기본값)") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentDescription = "백엔드 서버 주소 입력. 비우면 빌드 기본값을 사용합니다" },
+            )
+            Text(
+                text = "다른 Wi-Fi로 옮기면 PC의 새 IP를 입력하세요. 돌아가기를 누르면 적용됩니다.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
 
         TextButton(
             onClick = onBack,
