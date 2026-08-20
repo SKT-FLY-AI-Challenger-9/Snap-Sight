@@ -1,5 +1,5 @@
-// 이 파일: S3 촬영(조준) 화면 — Figma 시안(#80). 상단 "현재 요청" 발화 카드,
-// 카메라 미리보기(+탐지 오버레이), 하단 방향 안내 카드와 취소 버튼.
+// 이 파일: S3 촬영(조준) 화면 — Figma Make 시안(v31, #80). 상단 "요청" 발화 카드 + 음성 안내 칩,
+// 카메라 미리보기(+탐지 오버레이), 하단 "촬영 상태 / 안내" 카드와 촬영 취소 버튼.
 package com.example.snap_sight.ux
 
 import androidx.camera.view.PreviewView
@@ -36,7 +36,7 @@ import com.example.snap_sight.camera.CameraController
 import com.example.snap_sight.cv.TrackedObject
 
 /**
- * @param rawText      현재 세션 발화 원문 — 상단 "현재 요청" 카드에 표시 (없으면 상태 문구)
+ * @param rawText      현재 세션 발화 원문 — 상단 "요청" 카드에 표시 (없으면 상태 문구)
  * @param guidanceText 하단 방향 안내 문구 (예: "카메라를 조금 왼쪽으로 이동해주세요")
  * @param showOverlays 조준 UI(요청 카드·안내 카드·취소) 노출 여부 — 홈이 위에 떠 있을 땐 숨긴다
  */
@@ -82,24 +82,27 @@ fun CaptureScreen(
             ) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = Color(0xCC16191F),
+                    color = Color(0xCC2C333A),
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                         Text(
-                            text = "현재 요청",
-                            color = SnapPalette.Accent,
+                            text = "요청",
+                            color = SnapPalette.AccentLight,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                         )
                         Text(
+                            // 시안(v31): 요청 문구는 개행 없이 한 줄로 흐른다
                             text = if (rawText.isNotBlank()) "“$rawText”" else statusText,
                             color = SnapPalette.TextPrimary,
                             fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(top = 2.dp),
                         )
                     }
                 }
-                Surface(shape = RoundedCornerShape(20.dp), color = Color(0xCC16191F)) {
+                Surface(shape = RoundedCornerShape(20.dp), color = Color(0xCC1C1C1E)) {
                     Text(
                         text = "🔊 음성 안내 중",
                         color = SnapPalette.TextPrimary,
@@ -117,22 +120,45 @@ fun CaptureScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                if (guidanceText.isNotBlank()) {
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = Color(0xE60E1116),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .border(1.dp, SnapPalette.Warning, RoundedCornerShape(14.dp)),
-                    ) {
+                // 시안의 상태 카드: "촬영 상태"(파랑 라벨)와 "안내"(노랑 라벨)를 한 카드에 담는다
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0xE6101418),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.5.dp, SnapPalette.Warning, RoundedCornerShape(16.dp)),
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp)) {
                         Text(
-                            text = guidanceText,
-                            color = SnapPalette.Warning,
-                            fontSize = 17.sp,
+                            text = "촬영 상태",
+                            color = SnapPalette.AccentLight,
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
-                            lineHeight = 24.sp,
-                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
                         )
+                        Text(
+                            text = statusText,
+                            color = SnapPalette.TextPrimary,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                        if (guidanceText.isNotBlank()) {
+                            Text(
+                                text = "안내",
+                                color = SnapPalette.Warning,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(top = 10.dp),
+                            )
+                            Text(
+                                text = guidanceText,
+                                color = SnapPalette.TextPrimary,
+                                fontSize = 21.sp,
+                                fontWeight = FontWeight.Bold,
+                                lineHeight = 29.sp,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
                     }
                 }
                 Surface(
@@ -148,7 +174,7 @@ fun CaptureScreen(
                         horizontalArrangement = Arrangement.Center,
                     ) {
                         Text(
-                            text = "✕  취소",
+                            text = "✕  촬영 취소",
                             color = SnapPalette.TextPrimary,
                             fontSize = 15.sp,
                             textAlign = TextAlign.Center,
