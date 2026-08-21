@@ -48,7 +48,8 @@ fun CaptureScreen(
     guidanceText: String,
     onCancel: () -> Unit,
     cvObjects: List<TrackedObject> = emptyList(),
-    showOverlays: Boolean = true,
+    onOpenSettings: () -> Unit = {},
+    onOpenGallery: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -72,90 +73,70 @@ fun CaptureScreen(
 
         DetectionOverlay(objects = cvObjects)
 
-        if (showOverlays) {
-            Column(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .statusBarsPadding()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+        Surface(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(16.dp),
+            tonalElevation = 4.dp,
+        ) {
+            Text(
+                text = statusText,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            )
+        }
+
+        // 버튼 4개는 한 줄에 안 들어가 2×2로 배치한다 (한 줄이면 마지막 버튼이 화면 밖으로 밀림)
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
             ) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = Color(0xCC16191F),
+                Button(
+                    onClick = onSessionButton,
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics {
+                            contentDescription = "$sessionButtonLabel. 볼륨 버튼으로도 조작할 수 있습니다"
+                        },
                 ) {
-                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                        Text(
-                            text = "현재 요청",
-                            color = SnapPalette.Accent,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                        )
-                        Text(
-                            text = if (rawText.isNotBlank()) "“$rawText”" else statusText,
-                            color = SnapPalette.TextPrimary,
-                            fontSize = 14.sp,
-                            modifier = Modifier.padding(top = 2.dp),
-                        )
-                    }
+                    Text(sessionButtonLabel)
                 }
-                Surface(shape = RoundedCornerShape(20.dp), color = Color(0xCC16191F)) {
-                    Text(
-                        text = "🔊 음성 안내 중",
-                        color = SnapPalette.TextPrimary,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                    )
+                Button(
+                    onClick = { controller.toggleLens(lifecycleOwner, previewView) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics { contentDescription = "전면 후면 카메라 전환" },
+                ) {
+                    Text("렌즈 전환")
                 }
             }
-
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
             ) {
-                if (guidanceText.isNotBlank()) {
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = Color(0xE60E1116),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .border(1.dp, SnapPalette.Warning, RoundedCornerShape(14.dp)),
-                    ) {
-                        Text(
-                            text = guidanceText,
-                            color = SnapPalette.Warning,
-                            fontSize = 17.sp,
-                            fontWeight = FontWeight.Bold,
-                            lineHeight = 24.sp,
-                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
-                        )
-                    }
-                }
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = SnapPalette.Card,
+                Button(
+                    onClick = onOpenGallery,
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .semantics { contentDescription = "촬영 취소. 볼륨 버튼을 길게 눌러도 취소됩니다" },
-                    onClick = onCancel,
+                        .weight(1f)
+                        .semantics { contentDescription = "사진 찾기 화면 열기" },
                 ) {
-                    Row(
-                        modifier = Modifier.padding(vertical = 14.dp),
-                        horizontalArrangement = Arrangement.Center,
-                    ) {
-                        Text(
-                            text = "✕  취소",
-                            color = SnapPalette.TextPrimary,
-                            fontSize = 15.sp,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth(),
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
+                    Text("사진 찾기")
+                }
+                Button(
+                    onClick = onOpenSettings,
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics { contentDescription = "설정 화면 열기" },
+                ) {
+                    Text("설정")
                 }
             }
         }
