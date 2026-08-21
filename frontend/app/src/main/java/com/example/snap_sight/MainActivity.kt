@@ -6,6 +6,7 @@ package com.example.snap_sight
 import android.Manifest
 import android.graphics.Bitmap
 import android.content.Intent
+import android.media.AudioManager
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
@@ -44,6 +45,7 @@ import com.example.snap_sight.cv.SpecDeviationCalculator
 import com.example.snap_sight.cv.TrackedObject
 import com.example.snap_sight.cv.TargetSelectionState
 import com.example.snap_sight.cv.TargetSpec
+import com.example.snap_sight.network.BackendConfig
 import com.example.snap_sight.network.CaptureResultClient
 import com.example.snap_sight.network.DescriptionLookup
 import com.example.snap_sight.network.FrameUploader
@@ -184,6 +186,8 @@ class MainActivity : ComponentActivity() {
         }
 
         settingsUiState = settingsRepository.load()
+        BackendConfig.load(appPrefs) // 저장된 서버 주소 재정의 복원 (없으면 빌드 주입값)
+        backendUrlInput = BackendConfig.storedOverride(appPrefs)
         deviationListener = guidanceFeedback // ⑥ 판정 결과를 실제 사운드/햅틱/TTS로 렌더링
         // 줌인 여유가 있으면 "가까이" 대신 자동 줌이 처리한다 — 음성과 줌이 서로 싸우지 않게
         guidanceFeedback.zoomHandlesDistance = { sessionManager.state == SessionState.AIMING && autoZoom.canZoomIn }
@@ -259,6 +263,7 @@ class MainActivity : ComponentActivity() {
                     return
                 }
                 Log.i(TAG, "발화 인식 완료 [$sessionId]: $text")
+                sessionRawText = text // 시안(v31): 해석하는 동안 홈 마이크 아래에 발화 원문을 보여준다
                 utteranceClient.sendUtterance(
                     sessionId = sessionId,
                     rawText = text,
@@ -337,7 +342,15 @@ class MainActivity : ComponentActivity() {
                             onSpeechRateChange = {
                                 updateSettings(settingsUiState.copy(speechRate = it))
                             },
-                            onBack = { currentScreen = AppScreen.MAIN },
+                            serverUrl = backendUrlInput,
+                            onServerUrlChange = { backendUrlInput = it },
+                            onBack = {
+                                // 돌아가기 = 서버 주소 적용 시점 — 정규화된 값을 저장하고 입력칸에도 반영
+                                val applied = BackendConfig.save(appPrefs, backendUrlInput)
+                                backendUrlInput = BackendConfig.storedOverride(appPrefs)
+                                Log.i(TAG, "백엔드 주소 적용: $applied")
+                                currentScreen = AppScreen.MAIN
+                            },
                         )
 
                         AppScreen.GALLERY -> GalleryScreen(
@@ -449,9 +462,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 미디어 볼륨이 무음이면 최소 가청 수준(60%)으로 올린다.
+     *
+     * 안내 음성(백엔드 TTS mp3·내장 TTS)은 모두 STREAM_MUSIC으로 나가는데, 이 앱은 볼륨
+     * 버튼을 세션 제어로 가로채므로 사용자가 앱 안에서 볼륨을 올릴 방법이 없다. 시각장애
+     * 사용자는 "무음이라 안 들리는" 상태를 인지하기도 어려워 앱이 직접 보정한다 (실사용
+     * 피드백 — 촬영 후 상황 설명이 재생됐지만 볼륨 0이라 들리지 않던 문제).
+     */
+    private fun ensureAudibleMediaVolume() {
+        val audio = getSystemService(AUDIO_SERVICE) as AudioManager
+        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val floor = (max * 6) / 10
+        if (audio.getStreamVolume(AudioManager.STREAM_MUSIC) < floor) {
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC, floor, 0)
+            Log.i(TAG, "미디어 볼륨이 낮아 $floor/$max 로 보정")
+        }
+    }
+
     /** 홈에 갔다 돌아왔을 때도 지금 할 일을 다시 알려준다 (실사용 피드백 — 첫 실행만 안내되던 문제). */
     override fun onResume() {
         super.onResume()
+        ensureAudibleMediaVolume()
         if (!wentToBackground) return
         wentToBackground = false
         if (currentScreen != AppScreen.MAIN || !permissionsGranted) return
@@ -704,6 +736,17 @@ class MainActivity : ComponentActivity() {
             "dog" to "강아지", "cat" to "고양이", "flower" to "꽃", "glasses" to "안경",
             "keyboard" to "키보드", "mouse" to "마우스", "plate" to "접시", "bowl/basin" to "그릇",
             "wine glass" to "와인잔", "car" to "자동차", "potted plant" to "화분", "bread" to "빵",
+        )
+        // 대분류 키워드 규칙 (인물 > 음식) — 발화·라벨·설명 텍스트에서 찾는다.
+        // '차'는 자동차·기차와 겹쳐 단독으로 쓰지 않고 녹차·홍차·찻잔으로 한정한다.
+        private val PERSON_KEYWORDS = listOf(
+            "사람", "아들", "딸", "아이", "아기", "가족", "친구", "남성", "여성",
+            "남자", "여자", "인물", "얼굴", "커플", "부모", "엄마", "아빠",
+        )
+        private val FOOD_KEYWORDS = listOf(
+            "음식", "커피", "라떼", "아메리카노", "녹차", "홍차", "찻잔", "음료", "주스",
+            "케이크", "빵", "디저트", "밥", "식사", "요리", "접시", "식탁", "메뉴",
+            "과일", "파스타", "피자", "치킨", "샐러드", "맥주", "와인",
         )
         const val CV_TAG = "SnapSightCV"
         const val PREFS_NAME = "snap_sight_prefs"

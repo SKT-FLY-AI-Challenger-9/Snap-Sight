@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit
  * Android는 API 키를 몰라도 된다.
  */
 class TtsClient(
-    private val baseUrl: String = FrameUploader.DEFAULT_BASE_URL,
+    private val baseUrl: String? = null, // null = 요청 시점에 BackendConfig.baseUrl 사용
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .writeTimeout(10, TimeUnit.SECONDS)
@@ -38,7 +38,7 @@ class TtsClient(
             try {
                 val requestJson = JSONObject().apply { put("text", text) }
                 val request = Request.Builder()
-                    .url("$baseUrl/api/tts")
+                    .url("${baseUrl ?: BackendConfig.baseUrl}/api/tts")
                     .post(requestJson.toString().toRequestBody(JSON))
                     .build()
 

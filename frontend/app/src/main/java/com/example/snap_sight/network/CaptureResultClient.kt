@@ -24,7 +24,7 @@ import java.util.concurrent.TimeUnit
  * 폴링은 자체 백그라운드 스레드에서 수행하고 콜백은 메인 스레드로 돌려준다.
  */
 class CaptureResultClient(
-    private val baseUrl: String = FrameUploader.DEFAULT_BASE_URL,
+    private val baseUrl: String? = null, // null = 요청 시점에 BackendConfig.baseUrl 사용
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
@@ -74,7 +74,7 @@ class CaptureResultClient(
 
     private fun fetchDecision(sessionId: String): Decision {
         val request = Request.Builder()
-            .url("$baseUrl/api/capture/$sessionId/result")
+            .url("${baseUrl ?: BackendConfig.baseUrl}/api/capture/$sessionId/result")
             .get()
             .build()
         client.newCall(request).execute().use { response ->

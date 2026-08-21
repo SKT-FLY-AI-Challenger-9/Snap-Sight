@@ -28,7 +28,7 @@ import java.util.concurrent.TimeUnit
  * 응답 body가 스키마를 어겨도(HTTP 자체는 성공) 예외 없이 [Callback.onSuccess]에 null이 온다.
  */
 class UtteranceClient(
-    private val baseUrl: String = FrameUploader.DEFAULT_BASE_URL,
+    private val baseUrl: String? = null, // null = 요청 시점에 BackendConfig.baseUrl 사용
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .writeTimeout(10, TimeUnit.SECONDS)
@@ -52,7 +52,7 @@ class UtteranceClient(
                     put("raw_text", rawText)
                 }
                 val request = Request.Builder()
-                    .url("$baseUrl/api/session/utterance")
+                    .url("${baseUrl ?: BackendConfig.baseUrl}/api/session/utterance")
                     .post(requestJson.toString().toRequestBody(JSON))
                     .build()
 

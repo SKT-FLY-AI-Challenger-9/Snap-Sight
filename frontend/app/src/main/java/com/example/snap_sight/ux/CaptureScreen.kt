@@ -1,5 +1,5 @@
-// 이 파일: S3 촬영(조준) 화면 — Figma 시안(#80). 상단 "현재 요청" 발화 카드,
-// 카메라 미리보기(+탐지 오버레이), 하단 방향 안내 카드와 취소 버튼.
+// 이 파일: S3 촬영(조준) 화면 — Figma Make 시안(v31, #80). 상단 "요청" 발화 카드 + 음성 안내 칩,
+// 카메라 미리보기(+탐지 오버레이), 하단 "촬영 상태 / 안내" 카드와 촬영 취소 버튼.
 package com.example.snap_sight.ux
 
 import androidx.camera.view.PreviewView
@@ -36,7 +36,7 @@ import com.example.snap_sight.camera.CameraController
 import com.example.snap_sight.cv.TrackedObject
 
 /**
- * @param rawText      현재 세션 발화 원문 — 상단 "현재 요청" 카드에 표시 (없으면 상태 문구)
+ * @param rawText      현재 세션 발화 원문 — 상단 "요청" 카드에 표시 (없으면 상태 문구)
  * @param guidanceText 하단 방향 안내 문구 (예: "카메라를 조금 왼쪽으로 이동해주세요")
  * @param showOverlays 조준 UI(요청 카드·안내 카드·취소) 노출 여부 — 홈이 위에 떠 있을 땐 숨긴다
  */
