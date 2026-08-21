@@ -473,9 +473,9 @@ class MainActivity : ComponentActivity() {
                 val headline =
                     if (result.improved) "더 나은 순간의 사진으로 교체했어요"
                     else "사진 저장이 완료됐어요"
-                // 비교 사유도 이어 낭독 — 정식 사진 설명 낭독(S4, ⑥)이 붙기 전 임시 (#74)
-                val reason = result.reason?.takeIf { it.isNotBlank() }
-                speak(if (reason != null) "$headline. $reason" else headline)
+                // 판정 근거(reason)는 "명시적 요구사항…" 같은 기술 문구라 낭독하지 않는다 —
+                // 사용자에게는 저장/교체 결과와 사진 설명(1문장)만 들려준다 (실사용 피드백)
+                speak(headline)
             }
 
             override fun onGaveUp(reason: String) {
