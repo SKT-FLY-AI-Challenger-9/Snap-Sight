@@ -47,6 +47,13 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     @Volatile
     var zoomHandlesDistance: (() -> Boolean)? = null
 
+    /**
+     * READY("지금 촬영하세요")를 보류할 사유를 돌려주는 훅 — null 이면 정상 READY.
+     * 셀카 모드의 시선 판정(MainActivity → SelfieGazeMonitor)이 연결한다. 분석 스레드에서 호출된다.
+     */
+    @Volatile
+    var readyGate: (() -> String?)? = null
+
     @Volatile
     private var ttsReady = false
 
@@ -104,7 +111,11 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     override fun onDeviation(result: DeviationResult) {
         val state = GuidanceStateMapper.from(result)
         val zoomHandles = zoomHandlesDistance?.invoke() == true
-        val actions = policy.onJudgment(state, result, System.currentTimeMillis(), zoomHandlesDistance = zoomHandles)
+        val actions = policy.onJudgment(
+            state, result, System.currentTimeMillis(),
+            zoomHandlesDistance = zoomHandles,
+            readyBlockedReason = readyGate?.invoke(),
+        )
         for (action in actions) {
             when (action) {
                 is GuidanceAction.Speak -> speak(action.text)

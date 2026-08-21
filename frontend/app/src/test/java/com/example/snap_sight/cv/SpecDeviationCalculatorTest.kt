@@ -13,7 +13,9 @@ import org.junit.Test
  */
 class SpecDeviationCalculatorTest {
 
-    private val calculator = SpecDeviationCalculator()
+    /** 타겟 락은 시간 기반(hold/재획득 창) — 테스트는 가짜 시계로 결정적으로 돌린다. */
+    private var nowMs = 0L
+    private val calculator = SpecDeviationCalculator(clock = { nowMs })
 
     private fun tracked(
         trackId: Int = 1,
@@ -62,9 +64,89 @@ class SpecDeviationCalculatorTest {
         // 다음 프레임에 b 가 더 커져도(면적 0.24) 타겟은 a 유지 → 안내가 튀지 않는다
         val bBigger = tracked(trackId = 2, xMin = 0.5f, yMin = 0.1f, xMax = 0.9f, yMax = 0.7f)
         assertEquals(1, calculator.compute(selection(a, bBigger), spec())!!.trackId)
-        // a 가 사라지면 남은 b 로 갈아타고, 이후엔 b 가 sticky (a 가 돌아와도 안내가 다시 튀지 않는다)
+        // a 가 잠깐 사라지면(hold 창 안) 멀리 있는 b 로 점프하지 않고 a 의 편차를 유지한다
+        val held = calculator.compute(selection(bBigger), spec())!!
+        assertEquals(1, held.trackId)
+        assertTrue(held.held)
+        // hold 창을 넘겨서도 a 가 없으면 그때 남은 b 로 갈아타고, 이후엔 b 가 sticky
+        nowMs += TargetLockConfig().holdMs + 1
         assertEquals(2, calculator.compute(selection(bBigger), spec())!!.trackId)
         assertEquals(2, calculator.compute(selection(a, bBigger), spec())!!.trackId)
+        val stats = calculator.stats()
+        assertEquals(1, stats.targetSwitches)
+        assertEquals(1, stats.heldFrames)
+    }
+
+    // --- 타겟 락 (기능 1-B, docs/feature-expansion-plan.md) ---
+
+    @Test
+    fun reacquiresChurnedTrackIdAtTheSamePlace() {
+        // 같은 사람인데 tracker ID 만 3 → 7 로 바뀐 경우 (ID churn)
+        val original = tracked(trackId = 3, xMin = 0.3f, yMin = 0.2f, xMax = 0.6f, yMax = 0.8f)
+        assertEquals(3, calculator.compute(selection(original), spec())!!.trackId)
+        val churned = tracked(trackId = 7, xMin = 0.32f, yMin = 0.2f, xMax = 0.62f, yMax = 0.8f)
+        nowMs += 100
+        // LOST 없이 새 ID 를 같은 타겟으로 이어붙인다
+        val deviation = calculator.compute(selection(churned), spec())!!
+        assertEquals(7, deviation.trackId)
+        assertFalse(deviation.held)
+        assertEquals(1, calculator.stats().reacquisitions)
+        assertEquals(0, calculator.stats().targetSwitches)
+    }
+
+    @Test
+    fun reacquireWindowExpiresAndFallsBackToLargest() {
+        val original = tracked(trackId = 1, xMin = 0.3f, yMin = 0.2f, xMax = 0.6f, yMax = 0.8f)
+        calculator.compute(selection(original), spec())
+        // 재획득 창을 넘긴 뒤에는 위치가 겹쳐도 그냥 "가장 큰 후보" 규칙이다
+        nowMs += TargetLockConfig().reacquireWindowMs + 1
+        val far = tracked(trackId = 9, xMin = 0.0f, yMin = 0.0f, xMax = 0.5f, yMax = 0.5f)
+        assertEquals(9, calculator.compute(selection(far), spec())!!.trackId)
+        assertEquals(1, calculator.stats().targetSwitches)
+    }
+
+    @Test
+    fun holdBridgesShortDetectionGapsThenGoesLost() {
+        val target = tracked(trackId = 1, xMin = 0.3f, yMin = 0.3f, xMax = 0.7f, yMax = 0.7f)
+        calculator.compute(selection(target), spec())
+        // 깜빡임: 후보 없음 — hold 창 안에서는 직전 편차 유지
+        nowMs += 100
+        val held = calculator.compute(selection(), spec())!!
+        assertTrue(held.held)
+        assertEquals(1, held.trackId)
+        // hold 창 만료 → LOST
+        nowMs += TargetLockConfig().holdMs + 1
+        assertNull(calculator.compute(selection(), spec()))
+        val stats = calculator.stats()
+        assertEquals(1, stats.heldFrames)
+        assertEquals(1, stats.lostEpisodes)
+        // LOST 가 계속돼도 에피소드는 1번만 센다
+        assertNull(calculator.compute(selection(), spec()))
+        assertEquals(1, calculator.stats().lostEpisodes)
+    }
+
+    @Test
+    fun reacquirePrefersSameLabelCandidate() {
+        val cup = TrackedObject(
+            trackId = 1, label = "cup", confidence = 0.9f,
+            bbox = BoundingBox(0.4f, 0.4f, 0.6f, 0.6f),
+        )
+        calculator.compute(selection(cup), spec(subjectType = TargetSpec.SubjectType.OBJECT))
+        nowMs += 100
+        // 같은 자리에 라벨이 다른 큰 후보 + 살짝 옆에 같은 라벨 후보 → 같은 라벨을 잇는다
+        val bottleSamePlace = TrackedObject(
+            trackId = 5, label = "bottle", confidence = 0.9f,
+            bbox = BoundingBox(0.35f, 0.35f, 0.65f, 0.65f),
+        )
+        val cupNearby = TrackedObject(
+            trackId = 6, label = "cup", confidence = 0.9f,
+            bbox = BoundingBox(0.45f, 0.4f, 0.65f, 0.6f),
+        )
+        val deviation = calculator.compute(
+            selection(bottleSamePlace, cupNearby),
+            spec(subjectType = TargetSpec.SubjectType.OBJECT),
+        )!!
+        assertEquals(6, deviation.trackId)
     }
 
     @Test

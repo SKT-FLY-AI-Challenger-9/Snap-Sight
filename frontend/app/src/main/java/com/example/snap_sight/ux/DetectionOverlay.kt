@@ -21,11 +21,14 @@ import com.example.snap_sight.cv.TrackedObject
  * (남는 부분은 검은 띠) → 같은 변환을 적용해야 박스가 미리보기와 일치한다.
  *
  * @param frameAspect 정방향 분석 프레임의 가로/세로 비 (기본 480x640 세로 = 0.75)
+ * @param mirrored    전면(셀카) 카메라 — 미리보기는 좌우 반전돼 보이지만 분석 프레임은
+ *                    반전이 없으므로, 박스 x 좌표를 뒤집어야 미리보기와 일치한다
  */
 @Composable
 fun DetectionOverlay(
     objects: List<TrackedObject>,
     frameAspect: Float = 3f / 4f,
+    mirrored: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     Canvas(modifier = modifier.fillMaxSize()) {
@@ -48,9 +51,11 @@ fun DetectionOverlay(
         val stroke = Stroke(width = 3.dp.toPx())
         val corner = CornerRadius(14.dp.toPx(), 14.dp.toPx())
         for (o in objects) {
-            val left = offsetX + o.bbox.xMin * shownWidth
+            val xMin = if (mirrored) 1f - o.bbox.xMax else o.bbox.xMin
+            val xMax = if (mirrored) 1f - o.bbox.xMin else o.bbox.xMax
+            val left = offsetX + xMin * shownWidth
             val top = offsetY + o.bbox.yMin * shownHeight
-            val right = offsetX + o.bbox.xMax * shownWidth
+            val right = offsetX + xMax * shownWidth
             val bottom = offsetY + o.bbox.yMax * shownHeight
 
             drawRoundRect(

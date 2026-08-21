@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from backend.config import RESULT_POLL_INTERVAL_SECONDS
 from backend.mllm.description import label_photo_bytes, load_description, trigger_description
+from backend.mllm.metadata import load_metadata, trigger_metadata
 from backend.mllm.orchestration import trigger_comparison
 from backend.storage.comparison_result import load_comparison_result
 from backend.storage.frame_buffer import (
@@ -53,10 +54,15 @@ async def receive_capture_frames(
     representative_frame: UploadFile = File(...),
     candidate_frames: list[UploadFile] = File(default_factory=list),
     candidate_scores: str = Form(default="[]"),
+    # 검색용 메타데이터(기능 3-B) 재료 — 없어도 정상 (구버전 앱, 커스텀 라벨 없음 등)
+    custom_labels: str = Form(default="[]"),
+    detected_objects: str = Form(default="[]"),
 ) -> CaptureFramesResponse:
     """대표 컷 1장과 후보 프레임 목록을 저장하고, 후보가 있으면 MLLM 비교를 비동기로 트리거한다."""
     # 파일을 디스크에 쓰기 전에 검증한다 — 저장 후 422로 실패하면 재시도 때 잔여 파일이 남는다.
     scores = _parse_candidate_scores(candidate_scores, len(candidate_frames))
+    parsed_custom_labels = _parse_string_list(custom_labels, "custom_labels")
+    parsed_detected_objects = _parse_string_list(detected_objects, "detected_objects")
 
     representative_bytes = await representative_frame.read()
     save_representative_frame(session_id, representative_frame.filename, representative_bytes)
@@ -69,6 +75,13 @@ async def receive_capture_frames(
 
     # 한 줄 사진 설명(Haiku)은 별도 스레드로 — BackgroundTasks는 순차 실행이라 비교와 병렬이 안 된다 (#76)
     threading.Thread(target=trigger_description, args=(session_id,), daemon=True).start()
+
+    # 검색용 상세 메타데이터(기능 3-B)도 별도 스레드 — 느려도 되므로 즉시 설명·비교와 병렬로 돈다
+    threading.Thread(
+        target=trigger_metadata,
+        args=(session_id, raw_text, parsed_custom_labels, parsed_detected_objects),
+        daemon=True,
+    ).start()
 
     if candidate_frames:
         background_tasks.add_task(trigger_comparison, session_id, raw_text, scores)
@@ -130,6 +143,42 @@ async def get_capture_description(session_id: str) -> CaptureDescriptionResponse
     )
 
 
+class CaptureMetadataResponse(BaseModel):
+    """GET /api/capture/{session_id}/metadata 응답 스키마 (기능 3-B).
+
+    앱은 done 수신 후 로컬 사진 인덱스에 저장해 오프라인 검색·상세 낭독에 쓴다.
+    """
+
+    status: str
+    taxonomy_version: int | None = None
+    long_description: str | None = None
+    labels: list[str] = []
+    custom_labels: list[str] = []
+    people_count: int | None = None
+    retry_after_seconds: int | None = None
+
+
+@router.get("/api/capture/{session_id}/metadata", response_model=CaptureMetadataResponse)
+async def get_capture_metadata(session_id: str) -> CaptureMetadataResponse:
+    """검색용 상세 메타데이터를 조회한다. 규약은 description/result 와 동일 — 미존재 404, 생성 중 pending."""
+    payload = load_metadata(session_id)
+    if payload is not None:
+        return CaptureMetadataResponse(
+            status="done",
+            taxonomy_version=payload.get("taxonomy_version"),
+            long_description=payload.get("long_description"),
+            labels=payload.get("labels") or [],
+            custom_labels=payload.get("custom_labels") or [],
+            people_count=payload.get("people_count"),
+        )
+
+    if not session_exists(session_id):
+        raise HTTPException(status_code=404, detail=f"세션 '{session_id}'을 찾을 수 없습니다")
+
+    # 상세 메타데이터는 상위 모델이라 즉시 설명보다 오래 걸린다 — 여유 있는 재조회 간격
+    return CaptureMetadataResponse(status="pending", retry_after_seconds=3)
+
+
 @router.get("/api/capture/{session_id}/result", response_model=CaptureResultResponse)
 async def get_capture_result(session_id: str) -> CaptureResultResponse:
     """세션의 MLLM 비교 결과를 조회한다.
@@ -155,6 +204,19 @@ async def get_capture_result(session_id: str) -> CaptureResultResponse:
         reason=None,
         retry_after_seconds=RESULT_POLL_INTERVAL_SECONDS,
     )
+
+
+def _parse_string_list(raw: str, field_name: str) -> list[str]:
+    """JSON 문자열 배열 폼 필드를 파싱·검증한다. 형식이 잘못되면 명확한 422로 실패한다."""
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=422, detail=f"{field_name}가 올바른 JSON이 아닙니다: {exc}"
+        ) from exc
+    if not isinstance(parsed, list) or any(not isinstance(item, str) for item in parsed):
+        raise HTTPException(status_code=422, detail=f"{field_name}는 문자열 JSON 배열이어야 합니다")
+    return parsed
 
 
 def _parse_candidate_scores(candidate_scores: str, candidate_count: int) -> list[dict]:
