@@ -61,6 +61,7 @@ dependencies {
     implementation(libs.androidx.camera.view)
     implementation(libs.okhttp)
     implementation(libs.tensorflow.lite)
+    implementation(libs.mlkit.face.detection)
     testImplementation(libs.junit)
     testImplementation(libs.json)
     androidTestImplementation(platform(libs.androidx.compose.bom))

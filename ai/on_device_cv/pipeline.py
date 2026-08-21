@@ -67,6 +67,7 @@ class OnDeviceCVPipeline:
         frame_bgr: np.ndarray,
         *,
         timestamp_s: float | None = None,
+        motion_hint: tuple[float, float] | None = None,
     ) -> FrameResult:
         """Return the stable per-frame schema for one BGR ``uint8`` frame."""
 
@@ -76,7 +77,9 @@ class OnDeviceCVPipeline:
         for extension in self.extensions:
             all_detections.extend(extension.extend(frame_bgr, primary_detections))
 
-        tracked_objects = self.tracker.update(all_detections, timestamp_s=timestamp_s)
+        tracked_objects = self.tracker.update(
+            all_detections, timestamp_s=timestamp_s, motion_hint=motion_hint
+        )
         visible_objects = sorted(
             (
                 item

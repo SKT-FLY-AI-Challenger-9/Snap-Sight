@@ -50,15 +50,23 @@ private val GalleryTextSecondary = Color(0xFF9AA3AF)
 /**
  * 사진 찾기 화면.
  *
- * @param photos    최신순 사진 목록 (로딩 완료 전엔 null)
+ * @param photos    최신순 사진 목록 — 음성 필터 스택이 이미 적용된 결과 (로딩 완료 전엔 null)
  * @param onBack    헤더 뒤로가기
- * @param onVoiceSearch "말해서 찾기" — 1차는 준비 중 안내만 한다
+ * @param onVoiceSearch   "말해서 찾기" — 음성 질의를 받아 필터 스택에 누적한다 (기능 3-C)
+ * @param filterSummaries 누적된 음성 필터 조건 요약 (비어 있으면 칩 영역 숨김)
+ * @param onResetFilters  필터 전체 해제
+ * @param onPhotoClick    카드 탭 — 상세 설명(long_desc)을 음성으로 낭독한다
+ * @param onReadResults   "결과 듣기" — 지금 목록의 사진들을 훑어 낭독한다 ("목록 읽어줘"와 동일)
  */
 @Composable
 fun GalleryScreen(
     photos: List<GalleryPhoto>?,
     onBack: () -> Unit,
     onVoiceSearch: () -> Unit = {},
+    filterSummaries: List<String> = emptyList(),
+    onResetFilters: () -> Unit = {},
+    onPhotoClick: (GalleryPhoto) -> Unit = {},
+    onReadResults: () -> Unit = {},
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     val filtered = photos?.filter {
@@ -96,20 +104,42 @@ fun GalleryScreen(
             modifier = Modifier.padding(top = 8.dp),
         )
 
-        OutlinedButton(
-            onClick = onVoiceSearch,
-            shape = RoundedCornerShape(14.dp),
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 16.dp)
-                .semantics { contentDescription = "말해서 찾기. 음성으로 사진을 검색합니다" },
+                .padding(top = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text(text = "🎤", color = GalleryAccent)
-            Text(
-                text = "  말해서 찾기",
-                color = GalleryTextPrimary,
-                fontWeight = FontWeight.Bold,
-            )
+            OutlinedButton(
+                onClick = onVoiceSearch,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { contentDescription = "말해서 찾기. 음성으로 사진을 검색합니다" },
+            ) {
+                Text(text = "🎤", color = GalleryAccent)
+                Text(
+                    text = "  말해서 찾기",
+                    color = GalleryTextPrimary,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            OutlinedButton(
+                onClick = onReadResults,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics {
+                        contentDescription = "결과 듣기. 지금 목록에 있는 사진들을 순서대로 읽어드립니다"
+                    },
+            ) {
+                Text(text = "🔊", color = GalleryAccent)
+                Text(
+                    text = "  결과 듣기",
+                    color = GalleryTextPrimary,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
         }
 
         OutlinedTextField(
@@ -137,6 +167,30 @@ fun GalleryScreen(
             modifier = Modifier.padding(top = 8.dp, bottom = 12.dp),
         )
 
+        // 음성 필터 스택 (점진 좁히기) — 누적된 조건과 해제 버튼 (기능 3-C)
+        if (filterSummaries.isNotEmpty()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp)
+                    .semantics(mergeDescendants = true) {
+                        contentDescription =
+                            "적용된 검색 조건: ${filterSummaries.joinToString(", ")}. 조건 지우기 버튼 있음"
+                    },
+            ) {
+                Text(
+                    text = "🔎 " + filterSummaries.joinToString(" + "),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = GalleryAccent,
+                    modifier = Modifier.weight(1f),
+                )
+                OutlinedButton(onClick = onResetFilters, shape = RoundedCornerShape(10.dp)) {
+                    Text("조건 지우기", color = GalleryTextSecondary)
+                }
+            }
+        }
+
         when {
             filtered == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = GalleryAccent)
@@ -150,22 +204,26 @@ fun GalleryScreen(
             )
 
             else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(filtered, key = { it.uri }) { photo -> PhotoCard(photo) }
+                items(filtered, key = { it.uri }) { photo ->
+                    PhotoCard(photo, onClick = { onPhotoClick(photo) })
+                }
             }
         }
     }
 }
 
 @Composable
-private fun PhotoCard(photo: GalleryPhoto) {
+private fun PhotoCard(photo: GalleryPhoto, onClick: () -> Unit = {}) {
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = GalleryCard),
+        onClick = onClick,
         modifier = Modifier
             .fillMaxWidth()
             // 카드 전체가 한 번에 낭독되도록 하나의 접근성 단위로 묶는다
             .semantics(mergeDescendants = true) {
-                contentDescription = "${photo.title}, ${photo.dateText}, ${photo.description}"
+                contentDescription =
+                    "${photo.title}, ${photo.dateText}, ${photo.description}. 누르면 자세한 설명을 들려드려요"
             },
     ) {
         Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {

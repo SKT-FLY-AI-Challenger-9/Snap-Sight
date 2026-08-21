@@ -16,8 +16,14 @@ class Tracker(Protocol):
         detections: Sequence[DetectionResult],
         *,
         timestamp_s: float | None = None,
+        motion_hint: tuple[float, float] | None = None,
     ) -> Sequence[TrackedObject]:
-        """Associate the current observations and return observed tracks."""
+        """Associate the current observations and return observed tracks.
+
+        ``motion_hint`` is the expected in-frame displacement (normalized) of
+        scene content caused by camera motion since the previous update. See
+        the Kotlin ``Tracker`` contract for semantics.
+        """
 
     def reset(self) -> None:
         """Discard all tracks and restart ID allocation."""

@@ -31,6 +31,13 @@ class ByteTrackLiteConfig:
     label_mismatch_penalty: float = 0.80
     label_vote_decay: float = 0.98
     label_switch_margin: float = 1.50
+    # None 이 아니면 track 만료를 프레임 수(lost_track_buffer) 대신 시간(초)으로 판정한다.
+    # 기기별 분석 FPS 가 달라도 실제 유지 시간이 같아진다 (기능 1-D).
+    lost_track_buffer_seconds: float | None = None
+    # 매칭 시 track 예측 bbox 를 마지막 관측 후 경과 시간에 비례해 확장하는 비율(초당,
+    # 변 길이 대비). 0.0 = 확장 없음 (기존 동작과 동일). buffered IoU.
+    match_expansion_rate_per_second: float = 0.0
+    max_match_expansion: float = 0.5
 
     def __post_init__(self) -> None:
         probability_fields = {
@@ -51,6 +58,17 @@ class ByteTrackLiteConfig:
             raise ValueError("lost_track_buffer must be non-negative")
         if not math.isfinite(self.label_switch_margin) or self.label_switch_margin < 1.0:
             raise ValueError("label_switch_margin must be finite and at least 1")
+        if self.lost_track_buffer_seconds is not None and (
+            not math.isfinite(self.lost_track_buffer_seconds)
+            or self.lost_track_buffer_seconds <= 0.0
+        ):
+            raise ValueError("lost_track_buffer_seconds must be None or a positive finite number")
+        if not math.isfinite(self.match_expansion_rate_per_second) or (
+            self.match_expansion_rate_per_second < 0.0
+        ):
+            raise ValueError("match_expansion_rate_per_second must be finite and non-negative")
+        if not math.isfinite(self.max_match_expansion) or not 0.0 <= self.max_match_expansion <= 2.0:
+            raise ValueError("max_match_expansion must be in [0, 2]")
 
 
 @dataclass(slots=True)
@@ -88,6 +106,24 @@ class _Track:
     def predict(self, elapsed_time: float) -> None:
         self.state = _sanitize_state(self.state + self.velocity * elapsed_time)
         self.age += 1
+
+    def apply_motion(self, dx: float, dy: float) -> None:
+        """전역(카메라 기인) 이동 보정 — 예측 중심만 이동, 속도 추정에는 반영하지 않는다."""
+        shifted = self.state.copy()
+        shifted[0] += dx
+        shifted[1] += dy
+        self.state = _sanitize_state(shifted)
+
+    def match_expansion(self, frame_time: float, config: ByteTrackLiteConfig) -> float:
+        """매칭 시 적용할 확장 비율 (buffered IoU, 기능 1-D) — 마지막 관측 후 경과 시간 비례.
+
+        track 예측 bbox 와 검출 bbox **양쪽에 같은 비율**로 적용해야 union 증가로 IoU 가
+        희석되지 않는다 (BIoU 방식). 0.0 = 확장 없음.
+        """
+        if config.match_expansion_rate_per_second <= 0.0:
+            return 0.0
+        elapsed = max(0.0, frame_time - self.last_observed_time)
+        return min(config.max_match_expansion, config.match_expansion_rate_per_second * elapsed)
 
     def update(
         self,
@@ -162,6 +198,7 @@ class ByteTrackLiteTracker:
         detections: Sequence[DetectionResult],
         *,
         timestamp_s: float | None = None,
+        motion_hint: tuple[float, float] | None = None,
     ) -> list[TrackedObject]:
         candidates = []
         for detection in detections:
@@ -191,11 +228,19 @@ class ByteTrackLiteTracker:
         active_tracks = sorted(self._tracks.values(), key=lambda track: track.track_id)
         for track in active_tracks:
             track.predict(elapsed_time)
+        # 카메라 이동 보정 (기능 1-C): 전역 이동량을 예측 위치에 더해 IoU 매칭을 살린다.
+        if motion_hint is not None and motion_hint != (0.0, 0.0):
+            hint_dx, hint_dy = motion_hint
+            if not (math.isfinite(hint_dx) and math.isfinite(hint_dy)):
+                raise ValueError("motion_hint must be finite")
+            for track in active_tracks:
+                track.apply_motion(hint_dx, hint_dy)
 
         first_matches, unmatched_tracks, unmatched_high = self._associate(
             active_tracks,
             high_confidence,
             self.config.first_match_iou_threshold,
+            current_time,
         )
         # ByteTrack's low-confidence stage is only for tracks observed in the
         # immediately preceding frame. A low-confidence false positive must not
@@ -207,6 +252,7 @@ class ByteTrackLiteTracker:
             low_confidence_eligible_tracks,
             low_confidence,
             self.config.second_match_iou_threshold,
+            current_time,
         )
 
         observed: list[TrackedObject] = []
@@ -226,11 +272,21 @@ class ByteTrackLiteTracker:
             self._next_track_id += 1
             observed.append(track.as_observed(detection))
 
-        expired_ids = [
-            track_id
-            for track_id, track in self._tracks.items()
-            if track.missed_frames > self.config.lost_track_buffer
-        ]
+        # 만료: 시간 기준 옵션이 켜져 있으면 프레임 수 대신 마지막 관측 후 경과 시간으로 판정 (기능 1-D)
+        buffer_seconds = self.config.lost_track_buffer_seconds
+        if buffer_seconds is not None:
+            expired_ids = [
+                track_id
+                for track_id, track in self._tracks.items()
+                if track.missed_frames > 0
+                and current_time - track.last_observed_time > buffer_seconds
+            ]
+        else:
+            expired_ids = [
+                track_id
+                for track_id, track in self._tracks.items()
+                if track.missed_frames > self.config.lost_track_buffer
+            ]
         for track_id in expired_ids:
             del self._tracks[track_id]
 
@@ -273,6 +329,7 @@ class ByteTrackLiteTracker:
         tracks: Sequence[_Track],
         detections: Sequence[DetectionResult],
         minimum_iou: float,
+        current_time: float,
     ) -> tuple[
         list[tuple[_Track, DetectionResult]],
         list[_Track],
@@ -281,6 +338,11 @@ class ByteTrackLiteTracker:
         if not tracks or not detections:
             return [], list(tracks), list(detections)
 
+        # buffered IoU (기능 1-D): 놓친 시간에 비례해 track·검출 bbox 를 같은 비율로 확장
+        expansions = np.array(
+            [track.match_expansion(current_time, self.config) for track in tracks],
+            dtype=np.float64,
+        )
         track_boxes = np.array(
             [
                 [track.bbox.x_min, track.bbox.y_min, track.bbox.x_max, track.bbox.y_max]
@@ -300,7 +362,10 @@ class ByteTrackLiteTracker:
             ],
             dtype=np.float64,
         )
-        scores = _pairwise_iou(track_boxes, detection_boxes)
+        if expansions.any():
+            scores = _pairwise_buffered_iou(track_boxes, detection_boxes, expansions)
+        else:
+            scores = _pairwise_iou(track_boxes, detection_boxes)
         valid = (scores > 0.0) & (scores >= minimum_iou)
         if self.config.class_aware:
             mismatch = np.array(
@@ -414,6 +479,50 @@ def _pairwise_iou(track_boxes: np.ndarray, detection_boxes: np.ndarray) -> np.nd
         (detection_boxes[:, 2] - detection_boxes[:, 0])
         * (detection_boxes[:, 3] - detection_boxes[:, 1])
     )[None, :]
+    union = track_area + detection_area - intersection_area
+    return np.divide(
+        intersection_area,
+        union,
+        out=np.zeros_like(intersection_area),
+        where=union > 0.0,
+    )
+
+
+def _expand_boxes(boxes: np.ndarray, fractions: np.ndarray) -> np.ndarray:
+    """각 행의 bbox 를 행별 비율만큼 대칭 확장한다. boxes (N,4), fractions broadcast 가능."""
+    widths = boxes[..., 2] - boxes[..., 0]
+    heights = boxes[..., 3] - boxes[..., 1]
+    expanded = np.empty_like(boxes)
+    expanded[..., 0] = np.clip(boxes[..., 0] - fractions * widths, 0.0, 1.0)
+    expanded[..., 1] = np.clip(boxes[..., 1] - fractions * heights, 0.0, 1.0)
+    expanded[..., 2] = np.clip(boxes[..., 2] + fractions * widths, 0.0, 1.0)
+    expanded[..., 3] = np.clip(boxes[..., 3] + fractions * heights, 0.0, 1.0)
+    return expanded
+
+
+def _pairwise_buffered_iou(
+    track_boxes: np.ndarray,
+    detection_boxes: np.ndarray,
+    expansions: np.ndarray,
+) -> np.ndarray:
+    """track 별 확장 비율을 track·검출 양쪽에 적용한 buffered IoU (BIoU) 행렬 (T, D)."""
+    expanded_tracks = _expand_boxes(track_boxes, expansions[:, None])  # (T, 4)
+    # 검출 bbox 는 track 행마다 다른 비율로 확장된다 → (T, D, 4)
+    tiled_detections = np.broadcast_to(
+        detection_boxes[None, :, :], (track_boxes.shape[0], *detection_boxes.shape)
+    )
+    expanded_detections = _expand_boxes(tiled_detections, expansions[:, None, None])
+    intersection_min = np.maximum(expanded_tracks[:, None, :2], expanded_detections[..., :2])
+    intersection_max = np.minimum(expanded_tracks[:, None, 2:], expanded_detections[..., 2:])
+    intersection_size = np.maximum(0.0, intersection_max - intersection_min)
+    intersection_area = intersection_size[..., 0] * intersection_size[..., 1]
+    track_area = (
+        (expanded_tracks[:, 2] - expanded_tracks[:, 0])
+        * (expanded_tracks[:, 3] - expanded_tracks[:, 1])
+    )[:, None]
+    detection_area = (
+        expanded_detections[..., 2] - expanded_detections[..., 0]
+    ) * (expanded_detections[..., 3] - expanded_detections[..., 1])
     union = track_area + detection_area - intersection_area
     return np.divide(
         intersection_area,

@@ -7,7 +7,7 @@ import base64
 import io
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from anthropic import Anthropic, APIConnectionError, APIStatusError
 from dotenv import load_dotenv
 
@@ -96,12 +96,19 @@ def _encode_image(path: Path) -> dict:
 
 
 def _downscaled_jpeg(path: Path) -> bytes:
-    """긴 변이 [MAX_IMAGE_DIM]을 넘으면 그 크기로 줄여 JPEG 재인코딩한다. 작으면 원본 그대로."""
+    """긴 변이 [MAX_IMAGE_DIM]을 넘으면 그 크기로 줄여 JPEG 재인코딩한다. 작으면 원본 그대로.
+
+    디코딩할 수 없는 바이트면 축소 없이 원본을 반환한다 — 축소는 비용 최적화일 뿐이라,
+    이것 때문에 MLLM 호출 자체가 죽으면 안 된다 (판정은 API 쪽 검증에 맡긴다).
+    """
     raw = path.read_bytes()
-    with Image.open(io.BytesIO(raw)) as img:
-        if max(img.size) <= MAX_IMAGE_DIM:
-            return raw
-        img.thumbnail((MAX_IMAGE_DIM, MAX_IMAGE_DIM))
-        buffer = io.BytesIO()
-        img.convert("RGB").save(buffer, format="JPEG", quality=85)
-        return buffer.getvalue()
+    try:
+        with Image.open(io.BytesIO(raw)) as img:
+            if max(img.size) <= MAX_IMAGE_DIM:
+                return raw
+            img.thumbnail((MAX_IMAGE_DIM, MAX_IMAGE_DIM))
+            buffer = io.BytesIO()
+            img.convert("RGB").save(buffer, format="JPEG", quality=85)
+            return buffer.getvalue()
+    except UnidentifiedImageError:
+        return raw
