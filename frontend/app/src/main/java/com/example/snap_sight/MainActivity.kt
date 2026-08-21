@@ -4,6 +4,7 @@
 package com.example.snap_sight
 
 import android.Manifest
+import android.graphics.Bitmap
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -15,6 +16,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
@@ -52,6 +54,8 @@ import com.example.snap_sight.tts.TtsPlayer
 import com.example.snap_sight.ux.CaptureScreen
 import com.example.snap_sight.ux.GalleryScreen
 import com.example.snap_sight.ux.GuidanceFeedback
+import com.example.snap_sight.ux.HomeScreen
+import com.example.snap_sight.ux.ResultScreen
 import com.example.snap_sight.ux.OnboardingPermissionState
 import com.example.snap_sight.ux.OnboardingScreen
 import com.example.snap_sight.ux.SettingsRepository
@@ -85,6 +89,7 @@ class MainActivity : ComponentActivity() {
     private val ttsPlayer by lazy { TtsPlayer(cacheDir) }
     private val resultClient = CaptureResultClient()
     private val descriptionClient = PhotoDescriptionClient()
+    private val descriptionLookup by lazy { DescriptionLookup(this) }
 
     /** ④ 기하 편차 계산기 — 세션마다 [SpecDeviationCalculator.reset] 으로 타겟 기억을 지운다. */
     private val deviationCalculator = SpecDeviationCalculator()
@@ -187,7 +192,13 @@ class MainActivity : ComponentActivity() {
         cameraController.setFrameProcessor(cvProcessor)
         sessionManager.listener = object : CaptureSessionManager.Listener {
             override fun onStateChanged(state: SessionState) {
+                sessionState = state
                 statusText = state.description
+                if (state == SessionState.LISTENING) {
+                    showResult = false
+                    sessionRawText = ""
+                    guidanceText = ""
+                }
                 // 조준 시작 = 새 추적 세션. track_id 가 이전 세션과 섞이지 않도록 초기화한다.
                 // TargetSpec은 아직 백엔드 응답 전이라 일단 null로 시작 — onUtteranceRecognized의
                 // UtteranceClient 콜백이 도착하면 같은 세션이 아직 AIMING일 때 한 번 더 갱신한다.
@@ -202,9 +213,12 @@ class MainActivity : ComponentActivity() {
                 when (state) {
                     SessionState.LISTENING -> guidanceFeedback.announce("무엇을 찍을지 말씀해 주세요")
                     SessionState.AIMING -> guidanceFeedback.announce("카메라를 비춰 주세요. 볼륨 버튼으로 촬영합니다")
-                    SessionState.CAPTURING -> guidanceFeedback.playShutter()
+                    SessionState.CAPTURING -> {
+                        shutterObjects = cvObjects // 즉시 상황 안내용 스냅샷 (#80)
+                        guidanceFeedback.playShutter()
+                    }
                     SessionState.SAVED -> {
-                        guidanceFeedback.announce("촬영했습니다")
+                        guidanceFeedback.announce(instantCaptureSummary(shutterObjects))
                         autoZoom.reset() // 촬영이 끝나면 다시 0.6배 광각으로
                     }
                     SessionState.ERROR -> {
@@ -266,6 +280,7 @@ class MainActivity : ComponentActivity() {
                 Log.i(TAG, "대표 컷 저장 [$sessionId]: $uri")
                 pendingSessionId = sessionId
                 pendingRepresentative = uri
+                showResultScreen(uri)
                 maybeUploadFrames()
             }
 
@@ -369,7 +384,10 @@ class MainActivity : ComponentActivity() {
         descriptionClient.pollDescription(sessionId, object : PhotoDescriptionClient.Callback {
             override fun onDone(description: String?) {
                 Log.i(TAG, "사진 설명 도착 [$sessionId]: $description")
-                description?.let { speak(it) }
+                description?.let {
+                    lastResultDescription = it
+                    speak(it)
+                }
             }
 
             override fun onGaveUp(reason: String) {
@@ -481,6 +499,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         currentRawText = spec?.rawText.orEmpty()
+        sessionRawText = currentRawText
         cvProcessor.startNewSession(spec = spec)
     }
 
@@ -529,6 +548,20 @@ class MainActivity : ComponentActivity() {
             } else {
                 autoZoom.onNoTarget() // 광각에서 계속 못 찾으면 1.0배 복귀 (탐색 실패 폴백)
             }
+
+            // 시안 S3 하단 안내 카드 문구 (#80) — 음성·햅틱(⑥)과 같은 판정을 화면 텍스트로도 보여준다
+            val xDev = deviation?.xDeviation
+            val sizeDev = deviation?.sizeDeviation
+            val text = when {
+                xDev == null || sizeDev == null -> "피사체를 찾고 있어요"
+                ready -> "지금이에요! 볼륨 버튼을 누르세요"
+                xDev < -DeviationJudgment.READY_MAX_ABS_X_DEVIATION -> "카메라를 조금 왼쪽으로 이동해주세요"
+                xDev > DeviationJudgment.READY_MAX_ABS_X_DEVIATION -> "카메라를 조금 오른쪽으로 이동해주세요"
+                sizeDev < -DeviationJudgment.READY_MAX_ABS_SIZE_DEVIATION -> "조금 더 가까이 가주세요"
+                sizeDev > DeviationJudgment.READY_MAX_ABS_SIZE_DEVIATION -> "조금 뒤로 물러나주세요"
+                else -> "좋아요, 그대로 유지해주세요"
+            }
+            runOnUiThread { guidanceText = text }
         }
 
         // 성능 측정: emit 은 처리 종료 직후 동기 호출이므로 now - timestampMs = 파이프라인 지연
@@ -662,6 +695,16 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val WELCOME_TEXT = "스냅사이트입니다. 볼륨 버튼을 눌러 시작하세요"
         const val TAG = "SnapSight"
+
+        // 즉시 상황 안내용 자주 나오는 라벨 한글 표기 — 없는 라벨은 영문 그대로 읽는다
+        private val KOREAN_LABELS = mapOf(
+            "person" to "사람", "laptop" to "노트북", "cup" to "컵", "bottle" to "병",
+            "chair" to "의자", "desk" to "책상", "monitor/tv" to "모니터", "cell phone" to "휴대폰",
+            "book" to "책", "handbag/satchel" to "가방", "backpack" to "백팩", "cake" to "케이크",
+            "dog" to "강아지", "cat" to "고양이", "flower" to "꽃", "glasses" to "안경",
+            "keyboard" to "키보드", "mouse" to "마우스", "plate" to "접시", "bowl/basin" to "그릇",
+            "wine glass" to "와인잔", "car" to "자동차", "potted plant" to "화분", "bread" to "빵",
+        )
         const val CV_TAG = "SnapSightCV"
         const val PREFS_NAME = "snap_sight_prefs"
         const val KEY_ONBOARDING_DONE = "onboarding_done"

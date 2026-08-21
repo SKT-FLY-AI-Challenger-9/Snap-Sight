@@ -1,9 +1,10 @@
-// 이 파일: 카메라 미리보기와 버튼(세션 시작·렌즈 전환)을 그리는 화면.
-// 개발 확인용 임시 화면이라 최소한만 있다.
-// 정식 접근성 화면(⑥ 담당)이 완성되면 통째로 교체된다.
+// 이 파일: S3 촬영(조준) 화면 — Figma 시안(#80). 상단 "현재 요청" 발화 카드,
+// 카메라 미리보기(+탐지 오버레이), 하단 방향 안내 카드와 취소 버튼.
 package com.example.snap_sight.ux
 
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,8 +13,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -21,37 +22,38 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.snap_sight.camera.CameraController
 import com.example.snap_sight.cv.TrackedObject
 
 /**
- * ⑤ 모듈 동작 확인용 임시 화면.
- * 정식 접근성 UI/온보딩은 ⑥ 담당 — docs/screen-design.md 의 S3 화면으로 교체 예정.
- *
- * @param cvObjects ② CV 스트림의 최신 추적 객체 — [DetectionOverlay]가 미리보기 위에
- *                  박스로 그린다 (개발·데모 검증용, 정식 화면에서는 음성·햅틱으로 대체)
+ * @param rawText      현재 세션 발화 원문 — 상단 "현재 요청" 카드에 표시 (없으면 상태 문구)
+ * @param guidanceText 하단 방향 안내 문구 (예: "카메라를 조금 왼쪽으로 이동해주세요")
+ * @param showOverlays 조준 UI(요청 카드·안내 카드·취소) 노출 여부 — 홈이 위에 떠 있을 땐 숨긴다
  */
 @Composable
 fun CaptureScreen(
     controller: CameraController,
     statusText: String,
-    sessionButtonLabel: String,
-    onSessionButton: () -> Unit,
+    rawText: String,
+    guidanceText: String,
+    onCancel: () -> Unit,
     cvObjects: List<TrackedObject> = emptyList(),
     onOpenSettings: () -> Unit = {},
     onOpenGallery: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    // FIT_CENTER: 촬영 프레임(센서 3:4)을 자르지 않고 그대로 보여준다(위아래 검은 띠).
-    // 기본값 FILL_CENTER 는 화면을 채우려고 프레임 위아래를 잘라내서 "화면과 찍힌 사진이 다르다"는
-    // 피드백의 원인이었다. CV 판정·자동 줌·저장되는 사진은 모두 이 전체 프레임 기준이다.
+    // FIT_CENTER: 촬영 프레임(센서 3:4)을 자르지 않고 그대로 보여준다 — "화면과 찍힌 사진이 다르다" 피드백 반영.
     val previewView = remember {
         PreviewView(context).apply { scaleType = PreviewView.ScaleType.FIT_CENTER }
     }
@@ -61,7 +63,7 @@ fun CaptureScreen(
         onDispose { controller.shutdown() }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = Modifier.fillMaxSize().background(SnapPalette.Background)) {
         AndroidView(
             factory = { previewView },
             modifier = Modifier
