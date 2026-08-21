@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -43,6 +44,8 @@ import com.example.snap_sight.cv.TrackedObject
  * @param showOverlays 조준 UI(요청 카드·안내 카드·취소) 노출 여부 — 홈이 위에 떠 있을 땐 숨긴다
  * @param onLensChanged 전/후면 전환 직후 호출 — true = 전면(셀카). MainActivity 가 시선
  *                      판정·안내 모드를 켜고 끄는 데 쓴다
+ * @param onShutterTap  탭 셔터 (#84) — null 이 아니면 미리보기를 "촬영" 접근성 노드로 노출하고
+ *                      TalkBack 두 번 탭(=클릭 액션)도 같은 콜백으로 수렴시킨다
  */
 @Composable
 fun CaptureScreen(
@@ -54,6 +57,7 @@ fun CaptureScreen(
     cvObjects: List<TrackedObject> = emptyList(),
     showOverlays: Boolean = true,
     onLensChanged: (isFront: Boolean) -> Unit = {},
+    onShutterTap: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -75,7 +79,19 @@ fun CaptureScreen(
             factory = { previewView },
             modifier = Modifier
                 .fillMaxSize()
-                .semantics { contentDescription = "카메라 미리보기" },
+                .semantics {
+                    // 조준 중엔 미리보기 전체가 "촬영" 단일 접근성 노드 (#84 탭 셔터).
+                    // TalkBack의 두 번 탭(클릭 액션)과 일반 두 번 탭이 같은 콜백으로 수렴한다.
+                    if (onShutterTap != null) {
+                        contentDescription = "촬영. 화면을 두 번 탭하면 사진을 찍습니다"
+                        onClick(label = "촬영") {
+                            onShutterTap()
+                            true
+                        }
+                    } else {
+                        contentDescription = "카메라 미리보기"
+                    }
+                },
         )
 
         DetectionOverlay(objects = cvObjects, mirrored = isFrontLens)
@@ -175,7 +191,7 @@ fun CaptureScreen(
                         .padding(top = 12.dp)
                         .clickable(onClick = onCancel)
                         .semantics {
-                            contentDescription = "촬영 취소. 볼륨 버튼을 길게 눌러도 취소됩니다"
+                            contentDescription = "촬영 취소. 화면을 길게 누르거나 뒤로 가기, 볼륨 버튼 길게 눌러도 취소됩니다"
                         }
                         .padding(vertical = 8.dp),
                 )
