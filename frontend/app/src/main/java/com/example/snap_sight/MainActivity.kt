@@ -15,9 +15,11 @@ import android.provider.Settings
 import android.util.Log
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -27,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.snap_sight.camera.AutoZoomController
@@ -363,7 +366,8 @@ class MainActivity : ComponentActivity() {
                 // ⑥ 세션 이벤트 안내 — 즉시성이 중요해 내장 TTS 로 바로 말한다 (실사용 피드백 #2·#3)
                 when (state) {
                     SessionState.LISTENING -> guidanceFeedback.announce("무엇을 찍을지 말씀해 주세요")
-                    SessionState.AIMING -> guidanceFeedback.announce("카메라를 비춰 주세요. 볼륨 버튼으로 촬영합니다")
+                    // #84 탭 우선: 탭을 먼저, 볼륨은 병행 수단으로 나중에 말한다
+                    SessionState.AIMING -> guidanceFeedback.announce("카메라를 비춰 주세요. 화면을 두 번 탭하면 촬영합니다")
                     SessionState.CAPTURING -> {
                         shutterObjects = cvObjects // 즉시 상황 안내용 스냅샷 (#80)
                         shutterIdentities = currentIdentities.values.distinct() // 기능 2 — 인물 태그용
@@ -382,7 +386,7 @@ class MainActivity : ComponentActivity() {
                         autoZoom.reset() // 촬영이 끝나면 다시 0.6배 광각으로
                     }
                     SessionState.ERROR -> {
-                        guidanceFeedback.announce("촬영에 실패했습니다. 볼륨 버튼을 눌러 처음으로 돌아갑니다")
+                        guidanceFeedback.announce("촬영에 실패했습니다. 화면을 두 번 탭해 처음으로 돌아갑니다")
                         autoZoom.reset()
                     }
                     else -> Unit
@@ -488,7 +492,26 @@ class MainActivity : ComponentActivity() {
                             val homeVisible = !showResult && sessionState in setOf(
                                 SessionState.IDLE, SessionState.LISTENING, SessionState.PARSING,
                             )
-                            Box(modifier = Modifier.fillMaxSize()) {
+                            // #84: 뒤로가기 = 복귀 문법 — 결과 닫기 → 세션 취소 → (홈) 2회 종료 확인
+                            BackHandler {
+                                when {
+                                    showResult -> closeResultToHome()
+                                    sessionState != SessionState.IDLE -> sessionManager.cancel()
+                                    else -> onHomeBackPressed()
+                                }
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    // #84: 화면 아무 곳 두 번 탭 = 진행(시작/발화 종료/셔터/다시 촬영),
+                                    // 길게 누르기 = 복귀. 버튼 단일 탭은 자식이 소비하므로 공존한다.
+                                    .pointerInput(Unit) {
+                                        detectTapGestures(
+                                            onDoubleTap = { onMainDoubleTap() },
+                                            onLongPress = { onMainLongPress() },
+                                        )
+                                    },
+                            ) {
                                 CaptureScreen(
                                     controller = cameraController,
                                     statusText = statusText,
@@ -498,12 +521,16 @@ class MainActivity : ComponentActivity() {
                                     cvObjects = cvObjects,
                                     showOverlays = !homeVisible && !showResult,
                                     onLensChanged = { isFront -> onLensChanged(isFront) },
+                                    // 조준 중엔 미리보기 전체가 "촬영" 접근성 노드 — TalkBack 두 번 탭도 셔터
+                                    onShutterTap = if (sessionState == SessionState.AIMING) {
+                                        { sessionManager.onVolumePressed() }
+                                    } else null,
                                 )
                                 if (homeVisible) {
                                     HomeScreen(
                                         onStartSession = { sessionManager.onVolumePressed() },
                                         onOpenGallery = { openGallery() },
-                                        onOpenSettings = { currentScreen = AppScreen.SETTINGS },
+                                        onOpenSettings = { enterScreen(AppScreen.SETTINGS) },
                                         isListening = sessionState == SessionState.LISTENING ||
                                             sessionState == SessionState.PARSING,
                                         recognizedText = sessionRawText,
@@ -538,7 +565,10 @@ class MainActivity : ComponentActivity() {
                             )
                         }
 
-                        AppScreen.SETTINGS -> SettingsScreen(
+                        AppScreen.SETTINGS -> {
+                            // #84: 뒤로 제스처로 나가도 서버 주소 적용을 건너뛰지 않는다
+                            BackHandler { leaveSettingsToHome() }
+                            SettingsScreen(
                             state = settingsUiState,
                             onVibrationIntensityChange = {
                                 updateSettings(settingsUiState.copy(vibrationIntensity = it))
@@ -554,21 +584,16 @@ class MainActivity : ComponentActivity() {
                             registeredPeople = registeredPeople,
                             onEnrollFace = { startFaceEnrollment() },
                             onDeletePerson = { name -> deleteRegisteredPerson(name) },
-                            onBack = {
-                                // 돌아가기 = 서버 주소 적용 시점 — 정규화된 값을 저장하고 입력칸에도 반영
-                                val applied = BackendConfig.save(appPrefs, backendUrlInput)
-                                backendUrlInput = BackendConfig.storedOverride(appPrefs)
-                                Log.i(TAG, "백엔드 주소 적용: $applied")
-                                currentScreen = AppScreen.MAIN
-                            },
-                        )
+                            // 돌아가기 = 서버 주소 적용 시점 — 뒤로 제스처와 같은 공통 경로 (#84)
+                            onBack = { leaveSettingsToHome() },
+                            )
+                        }
 
-                        AppScreen.GALLERY -> GalleryScreen(
+                        AppScreen.GALLERY -> {
+                            BackHandler { leaveGalleryToHome() }
+                            GalleryScreen(
                             photos = applyGalleryFilters(galleryPhotos),
-                            onBack = {
-                                galleryFilterStack = emptyList()
-                                currentScreen = AppScreen.MAIN
-                            },
+                            onBack = { leaveGalleryToHome() },
                             onVoiceSearch = { startGalleryVoiceSearch() },
                             filterSummaries = galleryFilterStack.map {
                                 it.summary(photoLabelDictionary)
@@ -579,7 +604,8 @@ class MainActivity : ComponentActivity() {
                             },
                             onPhotoClick = { photo -> speakPhotoDetails(photo) },
                             onReadResults = { speakCurrentResults() },
-                        )
+                            )
+                        }
                     }
                 }
             }
@@ -678,11 +704,92 @@ class MainActivity : ComponentActivity() {
     private var wentToBackground = false
     private var sessionCancelledInBackground = false
 
+    // ---- 화면 전환·조작 문법 (#84 P1) — 두 번 탭=진행, 길게·뒤로가기=복귀, 전환 확인 3채널 ----
+
+    /** 앱 실행 단위로 "첫 진입 상세 안내"를 했는지 — 재진입부터는 화면 이름만 말한다. */
+    private val visitedScreens = mutableSetOf<AppScreen>()
+    private var lastHomeBackPressMs = 0L
+
+    /** 위성 화면 진입 — 상승 earcon + 진입 TTS 1회 (첫 진입에만 버튼 위치를 덧붙인다). */
+    private fun enterScreen(screen: AppScreen) {
+        currentScreen = screen
+        guidanceFeedback.playScreenEnter()
+        val firstVisit = visitedScreens.add(screen)
+        val message = when (screen) {
+            AppScreen.SETTINGS ->
+                if (firstVisit) "설정 화면입니다. 진동, 사운드, 음성 속도를 조절할 수 있어요"
+                else "설정 화면입니다"
+            AppScreen.GALLERY ->
+                if (firstVisit) "사진 찾기 화면입니다. 아래에 말해서 찾기 버튼이 있어요"
+                else "사진 찾기 화면입니다"
+            else -> null
+        }
+        message?.let { guidanceFeedback.announce(it) }
+    }
+
+    /** 홈 복귀 — 하강 earcon + "홈입니다" 1회. */
+    private fun returnHome(prefix: String? = null) {
+        currentScreen = AppScreen.MAIN
+        guidanceFeedback.playScreenExit()
+        guidanceFeedback.announce(if (prefix != null) "$prefix 홈입니다" else "홈입니다")
+    }
+
+    /** 설정 → 홈 공통 복귀 경로 — 뒤로 제스처로 나가도 서버 주소가 적용되게 한 곳에 모은다. */
+    private fun leaveSettingsToHome() {
+        val applied = BackendConfig.save(appPrefs, backendUrlInput)
+        backendUrlInput = BackendConfig.storedOverride(appPrefs)
+        Log.i(TAG, "백엔드 주소 적용: $applied")
+        returnHome()
+    }
+
+    /** 사진 찾기 → 홈 공통 복귀 경로. */
+    private fun leaveGalleryToHome() {
+        galleryFilterStack = emptyList()
+        returnHome()
+    }
+
+    /** 결과 화면 닫기 — 자동으로 나타난 화면이라 사진이 저장돼 있음을 함께 말한다. */
+    private fun closeResultToHome() {
+        showResult = false
+        guidanceFeedback.playScreenExit()
+        guidanceFeedback.announce("사진은 저장됐어요. 홈입니다")
+    }
+
+    /** MAIN 화면 아무 곳 두 번 탭 = 진행 — 볼륨 짧게와 같은 상태별 의미로 수렴한다. */
+    private fun onMainDoubleTap() {
+        if (showResult) {
+            // 결과 화면의 진행 = 다시 촬영
+            showResult = false
+            if (sessionManager.state == SessionState.IDLE) sessionManager.onVolumePressed()
+            return
+        }
+        sessionManager.onVolumePressed()
+    }
+
+    /** MAIN 화면 길게 누르기 = 복귀 — 세션 취소 / 결과 닫기. 홈에서는 할 일이 없다. */
+    private fun onMainLongPress() {
+        when {
+            showResult -> closeResultToHome()
+            sessionManager.state != SessionState.IDLE -> sessionManager.cancel()
+        }
+    }
+
+    /** 홈에서 시스템 뒤로가기 — 1회차는 예고만, 2초 안에 다시 누르면 종료. */
+    private fun onHomeBackPressed() {
+        val now = System.currentTimeMillis()
+        if (now - lastHomeBackPressMs <= HOME_EXIT_CONFIRM_MS) {
+            finish()
+        } else {
+            lastHomeBackPressMs = now
+            guidanceFeedback.announce("한 번 더 누르면 앱을 종료합니다")
+        }
+    }
+
     /** 사진 찾기 진입 — 목록·검색 인덱스를 매번 새로 읽는다 (촬영 직후 돌아와도 최신이 보이게). */
     private fun openGallery() {
         galleryPhotos = null
         galleryFilterStack = emptyList()
-        currentScreen = AppScreen.GALLERY
+        enterScreen(AppScreen.GALLERY)
         Thread({
             descriptionLookup.beginBatch()
             val photos = PhotoLibrary.loadRecentPhotos(this, describe = descriptionLookup::get)
@@ -1324,5 +1431,8 @@ class MainActivity : ComponentActivity() {
 
         // 셔터 게이트가 신뢰하는 CV 판정의 최대 나이 — CV 가 멈춰 있으면 막지 않는다 (fail-open)
         private const val VERDICT_FRESH_MS = 1_500L
+
+        /** 홈 뒤로가기 2회 종료 확인 창 (#84) — 1회차 예고 후 이 시간 안에 다시 누르면 종료. */
+        private const val HOME_EXIT_CONFIRM_MS = 2_000L
     }
 }

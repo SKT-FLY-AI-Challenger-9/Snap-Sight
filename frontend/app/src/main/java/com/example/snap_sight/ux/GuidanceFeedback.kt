@@ -5,6 +5,8 @@ import android.media.AudioManager
 import android.media.MediaActionSound
 import android.media.ToneGenerator
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -133,6 +135,29 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         vibrateShort()
     }
 
+    // ---- 화면 전환 earcon (#84 전환 확인 3채널) ----
+    // 외울 소리는 2개뿐: 2음 상승 = 화면 진입, 2음 하강 = 홈 복귀. 어느 화면인지는 TTS가 말한다.
+
+    private val transitionHandler = Handler(Looper.getMainLooper())
+
+    /** 위성 화면(설정·사진 찾기 등) 진입 — 상승 2음 + 짧은 진동. */
+    fun playScreenEnter() = playTransitionTone(rising = true)
+
+    /** 홈 복귀 — 하강 2음 + 짧은 진동. */
+    fun playScreenExit() = playTransitionTone(rising = false)
+
+    private fun playTransitionTone(rising: Boolean) {
+        vibrateShort()
+        val generator = toneGenerator ?: rebuildToneGenerator() ?: return
+        val (first, second) =
+            if (rising) NAV_TONE_LOW to NAV_TONE_HIGH else NAV_TONE_HIGH to NAV_TONE_LOW
+        runCatching { generator.startTone(first, NAV_TONE_MS) }
+        transitionHandler.postDelayed(
+            { runCatching { toneGenerator?.startTone(second, NAV_TONE_MS) } },
+            NAV_TONE_GAP_MS,
+        )
+    }
+
     /**
      * 임의 안내 문구를 내장 TTS로 즉시 재생한다 (세션 시작/완료/실패 안내, 백엔드 TTS 폴백).
      * 설정된 음성 속도([applySettings])를 그대로 따른다.
@@ -186,6 +211,11 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         /** 짧은 2연타 비프 — 음성보다 덜 거슬리는 "놓침" 신호. */
         const val WARNING_TONE = ToneGenerator.TONE_PROP_BEEP2
         const val WARNING_TONE_MS = 250
+        // 전환 earcon 2음 — 낮은음/높은음 조합으로 상승(진입)·하강(복귀)을 표현
+        const val NAV_TONE_LOW = ToneGenerator.TONE_DTMF_1
+        const val NAV_TONE_HIGH = ToneGenerator.TONE_DTMF_9
+        const val NAV_TONE_MS = 90
+        const val NAV_TONE_GAP_MS = 110L
     }
 }
 
