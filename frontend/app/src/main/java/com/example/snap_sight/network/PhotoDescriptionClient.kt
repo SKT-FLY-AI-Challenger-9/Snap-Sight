@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit
  *  - description이 null이면 생성 실패 — 안내 없이 조용히 넘어간다
  */
 class PhotoDescriptionClient(
-    private val baseUrl: String = FrameUploader.DEFAULT_BASE_URL,
+    private val baseUrl: String? = null, // null = 요청 시점에 BackendConfig.baseUrl 사용
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
@@ -64,7 +64,7 @@ class PhotoDescriptionClient(
 
     private fun fetchDecision(sessionId: String): Decision {
         val request = Request.Builder()
-            .url("$baseUrl/api/capture/$sessionId/description")
+            .url("${baseUrl ?: BackendConfig.baseUrl}/api/capture/$sessionId/description")
             .get()
             .build()
         client.newCall(request).execute().use { response ->

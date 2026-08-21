@@ -1,25 +1,20 @@
-// 이 파일: AI가 찾은 물체 위에 초록 네모와 이름표를 그려주는 덧그림.
-// 탐지가 잘 되는지 눈으로 확인하기 위한 개발·데모용이다.
-// 실제 사용자(시각장애인)용 안내는 화면이 아니라 소리·진동으로 나간다.
+// 이 파일: AI가 찾은 물체 위에 노란 라운드 박스를 그려주는 덧그림 (Make 시안 v31의 추적 상자).
+// 시각 사용자·데모 참관자를 위한 보조 표시 — 실제 사용자(시각장애인)용 안내는 소리·진동으로 나간다.
 package com.example.snap_sight.ux
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.example.snap_sight.cv.TrackedObject
 
 /**
- * ② CV 스트림(추적 객체)을 미리보기 위에 그리는 디버그 오버레이.
- * 개발·데모 검증용 — 정식 화면(⑥)에서는 시각 요소가 아니라 음성·햅틱으로 안내한다.
+ * ② CV 스트림(추적 객체)을 미리보기 위에 그리는 오버레이 — 시안의 노란 추적 상자.
  *
  * 좌표 매핑: bbox 는 정방향 프레임 기준 0..1 정규화(x_min..y_max)이고,
  * PreviewView 는 FIT_CENTER(CaptureScreen 참고) — 프레임 전체가 화면 안에 들어오도록 균등 축소·중앙 정렬
@@ -33,16 +28,6 @@ fun DetectionOverlay(
     frameAspect: Float = 3f / 4f,
     modifier: Modifier = Modifier,
 ) {
-    val density = LocalDensity.current
-    val textPaint = remember {
-        android.graphics.Paint().apply {
-            color = android.graphics.Color.BLACK
-            textSize = with(density) { 15.dp.toPx() }
-            isAntiAlias = true
-            isFakeBoldText = true
-        }
-    }
-
     Canvas(modifier = modifier.fillMaxSize()) {
         if (frameAspect <= 0f || objects.isEmpty()) return@Canvas
 
@@ -61,28 +46,20 @@ fun DetectionOverlay(
         val offsetY = (size.height - shownHeight) / 2f
 
         val stroke = Stroke(width = 3.dp.toPx())
+        val corner = CornerRadius(14.dp.toPx(), 14.dp.toPx())
         for (o in objects) {
             val left = offsetX + o.bbox.xMin * shownWidth
             val top = offsetY + o.bbox.yMin * shownHeight
             val right = offsetX + o.bbox.xMax * shownWidth
             val bottom = offsetY + o.bbox.yMax * shownHeight
 
-            drawRect(
-                color = BoxColor,
+            drawRoundRect(
+                color = SnapPalette.Warning,
                 topLeft = Offset(left, top),
                 size = Size(right - left, bottom - top),
+                cornerRadius = corner,
                 style = stroke,
             )
-            // 라벨은 박스 안쪽 상단에 배경칩과 함께 — 박스가 화면에 꽉 차도 보인다
-            val label = "#%d %s %.2f".format(o.trackId, o.label, o.confidence)
-            val pad = 4.dp.toPx()
-            val chipHeight = textPaint.textSize + pad * 2
-            val chipWidth = textPaint.measureText(label) + pad * 2
-            drawRect(color = BoxColor, topLeft = Offset(left, top), size = Size(chipWidth, chipHeight))
-            drawContext.canvas.nativeCanvas.drawText(
-                label, left + pad, top + chipHeight - pad - textPaint.descent(), textPaint)
         }
     }
 }
-
-private val BoxColor = Color(0xFF00E676)

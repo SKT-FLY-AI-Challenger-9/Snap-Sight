@@ -11,7 +11,7 @@ import java.util.concurrent.TimeUnit
 
 class DescriptionLookup(
     context: Context,
-    private val baseUrl: String = FrameUploader.DEFAULT_BASE_URL,
+    private val baseUrl: String? = null, // null = 요청 시점에 BackendConfig.baseUrl 사용
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(2, TimeUnit.SECONDS)
         .readTimeout(3, TimeUnit.SECONDS)
@@ -40,7 +40,7 @@ class DescriptionLookup(
 
     private fun fetch(sessionId: String): String? {
         val request = Request.Builder()
-            .url("$baseUrl/api/capture/$sessionId/description")
+            .url("${baseUrl ?: BackendConfig.baseUrl}/api/capture/$sessionId/description")
             .get()
             .build()
         return try {
