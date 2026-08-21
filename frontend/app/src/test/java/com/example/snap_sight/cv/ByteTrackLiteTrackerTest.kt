@@ -154,4 +154,94 @@ class ByteTrackLiteTrackerTest {
         }
         assertTrue("timestamp 사용 여부를 섞으면 거부돼야 한다", rejected)
     }
+
+    // --- 기능 1-C/1-D (docs/feature-expansion-plan.md) — Python 테스트와 같은 시나리오 ---
+
+    @Test
+    fun `motion hint recovers match after fast camera pan`() {
+        val tracker = ByteTrackLiteTracker()
+        val first = tracker.update(
+            listOf(detection(xMin = 0.10f, yMin = 0.40f, xMax = 0.30f, yMax = 0.60f)),
+            timestampS = 0.0,
+        )
+        // 화면 내용이 오른쪽으로 0.4 이동 (IoU 0) — 힌트가 예측 위치를 따라가게 한다
+        val observed = tracker.update(
+            listOf(detection(xMin = 0.50f, yMin = 0.40f, xMax = 0.70f, yMax = 0.60f)),
+            timestampS = 0.1,
+            motionHint = MotionHint(dx = 0.4f, dy = 0f),
+        )
+        assertEquals(1, first.single().trackId)
+        assertEquals(1, observed.single().trackId)
+    }
+
+    @Test
+    fun `without motion hint fast pan creates a new id`() {
+        val tracker = ByteTrackLiteTracker()
+        tracker.update(
+            listOf(detection(xMin = 0.10f, yMin = 0.40f, xMax = 0.30f, yMax = 0.60f)),
+            timestampS = 0.0,
+        )
+        val observed = tracker.update(
+            listOf(detection(xMin = 0.50f, yMin = 0.40f, xMax = 0.70f, yMax = 0.60f)),
+            timestampS = 0.1,
+        )
+        assertEquals(2, observed.single().trackId)
+    }
+
+    @Test
+    fun `time based lost buffer expires by seconds not frames`() {
+        val tracker = ByteTrackLiteTracker(ByteTrackLiteConfig(lostTrackBufferSeconds = 1.0))
+        val box = detection(xMin = 0.10f, yMin = 0.40f, xMax = 0.30f, yMax = 0.60f)
+        tracker.update(listOf(box), timestampS = 0.0)
+        // 0.9초 동안 관측 없음 — 프레임이 많이 지나도 시간이 안 지났으면 유지
+        for (index in 1..9) tracker.update(emptyList(), timestampS = 0.09 * index)
+        val recovered = tracker.update(listOf(box), timestampS = 0.95)
+        assertEquals(1, recovered.single().trackId)
+
+        tracker.reset()
+        tracker.update(listOf(box), timestampS = 0.0)
+        tracker.update(emptyList(), timestampS = 0.5)
+        tracker.update(emptyList(), timestampS = 1.2) // 1.0초 초과 → 만료
+        val reappeared = tracker.update(listOf(box), timestampS = 1.3)
+        assertEquals(2, reappeared.single().trackId)
+    }
+
+    @Test
+    fun `match expansion recovers track after a gap`() {
+        val tracker = ByteTrackLiteTracker(
+            ByteTrackLiteConfig(
+                lostTrackBufferSeconds = 3.0,
+                matchExpansionRatePerSecond = 0.8,
+                maxMatchExpansion = 1.0,
+            )
+        )
+        tracker.update(
+            listOf(detection(xMin = 0.10f, yMin = 0.40f, xMax = 0.30f, yMax = 0.60f)),
+            timestampS = 0.0,
+        )
+        tracker.update(emptyList(), timestampS = 0.5)
+        tracker.update(emptyList(), timestampS = 1.0)
+        // 1초 놓친 뒤 살짝 떨어져 재등장 — 확장 없이는 IoU 미달로 새 ID 가 됐을 상황
+        val reappeared = tracker.update(
+            listOf(detection(xMin = 0.28f, yMin = 0.40f, xMax = 0.48f, yMax = 0.60f)),
+            timestampS = 1.1,
+        )
+        assertEquals(1, reappeared.single().trackId)
+    }
+
+    @Test
+    fun `match expansion disabled by default keeps existing behavior`() {
+        val tracker = ByteTrackLiteTracker(ByteTrackLiteConfig(lostTrackBufferSeconds = 3.0))
+        tracker.update(
+            listOf(detection(xMin = 0.10f, yMin = 0.40f, xMax = 0.30f, yMax = 0.60f)),
+            timestampS = 0.0,
+        )
+        tracker.update(emptyList(), timestampS = 0.5)
+        tracker.update(emptyList(), timestampS = 1.0)
+        val reappeared = tracker.update(
+            listOf(detection(xMin = 0.28f, yMin = 0.40f, xMax = 0.48f, yMax = 0.60f)),
+            timestampS = 1.1,
+        )
+        assertEquals(2, reappeared.single().trackId)
+    }
 }

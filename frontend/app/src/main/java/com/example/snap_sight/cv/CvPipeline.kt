@@ -55,8 +55,9 @@ class CvPipeline(
      * 프레임 1장을 처리해 공개 계약을 반환한다.
      *
      * @param timestampS 카메라 프레임 시각(초). [Tracker] 의 계약을 따른다.
+     * @param motionHint 직전 처리 이후 카메라 이동으로 인한 화면 내 이동량. [Tracker] 의 계약을 따른다.
      */
-    fun process(frame: CvFrame, timestampS: Double? = null): FrameResult {
+    fun process(frame: CvFrame, timestampS: Double? = null, motionHint: MotionHint? = null): FrameResult {
         check(isLoaded) { "CvPipeline.load() must be called before process()" }
 
         val primaryDetections = detector.detect(frame)
@@ -68,7 +69,7 @@ class CvPipeline(
             }
         }
 
-        val trackedObjects = tracker.update(allDetections, timestampS)
+        val trackedObjects = tracker.update(allDetections, timestampS, motionHint)
         val visibleObjects = trackedObjects
             .filter { it.confidence >= config.outputConfidenceThreshold }
             .sortedBy { it.trackId }

@@ -52,6 +52,10 @@ fun SettingsScreen(
     // 백엔드 서버 주소 재정의 (시연장 Wi-Fi 변경 대비) — 적용·저장 시점은 호출부(돌아가기) 책임
     serverUrl: String = "",
     onServerUrlChange: (String) -> Unit = {},
+    // 기능 2: 가족·지인 얼굴 등록 흐름 진입 (홈 화면으로 전환해 카메라를 켜고 진행)
+    registeredPeople: List<String> = emptyList(),
+    onEnrollFace: (() -> Unit)? = null,
+    onDeletePerson: (String) -> Unit = {},
 ) {
     // 시안의 "안내 방식" 접이식 노트 — 기본 접힘 (Progressive Disclosure)
     var helpExpanded by remember { mutableStateOf(false) }
@@ -181,6 +185,77 @@ fun SettingsScreen(
                         lineHeight = 22.sp,
                         modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
                     )
+                }
+            }
+
+            // 기능 2: 가족·지인 얼굴 등록 — 시안 카드 스타일로 통일 (얼굴 정보는 기기에만 저장)
+            if (onEnrollFace != null) {
+                SectionLabel("가족·지인 등록", topPadding = 20.dp)
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = SnapPalette.Card,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, SnapPalette.CardBorder, RoundedCornerShape(20.dp)),
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
+                        Text(
+                            text = "등록하면 \"우리 아들 찍어줘\"처럼 이름으로 찾을 수 있어요. " +
+                                "얼굴 정보는 이 기기에만 저장됩니다.",
+                            color = SnapPalette.TextSecondary,
+                            fontSize = 13.sp,
+                            lineHeight = 19.sp,
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color.Transparent,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 12.dp)
+                                .border(1.5.dp, SnapPalette.Accent, RoundedCornerShape(12.dp))
+                                .semantics {
+                                    contentDescription =
+                                        "새 얼굴 등록 시작. 카메라 화면으로 이동해 이름을 말하고 얼굴을 3초간 비춥니다"
+                                },
+                            onClick = onEnrollFace,
+                        ) {
+                            Text(
+                                text = "＋ 새 얼굴 등록",
+                                color = SnapPalette.Accent,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 13.dp),
+                            )
+                        }
+                        registeredPeople.forEach { name ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 10.dp),
+                            ) {
+                                Text(
+                                    text = name,
+                                    color = SnapPalette.TextPrimary,
+                                    fontSize = 15.sp,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    text = "삭제",
+                                    color = SnapPalette.WarningStrong,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier
+                                        .clickable { onDeletePerson(name) }
+                                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                                        .semantics {
+                                            contentDescription =
+                                                "등록된 $name 삭제. 얼굴 정보가 기기에서 완전히 지워집니다"
+                                        },
+                                )
+                            }
+                        }
+                    }
                 }
             }
 

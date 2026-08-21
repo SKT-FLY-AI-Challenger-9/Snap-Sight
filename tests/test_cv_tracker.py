@@ -242,3 +242,78 @@ def test_reset_clears_stream_state_and_restarts_ids():
 
     restarted = tracker.update([detection(0.6, 0.1, 0.8, 0.4)])
     assert [item.track_id for item in restarted] == [1]
+
+
+# --- 기능 1-C/1-D (docs/feature-expansion-plan.md): 모션 보정·시간 버퍼·buffered IoU ---
+
+
+def test_motion_hint_recovers_match_after_fast_camera_pan():
+    """카메라가 크게 패닝해 IoU 가 0 이 된 경우에도 모션 힌트로 같은 ID 를 유지한다."""
+    tracker = ByteTrackLiteTracker()
+    first = tracker.update([detection(0.10, 0.40, 0.30, 0.60)], timestamp_s=0.0)
+    # 화면 내용이 오른쪽으로 0.4 이동 (IoU 0) — 힌트 없이면 새 ID 가 발급된다
+    moved = detection(0.50, 0.40, 0.70, 0.60)
+    observed = tracker.update([moved], timestamp_s=0.1, motion_hint=(0.4, 0.0))
+    assert [item.track_id for item in first] == [1]
+    assert [item.track_id for item in observed] == [1]
+
+
+def test_without_motion_hint_fast_pan_creates_new_id():
+    """(대조군) 힌트가 없으면 같은 이동에서 새 ID 가 발급된다 — 힌트의 효과 검증."""
+    tracker = ByteTrackLiteTracker()
+    tracker.update([detection(0.10, 0.40, 0.30, 0.60)], timestamp_s=0.0)
+    observed = tracker.update([detection(0.50, 0.40, 0.70, 0.60)], timestamp_s=0.1)
+    assert [item.track_id for item in observed] == [2]
+
+
+def test_time_based_lost_buffer_expires_by_seconds_not_frames():
+    tracker = ByteTrackLiteTracker(ByteTrackLiteConfig(lost_track_buffer_seconds=1.0))
+    box = (0.10, 0.40, 0.30, 0.60)
+    tracker.update([detection(*box)], timestamp_s=0.0)
+    # 0.9초 동안 관측 없음 (프레임 수는 많아도 시간이 안 지났으면 유지)
+    for index in range(1, 10):
+        tracker.update([], timestamp_s=0.09 * index)
+    recovered = tracker.update([detection(*box)], timestamp_s=0.95)
+    assert [item.track_id for item in recovered] == [1]
+
+    # 같은 설정에서 1.0초를 넘기면 만료 → 새 ID
+    tracker.reset()
+    tracker.update([detection(*box)], timestamp_s=0.0)
+    tracker.update([], timestamp_s=0.5)
+    tracker.update([], timestamp_s=1.2)  # 여기서 만료
+    reappeared = tracker.update([detection(*box)], timestamp_s=1.3)
+    assert [item.track_id for item in reappeared] == [2]
+
+
+def test_match_expansion_recovers_track_after_gap():
+    """놓친 시간에 비례해 매칭 bbox 를 넓히면, 예측이 빗나간 재등장도 같은 ID 로 잇는다."""
+    config = ByteTrackLiteConfig(
+        lost_track_buffer_seconds=3.0,
+        match_expansion_rate_per_second=0.8,
+        max_match_expansion=1.0,
+    )
+    tracker = ByteTrackLiteTracker(config)
+    tracker.update([detection(0.10, 0.40, 0.30, 0.60)], timestamp_s=0.0)
+    tracker.update([], timestamp_s=0.5)
+    tracker.update([], timestamp_s=1.0)
+    # 1초 동안 놓친 뒤 살짝 떨어진 곳에서 재등장 (원래 박스와 IoU ≈ 0.08 — 확장 없이는 탈락)
+    reappeared = tracker.update([detection(0.28, 0.40, 0.48, 0.60)], timestamp_s=1.1)
+    assert [item.track_id for item in reappeared] == [1]
+
+
+def test_match_expansion_disabled_by_default_keeps_existing_behavior():
+    tracker = ByteTrackLiteTracker(ByteTrackLiteConfig(lost_track_buffer_seconds=3.0))
+    tracker.update([detection(0.10, 0.40, 0.30, 0.60)], timestamp_s=0.0)
+    tracker.update([], timestamp_s=0.5)
+    tracker.update([], timestamp_s=1.0)
+    reappeared = tracker.update([detection(0.28, 0.40, 0.48, 0.60)], timestamp_s=1.1)
+    assert [item.track_id for item in reappeared] == [2]
+
+
+def test_new_config_fields_are_validated():
+    with pytest.raises(ValueError):
+        ByteTrackLiteConfig(lost_track_buffer_seconds=0.0)
+    with pytest.raises(ValueError):
+        ByteTrackLiteConfig(match_expansion_rate_per_second=-0.1)
+    with pytest.raises(ValueError):
+        ByteTrackLiteConfig(max_match_expansion=2.5)

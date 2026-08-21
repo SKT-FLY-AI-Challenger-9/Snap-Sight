@@ -171,4 +171,43 @@ class GuidancePolicyTest {
         policy.feed(result(0f, 0f), now = 400)
         assertEquals(listOf(GuidancePolicy.READY_UTTERANCE), speech(policy.feed(result(0f, 0f), now = 700)))
     }
+
+    // ---- READY 보류 (셀카 모드 시선 게이트, 2026-08-21) ----
+
+    private fun GuidancePolicy.feedBlocked(r: DeviationResult, now: Long, reason: String?) =
+        onJudgment(GuidanceStateMapper.from(r), r, now, readyBlockedReason = reason)
+
+    @Test
+    fun `ready with a block reason speaks the reason instead of shoot-now`() {
+        val policy = GuidancePolicy()
+        val actions = policy.feedBlocked(result(0f, 0f), now = 0, reason = "카메라를 봐 주세요")
+        assertEquals(listOf("카메라를 봐 주세요"), speech(actions))
+        // 보류 사유는 반복 간격 안에서는 다시 말하지 않는다
+        assertTrue(policy.feedBlocked(result(0f, 0f), now = 1_000, reason = "카메라를 봐 주세요").isEmpty())
+        val again = policy.feedBlocked(
+            result(0f, 0f), now = GuidancePolicy.DIRECTION_REPEAT_MS, reason = "카메라를 봐 주세요",
+        )
+        assertEquals(listOf("카메라를 봐 주세요"), speech(again))
+    }
+
+    @Test
+    fun `ready fires normally once the block reason clears`() {
+        val policy = GuidancePolicy()
+        policy.feedBlocked(result(0f, 0f), now = 0, reason = "카메라를 봐 주세요")
+        // 시선이 돌아옴 — READY 디바운스(에피소드 시작 기준)를 지나 "지금 촬영하세요"
+        val actions = policy.feedBlocked(
+            result(0f, 0f), now = GuidancePolicy.READY_DEBOUNCE_MS + 100, reason = null,
+        )
+        assertEquals(listOf(GuidancePolicy.READY_UTTERANCE), speech(actions))
+    }
+
+    @Test
+    fun `block reason does not affect sessions without one`() {
+        val policy = GuidancePolicy()
+        policy.feed(result(0f, 0f), now = 0)
+        assertEquals(
+            listOf(GuidancePolicy.READY_UTTERANCE),
+            speech(policy.feed(result(0f, 0f), now = GuidancePolicy.READY_DEBOUNCE_MS + 100)),
+        )
+    }
 }

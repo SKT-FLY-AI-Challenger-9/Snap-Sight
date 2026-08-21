@@ -26,6 +26,11 @@ data class CvFrameOutput(
     val selection: TargetSelection? = null,
     /** 편차 계산 결과. 계산기가 붙기 전까지 null. */
     val deviation: FramingDeviation? = null,
+    /**
+     * 얼굴 신원 (track_id → 등록 인물 이름, 기능 2). 임베더·등록 인물이 없으면 항상 빈 맵.
+     * ⚠️ 이름은 기기 로컬 전용 — 서버 업로드·objects JSON 에 절대 섞지 않는다.
+     */
+    val identities: Map<Int, String> = emptyMap(),
 ) {
     val objects: List<TrackedObject> get() = frameResult.objects
 
