@@ -6,6 +6,7 @@ package com.example.snap_sight.ux
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -44,6 +45,7 @@ fun CaptureScreen(
     onSessionButton: () -> Unit,
     cvObjects: List<TrackedObject> = emptyList(),
     onOpenSettings: () -> Unit = {},
+    onOpenGallery: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -82,33 +84,58 @@ fun CaptureScreen(
             )
         }
 
-        Row(
+        // 버튼 4개는 한 줄에 안 들어가 2×2로 배치한다 (한 줄이면 마지막 버튼이 화면 밖으로 밀림)
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .navigationBarsPadding()
                 .padding(16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Button(
-                onClick = onSessionButton,
-                modifier = Modifier.semantics {
-                    contentDescription = "$sessionButtonLabel. 볼륨 버튼으로도 조작할 수 있습니다"
-                },
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
             ) {
-                Text(sessionButtonLabel)
+                Button(
+                    onClick = onSessionButton,
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics {
+                            contentDescription = "$sessionButtonLabel. 볼륨 버튼으로도 조작할 수 있습니다"
+                        },
+                ) {
+                    Text(sessionButtonLabel)
+                }
+                Button(
+                    onClick = { controller.toggleLens(lifecycleOwner, previewView) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics { contentDescription = "전면 후면 카메라 전환" },
+                ) {
+                    Text("렌즈 전환")
+                }
             }
-            Button(
-                onClick = { controller.toggleLens(lifecycleOwner, previewView) },
-                modifier = Modifier.semantics { contentDescription = "전면 후면 카메라 전환" },
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
             ) {
-                Text("렌즈 전환")
-            }
-            Button(
-                onClick = onOpenSettings,
-                modifier = Modifier.semantics { contentDescription = "설정 화면 열기" },
-            ) {
-                Text("설정")
+                Button(
+                    onClick = onOpenGallery,
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics { contentDescription = "사진 찾기 화면 열기" },
+                ) {
+                    Text("사진 찾기")
+                }
+                Button(
+                    onClick = onOpenSettings,
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics { contentDescription = "설정 화면 열기" },
+                ) {
+                    Text("설정")
+                }
             }
         }
     }

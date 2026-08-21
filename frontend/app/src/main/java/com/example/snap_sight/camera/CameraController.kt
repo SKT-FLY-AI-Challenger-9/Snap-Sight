@@ -182,14 +182,15 @@ class CameraController(private val context: Context) {
      * 사진 촬영. 결과는 MediaStore(Pictures/SnapSight)에 저장되고
      * [captureEventListener] 로 통지된다.
      */
-    fun takePhoto() {
+    fun takePhoto(sessionId: String? = null) {
         val capture = imageCapture ?: run {
             captureEventListener?.onCaptureError(IllegalStateException("카메라가 아직 준비되지 않음"))
             return
         }
 
-        val name = "SnapSight_" +
-                SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+        // 세션 ID를 파일명에 심어 사진 찾기 화면이 AI 설명을 역조회할 수 있게 한다 (#78)
+        val name = "SnapSight_" + (sessionId?.takeIf { it.isNotBlank() }
+            ?: SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date()))
         val contentValues = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
             put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
