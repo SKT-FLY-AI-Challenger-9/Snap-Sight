@@ -77,7 +77,7 @@ fun GalleryScreen(
     val filtered = photos?.filter { photo ->
         val matchesQuery = query.isBlank() || photo.title.contains(query) ||
             photo.description.contains(query) || photo.dateText.contains(query)
-        val matchesCategory = categoryFilter == "전체" || photo.category == categoryFilter
+        val matchesCategory = categoryFilter == "전체" || categoryOf(photo) == categoryFilter
         matchesQuery && matchesCategory
     }
 
@@ -225,6 +225,27 @@ fun GalleryScreen(
     }
 }
 
+// 대분류 키워드 판정 — 예전 라벨 캐시(category 필드)가 검색 인덱스로 대체되면서(기능 3)
+// 칩 필터는 제목·설명 텍스트의 키워드 규칙으로 판정한다 (cb27405의 분류 규칙과 동일).
+private val PERSON_KEYWORDS = listOf(
+    "사람", "아들", "딸", "아이", "아기", "가족", "친구", "남성", "여성",
+    "남자", "여자", "인물", "얼굴", "커플", "부모", "엄마", "아빠",
+)
+private val FOOD_KEYWORDS = listOf(
+    "음식", "커피", "라떼", "아메리카노", "녹차", "홍차", "찻잔", "음료", "주스",
+    "케이크", "빵", "디저트", "밥", "식사", "요리", "접시", "식탁", "메뉴",
+    "과일", "파스타", "피자", "치킨", "샐러드", "맥주", "와인",
+)
+
+private fun categoryOf(photo: GalleryPhoto): String {
+    val text = "${photo.title} ${photo.description}"
+    return when {
+        PERSON_KEYWORDS.any { text.contains(it) } -> "인물"
+        FOOD_KEYWORDS.any { text.contains(it) } -> "음식"
+        else -> "추억"
+    }
+}
+
 /** 시안(v31)의 파란 테두리 음성 버튼 — 짙은 파랑 배경, 마이크/스피커 + 라벨. */
 @Composable
 private fun VoiceActionButton(
@@ -278,14 +299,12 @@ private fun PhotoCard(photo: GalleryPhoto, onClick: () -> Unit = {}) {
                 Box(Modifier.size(72.dp).background(GalleryBackground, RoundedCornerShape(12.dp)))
             }
             Column(modifier = Modifier.padding(start = 14.dp)) {
-                photo.category?.let { category ->
-                    Text(
-                        text = category,
-                        color = GalleryAccent,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
+                Text(
+                    text = categoryOf(photo),
+                    color = GalleryAccent,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                )
                 Text(
                     text = photo.title,
                     style = MaterialTheme.typography.titleSmall,
