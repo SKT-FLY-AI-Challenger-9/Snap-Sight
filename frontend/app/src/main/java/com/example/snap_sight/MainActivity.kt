@@ -13,7 +13,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
-import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -367,7 +366,7 @@ class MainActivity : ComponentActivity() {
                 when (state) {
                     SessionState.LISTENING -> guidanceFeedback.announce("무엇을 찍을지 말씀해 주세요")
                     // #84 탭 우선: 탭을 먼저, 볼륨은 병행 수단으로 나중에 말한다
-                    SessionState.AIMING -> guidanceFeedback.announce("카메라를 비춰 주세요. 화면을 탭하면 촬영합니다")
+                    SessionState.AIMING -> guidanceFeedback.announce("카메라를 비춰 주세요. 화면을 두 번 탭하면 촬영합니다")
                     SessionState.CAPTURING -> {
                         shutterObjects = cvObjects // 즉시 상황 안내용 스냅샷 (#80)
                         shutterIdentities = currentIdentities.values.distinct() // 기능 2 — 인물 태그용
@@ -386,7 +385,7 @@ class MainActivity : ComponentActivity() {
                         autoZoom.reset() // 촬영이 끝나면 다시 0.6배 광각으로
                     }
                     SessionState.ERROR -> {
-                        guidanceFeedback.announce("촬영에 실패했습니다. 화면을 탭해 처음으로 돌아갑니다")
+                        guidanceFeedback.announce("촬영에 실패했습니다. 화면을 두 번 탭해 처음으로 돌아갑니다")
                         autoZoom.reset()
                     }
                     else -> Unit
@@ -478,16 +477,15 @@ class MainActivity : ComponentActivity() {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     when (currentScreen) {
                         AppScreen.ONBOARDING -> Box(
-                            // #84 전역 문법: 한 번 탭=권한 허용(메인), 세 번 탭=작동 방식 낭독(서브)
+                            // #84 전역 문법: 두 번 탭=권한 허용(메인), 세 번 탭=작동 방식 낭독(서브)
                             modifier = Modifier
                                 .fillMaxSize()
                                 .appTapGrammar(
-                                    onSingleTap = { checkOrRequestPermissions() },
-                                    onDoubleTap = { /* 첫 화면 — 돌아갈 곳 없음 */ },
+                                    onDoubleTap = { checkOrRequestPermissions() },
                                     onTripleTap = {
                                         guidanceFeedback.announce(
                                             "찍고 싶은 장면을 말하면 사운드와 진동으로 방향과 거리를 " +
-                                                "안내합니다. 화면을 한 번 탭해 촬영할 수 있어요"
+                                                "안내합니다. 화면을 두 번 탭해 촬영할 수 있어요"
                                         )
                                     },
                                     onLongPress = { /* 첫 화면 — 돌아갈 곳 없음 */ },
@@ -520,11 +518,10 @@ class MainActivity : ComponentActivity() {
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    // #84: 한 번 탭=메인(시작/발화 종료/셔터/다시 촬영), 두 번 탭=뒤로,
+                                    // #84: 두 번 탭=메인(시작/발화 종료/셔터/다시 촬영), 길게=뒤로,
                                     // 세 번 탭=서브(홈: 사진 찾기 / 세션: 상태 낭독 / 결과: 설명 듣기).
                                     .appTapGrammar(
-                                        onSingleTap = { onMainMainAction() },
-                                        onDoubleTap = { onMainBackAction() },
+                                        onDoubleTap = { onMainMainAction() },
                                         onTripleTap = { onMainSubAction() },
                                         onLongPress = { onMainBackAction() },
                                     ),
@@ -586,12 +583,11 @@ class MainActivity : ComponentActivity() {
                             // #84: 뒤로 제스처로 나가도 서버 주소 적용을 건너뛰지 않는다
                             BackHandler { leaveSettingsToHome() }
                             Box(
-                                // 한 번 탭=설정값 낭독(메인), 두 번 탭·길게=홈, 세 번 탭=안내 방식(서브)
+                                // 두 번 탭=설정값 낭독(메인), 세 번 탭=안내 방식(서브), 길게=홈
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .appTapGrammar(
-                                        onSingleTap = { announceSettingsSummary() },
-                                        onDoubleTap = { leaveSettingsToHome() },
+                                        onDoubleTap = { announceSettingsSummary() },
                                         onTripleTap = { announceGuidanceHelp() },
                                         onLongPress = { leaveSettingsToHome() },
                                     ),
@@ -621,12 +617,11 @@ class MainActivity : ComponentActivity() {
                         AppScreen.GALLERY -> {
                             BackHandler { leaveGalleryToHome() }
                             Box(
-                                // 한 번 탭=말해서 찾기(메인), 두 번 탭·길게=홈, 세 번 탭=결과 듣기(서브)
+                                // 두 번 탭=말해서 찾기(메인), 세 번 탭=결과 듣기(서브), 길게=홈
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .appTapGrammar(
-                                        onSingleTap = { startGalleryVoiceSearch() },
-                                        onDoubleTap = { leaveGalleryToHome() },
+                                        onDoubleTap = { startGalleryVoiceSearch() },
                                         onTripleTap = { speakCurrentResults() },
                                         onLongPress = { leaveGalleryToHome() },
                                     ),
@@ -796,7 +791,7 @@ class MainActivity : ComponentActivity() {
         guidanceFeedback.announce("사진은 저장됐어요. 홈입니다")
     }
 
-    /** MAIN 화면 아무 곳 한 번 탭 = 메인 기능 — 볼륨 짧게와 같은 상태별 진행으로 수렴한다. */
+    /** MAIN 화면 아무 곳 두 번 탭 = 메인 기능 — 상태별 진행(시작/발화 종료/셔터/처음으로). */
     private fun onMainMainAction() {
         if (showResult) {
             // 결과 화면의 메인 기능 = 다시 촬영
@@ -807,7 +802,7 @@ class MainActivity : ComponentActivity() {
         sessionManager.onVolumePressed()
     }
 
-    /** MAIN 화면 두 번 탭·길게 누르기 = 뒤로 — 결과 닫기 / 세션 취소 / (홈) 2회 종료 확인. */
+    /** MAIN 화면 길게 누르기 = 뒤로 — 결과 닫기 / 세션 취소 / (홈) 2회 종료 확인. */
     private fun onMainBackAction() {
         when {
             showResult -> closeResultToHome()
@@ -1424,37 +1419,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // 볼륨 버튼: 짧게 = 상태별 동작(시작/발화종료/셔터), 길게(≈1초) = 세션 취소.
-    // onKeyDown 에서 startTracking() 해야 onKeyLongPress 가 동작한다.
-
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (isVolumeKey(keyCode) && permissionsGranted && cameraController.isBound) {
-            event?.startTracking()
-            return true
-        }
-        return super.onKeyDown(keyCode, event)
-    }
-
-    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
-        if (isVolumeKey(keyCode) && permissionsGranted && cameraController.isBound) {
-            if (event?.isCanceled != true) {
-                sessionManager.onVolumePressed()
-            }
-            return true
-        }
-        return super.onKeyUp(keyCode, event)
-    }
-
-    override fun onKeyLongPress(keyCode: Int, event: KeyEvent?): Boolean {
-        if (isVolumeKey(keyCode)) {
-            sessionManager.cancel()
-            return true
-        }
-        return super.onKeyLongPress(keyCode, event)
-    }
-
-    private fun isVolumeKey(keyCode: Int) =
-        keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP
+    // 볼륨 버튼 매핑 제거 (#84 4-2 3단계) — 탭 문법이 주 조작이 되면서 볼륨 키는
+    // 시스템 볼륨(사운드·TTS 크기 조절)으로 환원했다. 진행 동작은 sessionManager.onVolumePressed()
+    // 이름 그대로지만 이제 탭 제스처만 호출한다.
 
     override fun onDestroy() {
         super.onDestroy()
@@ -1466,7 +1433,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private companion object {
-        const val WELCOME_TEXT = "스냅사이트입니다. 볼륨 버튼을 눌러 시작하세요"
+        const val WELCOME_TEXT = "스냅사이트입니다. 화면을 두 번 탭해 시작하세요"
         const val TAG = "SnapSight"
 
         // 즉시 상황 안내용 자주 나오는 라벨 한글 표기 — 없는 라벨은 영문 그대로 읽는다

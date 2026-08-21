@@ -83,7 +83,7 @@ fun CaptureScreen(
                     // 조준 중엔 미리보기 전체가 "촬영" 단일 접근성 노드 (#84 탭 셔터).
                     // TalkBack의 두 번 탭(클릭 액션)과 일반 두 번 탭이 같은 콜백으로 수렴한다.
                     if (onShutterTap != null) {
-                        contentDescription = "촬영. 화면을 탭하면 사진을 찍습니다"
+                        contentDescription = "촬영. 화면을 두 번 탭하면 사진을 찍습니다"
                         onClick(label = "촬영") {
                             onShutterTap()
                             true
@@ -191,7 +191,7 @@ fun CaptureScreen(
                         .padding(top = 12.dp)
                         .clickable(onClick = onCancel)
                         .semantics {
-                            contentDescription = "촬영 취소. 화면을 두 번 탭하거나 길게 눌러도 취소됩니다"
+                            contentDescription = "촬영 취소. 화면을 길게 눌러도 취소됩니다"
                         }
                         .padding(vertical = 8.dp),
                 )

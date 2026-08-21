@@ -46,8 +46,8 @@ private data class FeatureItem(val icon: String, val title: String, val body: St
 private val FEATURES = listOf(
     FeatureItem("🎚", "사운드로 방향 안내", "촬영 중에는 음성을 최소화해 주변 소리를 들을 수 있습니다."),
     FeatureItem("📳", "진동으로 거리 안내", "왼쪽·오른쪽·가까이·멀리를 햅틱 패턴으로 알려드립니다."),
-    // #84 탭 우선: 탭을 먼저, 볼륨 버튼은 병행 수단으로 나중에 말한다
-    FeatureItem("👆", "화면 탭으로 촬영", "화면 아무 곳이나 한 번 탭해 화면을 보지 않고 찍을 수 있습니다. 두 번 탭은 뒤로 가기예요."),
+    // #84 탭 문법: 두 번 탭=메인, 세 번 탭=서브, 길게 누르기=뒤로 (볼륨 버튼은 소리 조절)
+    FeatureItem("👆", "화면 두 번 탭으로 촬영", "화면 아무 곳이나 두 번 탭해 화면을 보지 않고 찍을 수 있습니다. 길게 누르면 뒤로 가기예요."),
 )
 
 @Composable
