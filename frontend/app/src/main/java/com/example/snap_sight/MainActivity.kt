@@ -19,7 +19,6 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -29,7 +28,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.snap_sight.camera.AutoZoomController
@@ -85,6 +83,8 @@ import com.example.snap_sight.ux.OnboardingScreen
 import com.example.snap_sight.ux.SettingsRepository
 import com.example.snap_sight.ux.SettingsScreen
 import com.example.snap_sight.ux.SettingsUiState
+import com.example.snap_sight.ux.appTapGrammar
+import kotlin.math.roundToInt
 import com.example.snap_sight.ui.theme.SnapSightTheme
 
 /** S1(온보딩)/S2(홈·조준, [CaptureScreen]이 겸함)/S5(설정) — `docs/screen-design.md` 화면 목록 기준. */
@@ -477,15 +477,31 @@ class MainActivity : ComponentActivity() {
             SnapSightTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     when (currentScreen) {
-                        AppScreen.ONBOARDING -> OnboardingScreen(
-                            permissionState = onboardingPermissionState,
-                            onRequestPermissions = { checkOrRequestPermissions() },
-                            onOpenAppSettings = { openAppSettings() },
-                            onContinue = {
-                                appPrefs.edit().putBoolean(KEY_ONBOARDING_DONE, true).apply()
-                                currentScreen = AppScreen.MAIN
-                            },
-                        )
+                        AppScreen.ONBOARDING -> Box(
+                            // #84 전역 문법: 두 번 탭=권한 허용(메인), 세 번 탭=작동 방식 낭독(서브)
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .appTapGrammar(
+                                    onDoubleTap = { checkOrRequestPermissions() },
+                                    onTripleTap = {
+                                        guidanceFeedback.announce(
+                                            "찍고 싶은 장면을 말하면 사운드와 진동으로 방향과 거리를 " +
+                                                "안내합니다. 화면을 두 번 탭해 촬영할 수 있어요"
+                                        )
+                                    },
+                                    onLongPress = { /* 첫 화면 — 돌아갈 곳 없음 */ },
+                                ),
+                        ) {
+                            OnboardingScreen(
+                                permissionState = onboardingPermissionState,
+                                onRequestPermissions = { checkOrRequestPermissions() },
+                                onOpenAppSettings = { openAppSettings() },
+                                onContinue = {
+                                    appPrefs.edit().putBoolean(KEY_ONBOARDING_DONE, true).apply()
+                                    currentScreen = AppScreen.MAIN
+                                },
+                            )
+                        }
 
                         AppScreen.MAIN -> if (permissionsGranted) {
                             // 카메라는 항상 아래에 깔려 있고, 세션 단계에 따라 홈/결과 화면이 위에 뜬다 (v31 #80).
@@ -503,14 +519,13 @@ class MainActivity : ComponentActivity() {
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    // #84: 화면 아무 곳 두 번 탭 = 진행(시작/발화 종료/셔터/다시 촬영),
-                                    // 길게 누르기 = 복귀. 버튼 단일 탭은 자식이 소비하므로 공존한다.
-                                    .pointerInput(Unit) {
-                                        detectTapGestures(
-                                            onDoubleTap = { onMainDoubleTap() },
-                                            onLongPress = { onMainLongPress() },
-                                        )
-                                    },
+                                    // #84: 두 번 탭=메인(시작/발화 종료/셔터/다시 촬영),
+                                    // 세 번 탭=서브(사진 찾기/상태 낭독/설명 다시 듣기), 길게=뒤로.
+                                    .appTapGrammar(
+                                        onDoubleTap = { onMainDoubleTap() },
+                                        onTripleTap = { onMainTripleTap() },
+                                        onLongPress = { onMainLongPress() },
+                                    ),
                             ) {
                                 CaptureScreen(
                                     controller = cameraController,
@@ -568,6 +583,16 @@ class MainActivity : ComponentActivity() {
                         AppScreen.SETTINGS -> {
                             // #84: 뒤로 제스처로 나가도 서버 주소 적용을 건너뛰지 않는다
                             BackHandler { leaveSettingsToHome() }
+                            Box(
+                                // 두 번 탭=설정값 낭독(메인), 세 번 탭=안내 방식 설명(서브), 길게=홈
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .appTapGrammar(
+                                        onDoubleTap = { announceSettingsSummary() },
+                                        onTripleTap = { announceGuidanceHelp() },
+                                        onLongPress = { leaveSettingsToHome() },
+                                    ),
+                            ) {
                             SettingsScreen(
                             state = settingsUiState,
                             onVibrationIntensityChange = {
@@ -587,10 +612,21 @@ class MainActivity : ComponentActivity() {
                             // 돌아가기 = 서버 주소 적용 시점 — 뒤로 제스처와 같은 공통 경로 (#84)
                             onBack = { leaveSettingsToHome() },
                             )
+                            }
                         }
 
                         AppScreen.GALLERY -> {
                             BackHandler { leaveGalleryToHome() }
+                            Box(
+                                // 두 번 탭=말해서 찾기(메인), 세 번 탭=결과 듣기(서브), 길게=홈
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .appTapGrammar(
+                                        onDoubleTap = { startGalleryVoiceSearch() },
+                                        onTripleTap = { speakCurrentResults() },
+                                        onLongPress = { leaveGalleryToHome() },
+                                    ),
+                            ) {
                             GalleryScreen(
                             photos = applyGalleryFilters(galleryPhotos),
                             onBack = { leaveGalleryToHome() },
@@ -605,6 +641,7 @@ class MainActivity : ComponentActivity() {
                             onPhotoClick = { photo -> speakPhotoDetails(photo) },
                             onReadResults = { speakCurrentResults() },
                             )
+                            }
                         }
                     }
                 }
@@ -766,12 +803,45 @@ class MainActivity : ComponentActivity() {
         sessionManager.onVolumePressed()
     }
 
-    /** MAIN 화면 길게 누르기 = 복귀 — 세션 취소 / 결과 닫기. 홈에서는 할 일이 없다. */
+    /** MAIN 화면 길게 누르기 = 뒤로 — 결과 닫기 / 세션 취소 / (홈) 2회 종료 확인. */
     private fun onMainLongPress() {
         when {
             showResult -> closeResultToHome()
             sessionManager.state != SessionState.IDLE -> sessionManager.cancel()
+            else -> onHomeBackPressed()
         }
+    }
+
+    /** MAIN 화면 세 번 탭 = 서브 기능 — 결과: 설명 다시 듣기 / 세션 중: 상태 낭독 / 홈: 사진 찾기. */
+    private fun onMainTripleTap() {
+        when {
+            showResult -> lastResultDescription?.let(::speak) ?: speak("설명을 만드는 중이에요")
+            sessionManager.state != SessionState.IDLE -> {
+                val summary = listOf(statusText, guidanceText)
+                    .filter { it.isNotBlank() }
+                    .joinToString(". ")
+                if (summary.isNotBlank()) guidanceFeedback.announce(summary)
+            }
+            else -> openGallery()
+        }
+    }
+
+    /** 설정 화면 두 번 탭(메인) — 현재 설정값을 음성으로 요약한다. */
+    private fun announceSettingsSummary() {
+        val s = settingsUiState
+        guidanceFeedback.announce(
+            "진동 강도 ${(s.vibrationIntensity * 100).roundToInt()}퍼센트, " +
+                "사운드 강도 ${(s.soundVolume * 100).roundToInt()}퍼센트, " +
+                "음성 속도 ${"%.1f".format(s.speechRate)}배입니다"
+        )
+    }
+
+    /** 설정 화면 세 번 탭(서브) — 안내 방식 설명을 낭독한다. */
+    private fun announceGuidanceHelp() {
+        guidanceFeedback.announce(
+            "촬영 중 방향과 거리는 사운드와 진동으로 안내하고, " +
+                "대상을 찾았을 때와 촬영 순간에만 짧은 음성을 사용합니다"
+        )
     }
 
     /** 홈에서 시스템 뒤로가기 — 1회차는 예고만, 2초 안에 다시 누르면 종료. */
