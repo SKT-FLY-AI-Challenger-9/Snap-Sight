@@ -143,29 +143,8 @@ class MainActivity : ComponentActivity() {
         SettingsUiState(vibrationIntensity = 1f, soundVolume = 1f, speechRate = 1f)
     )
 
-    // 시안 화면 전환용 상태 (#80) — 세션 상태·발화·조준 안내·결과 화면 데이터
-    private var sessionState by mutableStateOf(SessionState.IDLE)
-    private var sessionRawText by mutableStateOf("")
-    private var guidanceText by mutableStateOf("")
-    private var showResult by mutableStateOf(false)
-    private var lastResultPhoto by mutableStateOf<Bitmap?>(null)
-    private var lastResultRawText by mutableStateOf("")
-    private var lastResultDescription by mutableStateOf<String?>(null)
-    // 시안 S4의 한 줄 요약·판정 표 — 서버 설명을 기다리지 않고 셔터 순간 온디바이스 탐지로 채운다 (#80)
-    private var lastResultHeadline by mutableStateOf<String?>(null)
-    private var lastResultDetails by mutableStateOf<List<Pair<String, String>>>(emptyList())
-
-    // 설정 화면의 백엔드 서버 주소 입력값 — 돌아가기 시 BackendConfig에 적용·저장한다
-    private var backendUrlInput by mutableStateOf("")
-
     // 사진 찾기 화면 데이터 — GALLERY 진입 시 백그라운드로 로드 (#78)
     private var galleryPhotos by mutableStateOf<List<GalleryPhoto>?>(null)
-    // 재진입 시 이전 라벨링 스레드의 늦은 갱신을 무시하기 위한 세대 번호
-    @Volatile
-    private var galleryLoadGeneration = 0
-
-    // 셔터 순간의 탐지 객체 — 서버 설명(수십 초)보다 먼저 들려줄 즉시 상황 안내의 재료
-    private var shutterObjects: List<TrackedObject> = emptyList()
 
     // 디버그 오버레이용 최신 추적 객체 (정식 화면에서는 음성·햅틱으로 대체)
     private var cvObjects by mutableStateOf<List<TrackedObject>>(emptyList())
@@ -335,51 +314,15 @@ class MainActivity : ComponentActivity() {
                         )
 
                         AppScreen.MAIN -> if (permissionsGranted) {
-                            // 카메라는 항상 아래에 살아 있고(볼륨 트리거·수명주기 유지), 홈/결과가 위에 덮인다
-                            Box {
-                                CaptureScreen(
-                                    controller = cameraController,
-                                    statusText = statusText,
-                                    rawText = sessionRawText,
-                                    guidanceText = guidanceText,
-                                    onCancel = { sessionManager.cancel() },
-                                    cvObjects = cvObjects,
-                                    // 청취/해석 단계는 홈이 위에 떠 있으므로 조준부터만 오버레이를 켠다
-                                    showOverlays = sessionState != SessionState.IDLE &&
-                                        sessionState != SessionState.LISTENING &&
-                                        sessionState != SessionState.PARSING &&
-                                        !showResult,
-                                )
-                                when {
-                                    showResult -> ResultScreen(
-                                        photo = lastResultPhoto,
-                                        rawText = lastResultRawText,
-                                        description = lastResultDescription,
-                                        headline = lastResultHeadline,
-                                        details = lastResultDetails,
-                                        onReplayDescription = {
-                                            speak(lastResultDescription ?: "아직 설명을 만드는 중이에요")
-                                        },
-                                        onConfirm = { showResult = false },
-                                        onRetake = {
-                                            showResult = false
-                                            sessionManager.onVolumePressed()
-                                        },
-                                    )
-                                    // 시안(v31): 발화 청취·해석까지는 홈 위에서 마이크가 파랗게
-                                    // 활성화된 채 진행되고, 조준(AIMING)부터 카메라 UI가 드러난다
-                                    sessionState == SessionState.IDLE ||
-                                        sessionState == SessionState.LISTENING ||
-                                        sessionState == SessionState.PARSING -> HomeScreen(
-                                        onStartSession = { sessionManager.onVolumePressed() },
-                                        onOpenGallery = { openGallery() },
-                                        onOpenSettings = { currentScreen = AppScreen.SETTINGS },
-                                        isListening = sessionState != SessionState.IDLE,
-                                        recognizedText = sessionRawText,
-                                    )
-                                    else -> Unit
-                                }
-                            }
+                            CaptureScreen(
+                                controller = cameraController,
+                                statusText = statusText,
+                                sessionButtonLabel = buttonLabel,
+                                onSessionButton = { sessionManager.onVolumePressed() },
+                                cvObjects = cvObjects,
+                                onOpenSettings = { currentScreen = AppScreen.SETTINGS },
+                                onOpenGallery = { openGallery() },
+                            )
                         } else {
                             // 온보딩 완료 후 시스템 설정에서 권한이 취소된 경우의 안전망.
                             Text(
@@ -488,103 +431,14 @@ class MainActivity : ComponentActivity() {
     private var wentToBackground = false
     private var sessionCancelledInBackground = false
 
-    /** 촬영 순간 온디바이스 탐지 결과로 만드는 즉시 상황 안내 — 서버 설명을 기다리지 않고 바로 들려준다. */
-    private fun instantCaptureSummary(objects: List<TrackedObject>): String {
-        if (objects.isEmpty()) return "촬영했습니다"
-        val parts = objects.groupBy { it.label.lowercase() }.entries.take(3).map { (label, group) ->
-            val name = KOREAN_LABELS[label] ?: label
-            when {
-                label == "person" -> "$name ${group.size}명"
-                group.size > 1 -> "$name ${group.size}개"
-                else -> name
-            }
-        }
-        return "찰칵. ${parts.joinToString(", ")} 사진을 찍었어요"
-    }
-
-    /** 셔터 순간 탐지 객체로 시안 S4의 판정 표 행을 만든다 — 아는 값(사람 수·피사체)만 채운다. */
-    private fun resultDetails(objects: List<TrackedObject>): List<Pair<String, String>> {
-        if (objects.isEmpty()) return emptyList()
-        val rows = mutableListOf<Pair<String, String>>()
-        val personCount = objects.count { it.label.equals("person", ignoreCase = true) }
-        if (personCount > 0) rows += "사람" to "${personCount}명"
-        val others = objects.filterNot { it.label.equals("person", ignoreCase = true) }
-            .groupBy { it.label.lowercase() }.entries.take(3)
-            .map { (label, group) ->
-                val name = KOREAN_LABELS[label] ?: label
-                if (group.size > 1) "$name ${group.size}개" else name
-            }
-        if (others.isNotEmpty()) rows += "피사체" to others.joinToString(", ")
-        return rows
-    }
-
-    /** 촬영 직후 결과 화면(S4) 준비 — 사진은 백그라운드에서 축소 로드한다 (#80). */
-    private fun showResultScreen(uri: Uri) {
-        lastResultRawText = currentRawText
-        lastResultDescription = null
-        lastResultPhoto = null
-        lastResultHeadline = instantCaptureSummary(shutterObjects).removePrefix("찰칵. ")
-        lastResultDetails = resultDetails(shutterObjects)
-        showResult = true
-        Thread({
-            val bitmap = try {
-                contentResolver.loadThumbnail(uri, android.util.Size(1080, 1080), null)
-            } catch (t: Throwable) {
-                Log.w(TAG, "결과 사진 로드 실패: $uri", t)
-                null
-            }
-            runOnUiThread { lastResultPhoto = bitmap }
-        }, "SnapSight-ResultPhoto").start()
-    }
-
-    /**
-     * 발화·설명 텍스트 기반 대분류 판정 — 사람 언급이 있으면 '인물', 음식·음료 언급이 있으면
-     * '음식', 둘 다 없으면 null(호출부가 서버 판정·기본값 사용). MLLM 판정이 '추억'으로
-     * 쏠리는 문제를 결정적 규칙으로 보정한다 (실사용 피드백).
-     */
-    private fun classifyCategory(vararg texts: String?): String? {
-        val joined = texts.filterNotNull().joinToString(" ")
-        if (joined.isBlank()) return null
-        if (PERSON_KEYWORDS.any { joined.contains(it) }) return "인물"
-        if (FOOD_KEYWORDS.any { joined.contains(it) }) return "음식"
-        return null
-    }
-
     /** 사진 찾기 진입 — 목록은 매번 새로 읽는다 (촬영 직후 돌아와도 최신이 보이게). */
     private fun openGallery() {
         galleryPhotos = null
         currentScreen = AppScreen.GALLERY
-        val generation = ++galleryLoadGeneration
         Thread({
             descriptionLookup.beginBatch()
             val photos = PhotoLibrary.loadRecentPhotos(this, describe = descriptionLookup::get)
-                // 세션 설명이 이미 있는 사진은 라벨링을 기다리지 않고 바로 분류한다
-                .map { photo ->
-                    classifyCategory(photo.title, photo.description)
-                        ?.let { photo.copy(category = it) } ?: photo
-                }
-            runOnUiThread { if (generation == galleryLoadGeneration) galleryPhotos = photos }
-            // 2차 패스: 사진마다 AI 라벨('장소·피사체')·설명을 받아 카드에 채운다 — 도착하는 대로 갱신 (#78)
-            photos.forEachIndexed { index, photo ->
-                if (generation != galleryLoadGeneration) return@forEachIndexed
-                val labeled = descriptionLookup.labelForPhoto(photo.uri.toString(), photo.thumbnail)
-                    ?: return@forEachIndexed
-                runOnUiThread {
-                    if (generation != galleryLoadGeneration) return@runOnUiThread
-                    galleryPhotos = galleryPhotos?.toMutableList()?.also { list ->
-                        if (index < list.size) {
-                            list[index] = list[index].copy(
-                                title = labeled.label,
-                                description = labeled.description,
-                                // 키워드 규칙이 서버(MLLM) 판정보다 우선 — 인물 > 음식 > 서버 판정
-                                category = classifyCategory(
-                                    labeled.label, labeled.description, list[index].description,
-                                ) ?: labeled.category,
-                            )
-                        }
-                    }
-                }
-            }
+            runOnUiThread { galleryPhotos = photos }
         }, "SnapSight-GalleryLoad").start()
     }
 

@@ -21,7 +21,6 @@ data class GalleryPhoto(
     val title: String,
     val dateText: String,
     val description: String,
-    val category: String? = null,
 )
 
 object PhotoLibrary {
