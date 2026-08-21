@@ -4,6 +4,7 @@ package com.example.snap_sight.ux
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,7 +23,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -33,7 +33,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -41,12 +41,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.snap_sight.camera.GalleryPhoto
 
-// Figma 시안 팔레트 (화면 전용 다크 테마 — 앱 전역 테마와 분리)
-private val GalleryBackground = Color(0xFF0A0C10)
-private val GalleryCard = Color(0xFF161A20)
-private val GalleryAccent = Color(0xFF3B82F6)
-private val GalleryTextPrimary = Color(0xFFF5F7FA)
-private val GalleryTextSecondary = Color(0xFF9AA3AF)
+// Figma Make 시안(v31) 팔레트 — 다른 화면과 동일한 SnapPalette 값을 쓴다
+private val GalleryBackground = SnapPalette.Background
+private val GalleryCard = SnapPalette.Card
+private val GalleryAccent = SnapPalette.Accent
+private val GalleryTextPrimary = SnapPalette.TextPrimary
+private val GalleryTextSecondary = SnapPalette.TextSecondary
+// 시안의 "말해서 찾기" 버튼 — 짙은 파랑 배경 + 파란 테두리
+private val GalleryVoiceBg = SnapPalette.AccentSoft
 
 /**
  * 사진 찾기 화면.
@@ -100,12 +102,16 @@ fun GalleryScreen(
             modifier = Modifier.padding(top = 8.dp),
         )
 
-        OutlinedButton(
-            onClick = onVoiceSearch,
-            shape = RoundedCornerShape(14.dp),
+        // 시안(v31)의 음성 검색 버튼 — 짙은 파랑 배경, 파란 2dp 테두리, 왼쪽 정렬 마이크+라벨
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 16.dp)
+                .background(GalleryVoiceBg, RoundedCornerShape(16.dp))
+                .border(2.dp, GalleryAccent, RoundedCornerShape(16.dp))
+                .clickable(onClick = onVoiceSearch)
+                .padding(horizontal = 18.dp, vertical = 16.dp)
                 .semantics { contentDescription = "말해서 찾기. 음성으로 사진을 검색합니다" },
         ) {
             Text(text = "🎤", color = GalleryAccent)
@@ -198,7 +204,7 @@ private fun PhotoCard(photo: GalleryPhoto) {
                 Image(
                     bitmap = photo.thumbnail.asImageBitmap(),
                     contentDescription = null,
-                    modifier = Modifier.size(72.dp),
+                    modifier = Modifier.size(72.dp).clip(RoundedCornerShape(12.dp)),
                 )
             } else {
                 Box(Modifier.size(72.dp).background(GalleryBackground, RoundedCornerShape(12.dp)))
