@@ -46,6 +46,10 @@ fun SettingsScreen(
     // 백엔드 서버 주소 재정의 (시연장 Wi-Fi 변경 대비) — 적용·저장 시점은 호출부(돌아가기) 책임
     serverUrl: String = "",
     onServerUrlChange: (String) -> Unit = {},
+    // 기능 2: 가족·지인 얼굴 등록 흐름 진입 (홈 화면으로 전환해 카메라를 켜고 진행)
+    registeredPeople: List<String> = emptyList(),
+    onEnrollFace: (() -> Unit)? = null,
+    onDeletePerson: (String) -> Unit = {},
 ) {
     Column(
         modifier = Modifier
@@ -88,6 +92,37 @@ fun SettingsScreen(
                 text = "다른 Wi-Fi로 옮기면 PC의 새 IP를 입력하세요. 돌아가기를 누르면 적용됩니다.",
                 style = MaterialTheme.typography.bodySmall,
             )
+        }
+
+        if (onEnrollFace != null) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(text = "가족·지인 등록", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    text = "등록하면 \"우리 아들 찍어줘\"처럼 이름으로 찾을 수 있어요. " +
+                        "얼굴 정보는 이 기기에만 저장됩니다.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                TextButton(
+                    onClick = onEnrollFace,
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .semantics {
+                            contentDescription = "새 얼굴 등록 시작. 카메라 화면으로 이동해 이름을 말하고 얼굴을 3초간 비춥니다"
+                        },
+                ) {
+                    Text("＋ 새 얼굴 등록")
+                }
+                registeredPeople.forEach { name ->
+                    TextButton(
+                        onClick = { onDeletePerson(name) },
+                        modifier = Modifier.semantics {
+                            contentDescription = "등록된 $name 삭제. 얼굴 정보가 기기에서 완전히 지워집니다"
+                        },
+                    ) {
+                        Text("$name 삭제")
+                    }
+                }
+            }
         }
 
         TextButton(
