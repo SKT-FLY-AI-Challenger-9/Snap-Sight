@@ -25,6 +25,12 @@ data class FramingDeviation(
     val offsetY: Float,
     /** 피사체 면적 / 프레임 면적. framing(closeup/full_body/wide) 판정의 입력. */
     val areaRatio: Float,
+    /**
+     * true 면 이번 프레임에 실제 관측이 없어 **직전 관측값을 그대로 유지(hold)한 것**이다.
+     * 짧은 검출 깜빡임에 LOST 안내가 튀지 않도록 [SpecDeviationCalculator] 가 잠깐 브리지한다.
+     * 소비자는 구분 없이 써도 되지만, 정밀도가 필요한 곳(자동 셔터 등)은 이 값을 확인할 것.
+     */
+    val held: Boolean = false,
 )
 
 interface DeviationCalculator {

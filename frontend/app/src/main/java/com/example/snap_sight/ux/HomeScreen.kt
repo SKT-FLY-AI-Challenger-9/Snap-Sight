@@ -119,7 +119,7 @@ fun HomeScreen(
                     .clickable(onClick = onStartSession)
                     .semantics {
                         contentDescription = if (isListening) "듣고 있어요"
-                        else "말해서 시작하기. 볼륨 버튼으로도 시작할 수 있습니다"
+                        else "말해서 시작하기. 화면을 두 번 탭해서도 시작할 수 있습니다"
                     },
                 contentAlignment = Alignment.Center,
             ) {

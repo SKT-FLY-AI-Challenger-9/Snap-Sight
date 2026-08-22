@@ -56,6 +56,8 @@ fun ResultScreen(
     onRetake: () -> Unit,
     headline: String? = null,
     details: List<Pair<String, String>> = emptyList(),
+    /** "이 사진 라벨 붙이기" — 음성으로 커스텀 라벨을 부착한다 (기능 3). null 이면 버튼 숨김. */
+    onAddLabel: (() -> Unit)? = null,
 ) {
     // 시안의 "상세 설명" 접이식 — 기본 접힘. TalkBack 사용자는 즉시 요약·음성 안내가 우선이다.
     var descriptionExpanded by remember { mutableStateOf(false) }
@@ -166,6 +168,20 @@ fun ResultScreen(
                     .padding(vertical = 10.dp)
                     .semantics { contentDescription = "설명 다시 듣기" },
             )
+            if (onAddLabel != null) {
+                Spacer(Modifier.width(24.dp))
+                Text(
+                    text = "🏷 라벨 붙이기",
+                    color = SnapPalette.TextSecondary,
+                    fontSize = 14.sp,
+                    modifier = Modifier
+                        .clickable(onClick = onAddLabel)
+                        .padding(vertical = 10.dp)
+                        .semantics {
+                            contentDescription = "이 사진에 음성으로 라벨 붙이기. 나중에 그 이름으로 찾을 수 있어요"
+                        },
+                )
+            }
         }
         AnimatedVisibility(visible = descriptionExpanded) {
             Text(

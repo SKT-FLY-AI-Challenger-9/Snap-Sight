@@ -32,6 +32,13 @@ class SnapSightFrameProcessor(
     private val selector: TargetSelector = PassThroughTargetSelector(),
     private val deviationCalculator: DeviationCalculator = NoDeviationCalculator(),
     private val converter: YuvToRgbConverter = YuvToRgbConverter(config.maxAnalysisDimension),
+    /**
+     * 직전 분석 프레임 이후의 카메라 이동량을 돌려주는 공급자 (기능 1-C, 자이로 기반).
+     * 분석 프레임마다 1회 호출·소비된다. null 이거나 null 을 돌려주면 보정 없음.
+     */
+    private val motionHintProvider: (() -> MotionHint?)? = null,
+    /** 얼굴 신원 분석 훅 (기능 2). null 이면 신원 없이 동작한다. */
+    private val faceAnalyzer: FaceFrameAnalyzer? = null,
 ) : FrameProcessor {
 
     private enum class LoadState { PENDING, READY, FAILED }
@@ -50,6 +57,7 @@ class SnapSightFrameProcessor(
     private var frameCounter = 0L
     private var lastTimestampS = Double.NEGATIVE_INFINITY
     private var lastFrameResult = FrameResult.EMPTY
+    private var lastIdentities: Map<Int, String> = emptyMap()
 
     /**
      * 세션 의도를 설정한다. **null 허용이 계약이다** — 마이크 권한이 없거나 발화를 건너뛴
@@ -88,7 +96,9 @@ class SnapSightFrameProcessor(
             frameCounter = 0
             lastTimestampS = Double.NEGATIVE_INFINITY
             lastFrameResult = FrameResult.EMPTY
+            lastIdentities = emptyMap()
             runCatching { pipeline.reset() }
+            runCatching { faceAnalyzer?.reset() }
         }
 
         val timestampMs = System.currentTimeMillis()
@@ -108,7 +118,21 @@ class SnapSightFrameProcessor(
 
         val frameResult = try {
             val frame = converter.convert(image, rotationDegrees)
-            pipeline.process(frame, timestampS = nextTimestampS(image))
+            val result = pipeline.process(
+                frame,
+                timestampS = nextTimestampS(image),
+                motionHint = motionHintProvider?.invoke(),
+            )
+            // 얼굴 신원(기능 2)은 tracking 뒤, frame 버퍼가 유효한 동안에만 계산 가능하다.
+            // 실패해도 CV 스트림은 계속 돌아야 하므로 삼킨다.
+            faceAnalyzer?.let { analyzer ->
+                lastIdentities = runCatching { analyzer.analyze(frame, result) }
+                    .getOrElse { t ->
+                        Log.w(TAG, "얼굴 신원 분석 실패 — 이 프레임은 신원 없이 진행", t)
+                        lastIdentities
+                    }
+            }
+            result
         } catch (t: Throwable) {
             // 한 프레임 실패로 스트림 전체를 죽이지 않는다. 다음 프레임에서 다시 시도.
             Log.w(TAG, "프레임 처리 실패 — 이 프레임은 건너뜀", t)
@@ -170,6 +194,7 @@ class SnapSightFrameProcessor(
                 targetSpec = spec,
                 selection = selection,
                 deviation = deviationCalculator.compute(selection, spec),
+                identities = lastIdentities,
             )
         )
     }
@@ -196,6 +221,8 @@ class SnapSightFrameProcessor(
             extensions: List<DetectionExtension> = emptyList(),
             selector: TargetSelector? = null,
             deviationCalculator: DeviationCalculator = NoDeviationCalculator(),
+            motionHintProvider: (() -> MotionHint?)? = null,
+            faceAnalyzer: FaceFrameAnalyzer? = null,
         ): SnapSightFrameProcessor {
             if (detectorConfig.minimumConfidence != trackerConfig.minimumMatchingConfidence) {
                 Log.w(
@@ -216,6 +243,8 @@ class SnapSightFrameProcessor(
                 config = config,
                 selector = selector ?: defaultSelector(context, detectorConfig.labelsAsset),
                 deviationCalculator = deviationCalculator,
+                motionHintProvider = motionHintProvider,
+                faceAnalyzer = faceAnalyzer,
             )
         }
 

@@ -5,6 +5,8 @@ import android.media.AudioManager
 import android.media.MediaActionSound
 import android.media.ToneGenerator
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -46,6 +48,13 @@ class GuidanceFeedback(context: Context) : DeviationListener {
      */
     @Volatile
     var zoomHandlesDistance: (() -> Boolean)? = null
+
+    /**
+     * READY("지금 촬영하세요")를 보류할 사유를 돌려주는 훅 — null 이면 정상 READY.
+     * 셀카 모드의 시선 판정(MainActivity → SelfieGazeMonitor)이 연결한다. 분석 스레드에서 호출된다.
+     */
+    @Volatile
+    var readyGate: (() -> String?)? = null
 
     @Volatile
     private var ttsReady = false
@@ -104,7 +113,11 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     override fun onDeviation(result: DeviationResult) {
         val state = GuidanceStateMapper.from(result)
         val zoomHandles = zoomHandlesDistance?.invoke() == true
-        val actions = policy.onJudgment(state, result, System.currentTimeMillis(), zoomHandlesDistance = zoomHandles)
+        val actions = policy.onJudgment(
+            state, result, System.currentTimeMillis(),
+            zoomHandlesDistance = zoomHandles,
+            readyBlockedReason = readyGate?.invoke(),
+        )
         for (action in actions) {
             when (action) {
                 is GuidanceAction.Speak -> speak(action.text)
@@ -120,6 +133,29 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     fun playShutter() {
         runCatching { shutterSound.play(MediaActionSound.SHUTTER_CLICK) }
         vibrateShort()
+    }
+
+    // ---- 화면 전환 earcon (#84 전환 확인 3채널) ----
+    // 외울 소리는 2개뿐: 2음 상승 = 화면 진입, 2음 하강 = 홈 복귀. 어느 화면인지는 TTS가 말한다.
+
+    private val transitionHandler = Handler(Looper.getMainLooper())
+
+    /** 위성 화면(설정·사진 찾기 등) 진입 — 상승 2음 + 짧은 진동. */
+    fun playScreenEnter() = playTransitionTone(rising = true)
+
+    /** 홈 복귀 — 하강 2음 + 짧은 진동. */
+    fun playScreenExit() = playTransitionTone(rising = false)
+
+    private fun playTransitionTone(rising: Boolean) {
+        vibrateShort()
+        val generator = toneGenerator ?: rebuildToneGenerator() ?: return
+        val (first, second) =
+            if (rising) NAV_TONE_LOW to NAV_TONE_HIGH else NAV_TONE_HIGH to NAV_TONE_LOW
+        runCatching { generator.startTone(first, NAV_TONE_MS) }
+        transitionHandler.postDelayed(
+            { runCatching { toneGenerator?.startTone(second, NAV_TONE_MS) } },
+            NAV_TONE_GAP_MS,
+        )
     }
 
     /**
@@ -175,6 +211,11 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         /** 짧은 2연타 비프 — 음성보다 덜 거슬리는 "놓침" 신호. */
         const val WARNING_TONE = ToneGenerator.TONE_PROP_BEEP2
         const val WARNING_TONE_MS = 250
+        // 전환 earcon 2음 — 낮은음/높은음 조합으로 상승(진입)·하강(복귀)을 표현
+        const val NAV_TONE_LOW = ToneGenerator.TONE_DTMF_1
+        const val NAV_TONE_HIGH = ToneGenerator.TONE_DTMF_9
+        const val NAV_TONE_MS = 90
+        const val NAV_TONE_GAP_MS = 110L
     }
 }
 

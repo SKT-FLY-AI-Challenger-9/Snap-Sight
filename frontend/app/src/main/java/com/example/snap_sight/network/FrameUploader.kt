@@ -56,6 +56,9 @@ class FrameUploader(
      * @param rawText 발화 원문 — 의도 없는 세션(발화 스킵·인식 실패)은 빈 문자열
      * @param candidateScoresProvider 후보 순서대로의 블러 의심도(0..1). null 이면 점수 미전송.
      *        개수가 후보 수와 다르면 백엔드가 422 로 거부하므로 이때도 전송을 생략한다.
+     * @param customLabels 사용자 커스텀 라벨 이름 목록 — LLM 이 이 사진에 해당하는 것을
+     *        자동 부착 후보로 삼는다 (기능 3-B). 인물 이름은 넣지 않는다 (프라이버시 원칙).
+     * @param detectedObjects 셔터 시점 온디바이스 탐지 라벨 — 메타데이터 프롬프트 참고 정보
      */
     fun uploadCaptureFrames(
         sessionId: String,
@@ -63,6 +66,8 @@ class FrameUploader(
         representativeJpegProvider: () -> ByteArray,
         candidates: List<RingFrameBuffer.Frame>,
         candidateScoresProvider: (() -> List<Float>)? = null,
+        customLabels: List<String> = emptyList(),
+        detectedObjects: List<String> = emptyList(),
         callback: Callback,
     ) {
         Thread({
@@ -93,6 +98,16 @@ class FrameUploader(
                     bodyBuilder.addFormDataPart("candidate_scores", scoresJson.toString())
                 } else if (scores != null && scores.size != candidates.size) {
                     Log.w(TAG, "후보 점수 개수 불일치(${scores.size}/${candidates.size}) — 점수 전송 생략")
+                }
+
+                // 검색용 메타데이터 재료 (기능 3-B) — 없으면 빈 배열 그대로 보낸다
+                if (customLabels.isNotEmpty()) {
+                    bodyBuilder.addFormDataPart(
+                        "custom_labels", JSONArray(customLabels).toString())
+                }
+                if (detectedObjects.isNotEmpty()) {
+                    bodyBuilder.addFormDataPart(
+                        "detected_objects", JSONArray(detectedObjects).toString())
                 }
 
                 val request = Request.Builder()

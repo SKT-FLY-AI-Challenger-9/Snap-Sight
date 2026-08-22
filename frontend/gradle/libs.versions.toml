@@ -12,6 +12,7 @@ camerax = "1.5.0"
 okhttp = "4.12.0"
 tensorflowLite = "2.17.0"
 json = "20240303"
+mlkitFaceDetection = "16.1.7"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -35,6 +36,8 @@ androidx-camera-view = { group = "androidx.camera", name = "camera-view", versio
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 # ② 온디바이스 CV — TfLiteYoloDetector 만 이 의존성을 쓴다 (런타임 교체 시 그 파일만 영향)
 tensorflow-lite = { group = "org.tensorflow", name = "tensorflow-lite", version.ref = "tensorflowLite" }
+# 기능 2 얼굴 검출 — FaceIdentifier 만 이 의존성을 쓴다 (온디바이스, 번들형)
+mlkit-face-detection = { group = "com.google.mlkit", name = "face-detection", version.ref = "mlkitFaceDetection" }
 # Android 의 org.json 은 단위 테스트 JVM 에 없으므로 테스트 클래스패스에만 실물 구현을 넣는다
 json = { group = "org.json", name = "json", version.ref = "json" }
 
