@@ -56,6 +56,7 @@ internal class GuidancePolicy(
 
     private var lastDirection: GuidanceDirection? = null
     private var lastDirectionAtMs: Long = Long.MIN_VALUE / 2
+    private var lastReadyBlockedSpokenAtMs: Long = Long.MIN_VALUE / 2
 
     /** 새 세션 시작 — 이전 세션의 "이미 말했음" 상태를 지운다. */
     fun reset() {
@@ -67,13 +68,20 @@ internal class GuidancePolicy(
         readySpokenThisEpisode = false
         lastDirection = null
         lastDirectionAtMs = Long.MIN_VALUE / 2
+        lastReadyBlockedSpokenAtMs = Long.MIN_VALUE / 2
     }
 
+    /**
+     * @param readyBlockedReason null 이 아니면 구도가 READY 여도 "지금 촬영하세요" 대신
+     *        이 사유를 말한다 (예: 셀카 모드에서 시선이 카메라를 벗어남 — "카메라를 봐 주세요").
+     *        같은 사유는 [DIRECTION_REPEAT_MS] 간격으로만 반복한다.
+     */
     fun onJudgment(
         state: GuidanceState,
         result: DeviationResult,
         nowMs: Long,
         zoomHandlesDistance: Boolean = false,
+        readyBlockedReason: String? = null,
     ): List<GuidanceAction> {
         if (!state.detected) return onLost(nowMs)
 
@@ -81,7 +89,10 @@ internal class GuidancePolicy(
         lostSinceMs = null
         lostSpoken = false
 
-        if (isReadyWithHysteresis(state, result)) return onReady(nowMs)
+        if (isReadyWithHysteresis(state, result)) {
+            if (readyBlockedReason != null) return onReadyBlocked(readyBlockedReason, nowMs)
+            return onReady(nowMs)
+        }
 
         readySinceMs = null
         readySpokenThisEpisode = false
@@ -130,6 +141,18 @@ internal class GuidancePolicy(
         return abs(x) <= GuidanceStateMapper.MAX_ABS_X_DEVIATION * f &&
             abs(size) <= GuidanceStateMapper.MAX_ABS_SIZE_DEVIATION * f &&
             abs(y) <= GuidanceStateMapper.MAX_ABS_Y_DEVIATION * f
+    }
+
+    /**
+     * 구도는 READY 인데 추가 조건(시선 등)이 안 맞음 — "지금 촬영하세요" 대신 사유를 말한다.
+     * READY 에피소드는 유지해(hysteresis) 방향 안내로 튀지 않게 하고, 사유만 주기적으로 반복.
+     */
+    private fun onReadyBlocked(reason: String, nowMs: Long): List<GuidanceAction> {
+        lastDirection = null
+        if (readySinceMs == null) readySinceMs = nowMs
+        if (nowMs - lastReadyBlockedSpokenAtMs < DIRECTION_REPEAT_MS) return emptyList()
+        lastReadyBlockedSpokenAtMs = nowMs
+        return listOf(GuidanceAction.Speak(reason))
     }
 
     private fun onReady(nowMs: Long): List<GuidanceAction> {

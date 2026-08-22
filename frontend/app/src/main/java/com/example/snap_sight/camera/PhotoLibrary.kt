@@ -21,6 +21,10 @@ data class GalleryPhoto(
     val title: String,
     val dateText: String,
     val description: String,
+    /** 파일명에 심긴 세션 ID — 로컬 사진 인덱스(검색·상세 낭독)와의 연결 고리. 옛 사진은 null. */
+    val sessionId: String? = null,
+    /** 촬영 시각 (MediaStore DATE_ADDED). 인덱스에 없는 옛 사진의 시간 검색 폴백. */
+    val takenAtMs: Long = 0L,
 )
 
 object PhotoLibrary {
@@ -68,6 +72,8 @@ object PhotoLibrary {
                             title = titleFormat.format(addedAt) + " 촬영",
                             dateText = dateFormat.format(addedAt),
                             description = sessionId?.let(describe) ?: "설명을 준비 중이에요",
+                            sessionId = sessionId,
+                            takenAtMs = addedAt.time,
                         )
                     )
                 }

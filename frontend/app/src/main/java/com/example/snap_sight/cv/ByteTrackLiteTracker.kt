@@ -25,6 +25,20 @@ data class ByteTrackLiteConfig(
     val labelMismatchPenalty: Double = 0.80,
     val labelVoteDecay: Double = 0.98,
     val labelSwitchMargin: Double = 1.50,
+    /**
+     * null 이 아니면 track 만료를 프레임 수([lostTrackBuffer]) 대신 **시간(초)** 으로 판정한다.
+     * 기기별 분석 FPS 가 달라도 실제 유지 시간이 같아진다 (기능 1-D).
+     * 외부 timestamp 없이 쓰면 update() 1회 = 1초 단위로 해석된다.
+     */
+    val lostTrackBufferSeconds: Double? = null,
+    /**
+     * 매칭 시 track 예측 bbox 를 마지막 관측 후 경과 시간에 비례해 확장하는 비율(초당,
+     * 변 길이 대비). 놓친 시간이 길수록 위치 불확실성이 커지는 것을 반영한다 (buffered IoU).
+     * 0.0 = 확장 없음 (기존 동작과 동일).
+     */
+    val matchExpansionRatePerSecond: Double = 0.0,
+    /** 확장 상한 (변 길이 대비 비율). */
+    val maxMatchExpansion: Double = 0.5,
 ) {
     init {
         val probabilities = mapOf(
@@ -46,6 +60,16 @@ data class ByteTrackLiteConfig(
         require(labelSwitchMargin.isFinite() && labelSwitchMargin >= 1.0) {
             "labelSwitchMargin must be finite and at least 1"
         }
+        require(lostTrackBufferSeconds == null ||
+            (lostTrackBufferSeconds.isFinite() && lostTrackBufferSeconds > 0.0)) {
+            "lostTrackBufferSeconds must be null or a positive finite number"
+        }
+        require(matchExpansionRatePerSecond.isFinite() && matchExpansionRatePerSecond >= 0.0) {
+            "matchExpansionRatePerSecond must be finite and non-negative"
+        }
+        require(maxMatchExpansion.isFinite() && maxMatchExpansion in 0.0..2.0) {
+            "maxMatchExpansion must be in [0, 2]"
+        }
     }
 }
 
@@ -60,7 +84,11 @@ class ByteTrackLiteTracker(
     private var lastExternalTimestamp: Double? = null
     private var usesExternalTimestamps: Boolean? = null
 
-    override fun update(detections: List<Detection>, timestampS: Double?): List<TrackedObject> {
+    override fun update(
+        detections: List<Detection>,
+        timestampS: Double?,
+        motionHint: MotionHint?,
+    ): List<TrackedObject> {
         val candidates = detections
             .filter { it.confidence >= config.minimumMatchingConfidence }
             .sortedWith(DETECTION_ORDER)
@@ -76,15 +104,19 @@ class ByteTrackLiteTracker(
 
         val activeTracks = tracks.values.sortedBy { it.trackId }
         for (track in activeTracks) track.predict(elapsedTime)
+        // 카메라 이동 보정 (기능 1-C): 전역 이동량을 예측 위치에 더해 IoU 매칭을 살린다.
+        if (motionHint != null && (motionHint.dx != 0f || motionHint.dy != 0f)) {
+            for (track in activeTracks) track.applyMotion(motionHint)
+        }
 
         val (firstMatches, unmatchedTracks, unmatchedHigh) =
-            associate(activeTracks, highConfidence, config.firstMatchIouThreshold)
+            associate(activeTracks, highConfidence, config.firstMatchIouThreshold, frameTime)
 
         // 저신뢰 단계는 "직전 프레임에 관측된" track 에만 허용한다.
         // 저신뢰 오탐이 이미 잃어버린 track 을 되살리거나 버퍼를 무한 연장하면 안 되므로.
         val lowConfidenceEligible = unmatchedTracks.filter { it.missedFrames == 0 }
         val (secondMatches, _, _) =
-            associate(lowConfidenceEligible, lowConfidence, config.secondMatchIouThreshold)
+            associate(lowConfidenceEligible, lowConfidence, config.secondMatchIouThreshold, frameTime)
 
         val observed = ArrayList<TrackedObject>(candidates.size)
         val matchedTrackIds = HashSet<Int>()
@@ -105,7 +137,15 @@ class ByteTrackLiteTracker(
             observed.add(track.asObserved(detection))
         }
 
-        val expired = tracks.values.filter { it.missedFrames > config.lostTrackBuffer }
+        // 만료: 시간 기준 옵션이 켜져 있으면 프레임 수 대신 마지막 관측 후 경과 시간으로 판정 (기능 1-D)
+        val bufferSeconds = config.lostTrackBufferSeconds
+        val expired = if (bufferSeconds != null) {
+            tracks.values.filter {
+                it.missedFrames > 0 && frameTime - it.lastObservedTime > bufferSeconds
+            }
+        } else {
+            tracks.values.filter { it.missedFrames > config.lostTrackBuffer }
+        }
         for (track in expired) tracks.remove(track.trackId)
 
         observed.sortBy { it.trackId }
@@ -152,6 +192,7 @@ class ByteTrackLiteTracker(
         tracks: List<Track>,
         detections: List<Detection>,
         minimumIou: Double,
+        frameTime: Double,
     ): Triple<List<Pair<Track, Detection>>, List<Track>, List<Detection>> {
         if (tracks.isEmpty() || detections.isEmpty()) {
             return Triple(emptyList(), tracks.toList(), detections.toList())
@@ -163,10 +204,12 @@ class ByteTrackLiteTracker(
         val valid = Array(trackCount) { BooleanArray(detectionCount) }
 
         for (trackIndex in 0 until trackCount) {
-            val trackBox = tracks[trackIndex].bbox
+            // buffered IoU (기능 1-D): 놓친 시간에 비례해 양쪽 bbox 를 같은 비율로 넓혀 매칭
+            val expansion = tracks[trackIndex].matchExpansion(frameTime, config)
+            val trackBox = expandBox(tracks[trackIndex].bbox, expansion)
             for (detectionIndex in 0 until detectionCount) {
                 val detection = detections[detectionIndex]
-                var score = iou(trackBox, detection.bbox)
+                var score = iou(trackBox, expandBox(detection.bbox, expansion))
                 var isValid = score > 0.0 && score >= minimumIou
                 if (config.classAware && classIdentityMismatch(tracks[trackIndex], detection)) {
                     score *= config.labelMismatchPenalty
@@ -262,6 +305,26 @@ private class Track(
         val predicted = DoubleArray(4) { state[it] + velocity[it] * elapsedTime }
         state = sanitizeState(predicted)
         age++
+    }
+
+    /** 전역(카메라 기인) 이동 보정 — 예측 중심만 이동, 속도 추정에는 반영하지 않는다. */
+    fun applyMotion(hint: MotionHint) {
+        val shifted = state.copyOf()
+        shifted[0] += hint.dx.toDouble()
+        shifted[1] += hint.dy.toDouble()
+        state = sanitizeState(shifted)
+    }
+
+    /**
+     * 매칭 시 적용할 확장 비율 (buffered IoU, 기능 1-D) — 마지막 관측 후 경과 시간에 비례.
+     * track 예측 bbox 와 검출 bbox **양쪽에 같은 비율**로 적용해야 union 증가로 IoU 가
+     * 희석되지 않는다 (BIoU 방식). 0.0 = 확장 없음.
+     */
+    fun matchExpansion(frameTime: Double, config: ByteTrackLiteConfig): Double {
+        if (config.matchExpansionRatePerSecond <= 0.0) return 0.0
+        val elapsed = (frameTime - lastObservedTime).coerceAtLeast(0.0)
+        return (config.matchExpansionRatePerSecond * elapsed)
+            .coerceAtMost(config.maxMatchExpansion)
     }
 
     fun update(detection: Detection, frameTime: Double, config: ByteTrackLiteConfig) {
@@ -370,6 +433,19 @@ private fun stateToBbox(state: DoubleArray): BoundingBox {
         yMin = (centerY - height / 2.0).coerceIn(0.0, 1.0).toFloat(),
         xMax = (centerX + width / 2.0).coerceIn(0.0, 1.0).toFloat(),
         yMax = (centerY + height / 2.0).coerceIn(0.0, 1.0).toFloat(),
+    )
+}
+
+/** buffered IoU 용 대칭 확장. fraction 0 이면 원본 그대로. 프레임 경계로 clip 한다. */
+private fun expandBox(box: BoundingBox, fraction: Double): BoundingBox {
+    if (fraction <= 0.0) return box
+    val dx = (box.width * fraction).toFloat()
+    val dy = (box.height * fraction).toFloat()
+    return BoundingBox(
+        xMin = (box.xMin - dx).coerceIn(0f, 1f),
+        yMin = (box.yMin - dy).coerceIn(0f, 1f),
+        xMax = (box.xMax + dx).coerceIn(0f, 1f),
+        yMax = (box.yMax + dy).coerceIn(0f, 1f),
     )
 }
 
