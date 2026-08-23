@@ -106,6 +106,7 @@ import com.example.snap_sight.ux.OnboardingScreen
 import com.example.snap_sight.ux.SettingsRepository
 import com.example.snap_sight.ux.SettingsScreen
 import com.example.snap_sight.ux.SettingsUiState
+import com.example.snap_sight.ux.SpeechSpeed
 import com.example.snap_sight.ux.appTapGrammar
 import kotlin.math.roundToInt
 import com.example.snap_sight.ui.theme.SnapSightTheme
@@ -797,6 +798,7 @@ class MainActivity : ComponentActivity() {
                                         identities = overlayIdentities,
                                         // 등록 중엔 조준 UI 없이 미리보기+탐지 상자만 보여준다
                                         showOverlays = !homeVisible && !showResult && !enrollmentActive,
+                                        gridMode = settingsUiState.gridMode,
                                         onLensChanged = { isFront -> onLensChanged(isFront) },
                                         // 조준 중엔 미리보기 전체가 "촬영" 접근성 노드
                                         onShutterTap = if (sessionState == SessionState.AIMING) {
@@ -870,8 +872,18 @@ class MainActivity : ComponentActivity() {
                             onSoundVolumeChange = {
                                 updateSettings(settingsUiState.copy(soundVolume = it))
                             },
-                            onSpeechRateChange = {
-                                updateSettings(settingsUiState.copy(speechRate = it))
+                            onSpeechRateChange = { rate ->
+                                updateSettings(settingsUiState.copy(speechRate = rate))
+                                announceSettingChange("말하기 속도", SpeechSpeed.fromRate(rate).label)
+                            },
+                            onVoicePresetChange = { preset ->
+                                updateSettings(settingsUiState.copy(voicePreset = preset))
+                                // 미리듣기: 바뀐 목소리로 실사용 문구를 그대로 읽어준다
+                                guidanceFeedback.announce(VOICE_PREVIEW_UTTERANCE)
+                            },
+                            onGridModeChange = { mode ->
+                                updateSettings(settingsUiState.copy(gridMode = mode))
+                                announceSettingChange("격자", mode.label)
                             },
                             serverAiDescriptionEnabled = settingsUiState.serverAiDescriptionEnabled,
                             onServerAiDescriptionEnabledChange = {
@@ -1873,6 +1885,27 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * 설정 변경 확인 낭독 — "{항목}, {값}으로 변경되었습니다." (기획 동작 규칙 2 "즉시 적용 + 확인 낭독").
+     *
+     * 항목·값 조합이 많아 이 문장은 프리캐싱하지 않고 시스템 TTS 로 읽는다. 실시간 촬영 안내가
+     * 아니라 설정 화면에서만 나오므로 매끄러움보다 정확한 값 전달이 중요하다.
+     */
+    private fun announceSettingChange(item: String, value: String) {
+        speak("$item, $value${euroRo(value)} 변경되었습니다")
+    }
+
+    /**
+     * "으로 / 로" 를 앞 단어의 받침에 따라 고른다 — "강조으로" 같은 비문을 막는다.
+     * ㄹ 받침 뒤에는 '로'를 쓴다(예: '서울로'). 한글이 아니면 보수적으로 '으로'.
+     */
+    private fun euroRo(word: String): String {
+        val last = word.lastOrNull() ?: return "으로"
+        if (last.code !in HANGUL_FIRST..HANGUL_LAST) return "으로"
+        val jongseong = (last.code - HANGUL_FIRST) % JONGSEONG_COUNT
+        return if (jongseong == 0 || jongseong == JONGSEONG_RIEUL) "로" else "으로"
+    }
+
+    /**
      * 타겟 스펙이 (네트워크 지연으로) AIMING 시작보다 늦게 도착했을 때 CV 세션에 반영한다.
      *
      * [SpeechToTextRecognizer][com.example.snap_sight.stt.SpeechToTextRecognizer] 인식 →
@@ -2489,6 +2522,18 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val WELCOME_TEXT = "스냅사이트입니다. 화면을 두 번 탭해 시작하세요"
         const val TAG = "SnapSight"
+
+        /**
+         * 안내 목소리 미리듣기 문구 — 기획이 "실사용 문구와 동일"하게 못박은 문장이다.
+         * `ai/voice/script.json` 의 preview.voice_sample 과 글자까지 같아야 프리캐싱 음원이 잡힌다.
+         */
+        const val VOICE_PREVIEW_UTTERANCE = "왼쪽으로 이동하세요. 사진이 촬영되었습니다."
+
+        // 한글 음절 조사 판정 (euroRo)
+        const val HANGUL_FIRST = 0xAC00
+        const val HANGUL_LAST = 0xD7A3
+        const val JONGSEONG_COUNT = 28
+        const val JONGSEONG_RIEUL = 8
 
         // 즉시 상황 안내용 자주 나오는 라벨 한글 표기 — 없는 라벨은 영문 그대로 읽는다
         private val KOREAN_LABELS = mapOf(

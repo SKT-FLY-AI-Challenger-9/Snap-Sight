@@ -1,6 +1,7 @@
 package com.example.snap_sight.ux
 
 import android.content.SharedPreferences
+import com.example.snap_sight.voice.VoiceAssetIndex
 
 /**
  * S5 설정값([SettingsUiState])의 저장·복원만 담당한다 (이슈 #54).
@@ -19,6 +20,8 @@ class SettingsRepository(private val prefs: SharedPreferences) {
         // 앱은 임의의 외부 클라우드가 아니라 사용자가 설정한 Snap-Sight 서버에 요청한다.
         // 명시적으로 끈 기록이 없을 때는 빠른 로컬 설명 뒤 상세 설명까지 이어지도록 기본 활성화한다.
         serverAiDescriptionEnabled = prefs.getBoolean(KEY_SERVER_AI_DESCRIPTION, true),
+        voicePreset = prefs.getString(KEY_VOICE_PRESET, null) ?: VoiceAssetIndex.DEFAULT_PRESET,
+        gridMode = GridMode.fromName(prefs.getString(KEY_GRID_MODE, null)),
     )
 
     fun save(state: SettingsUiState) {
@@ -27,6 +30,8 @@ class SettingsRepository(private val prefs: SharedPreferences) {
             .putFloat(KEY_SOUND_VOLUME, state.soundVolume)
             .putFloat(KEY_SPEECH_RATE, state.speechRate)
             .putBoolean(KEY_SERVER_AI_DESCRIPTION, state.serverAiDescriptionEnabled)
+            .putString(KEY_VOICE_PRESET, state.voicePreset)
+            .putString(KEY_GRID_MODE, state.gridMode.name)
             .apply()
     }
 
@@ -37,5 +42,7 @@ class SettingsRepository(private val prefs: SharedPreferences) {
         const val KEY_SPEECH_RATE = "speech_rate"
         // 기존 key를 유지해 사용자가 명시적으로 끈 선택은 업데이트 뒤에도 보존한다.
         const val KEY_SERVER_AI_DESCRIPTION = "cloud_description_enabled"
+        const val KEY_VOICE_PRESET = "voice_preset"
+        const val KEY_GRID_MODE = "grid_mode"
     }
 }
