@@ -42,6 +42,8 @@ class CameraMotionEstimator(context: Context) : SensorEventListener {
 
     /** 조준(AIMING) 진입 시 호출. 자이로가 없으면 false — 힌트는 항상 null 이 된다. */
     fun start(): Boolean {
+        // 기능 플래그가 꺼진 빌드에서는 센서 리스너도 실제로 등록하지 않는다.
+        if (!ENABLED) return false
         val sensor = gyroscope ?: return false
         synchronized(lock) {
             if (running) return true
@@ -50,8 +52,9 @@ class CameraMotionEstimator(context: Context) : SensorEventListener {
             accumulatedPitchRad = 0.0
             lastEventTimestampNs = 0L
         }
-        sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME)
-        return true
+        val registered = sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME)
+        if (!registered) synchronized(lock) { running = false }
+        return registered
     }
 
     /** 조준 이탈 시 호출. */

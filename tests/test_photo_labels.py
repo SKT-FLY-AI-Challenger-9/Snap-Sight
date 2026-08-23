@@ -33,6 +33,12 @@ def test_validate_label_ids_drops_unknown_ids():
     assert taxonomy.validate_label_ids([known, "made-up-label"]) == [known]
 
 
+def test_validate_label_ids_deduplicates_in_model_order():
+    taxonomy = default_photo_labels()
+    first, second = [label.id for label in taxonomy.labels[:2]]
+    assert taxonomy.validate_label_ids([first, second, first]) == [first, second]
+
+
 def test_prompt_catalog_lists_every_label():
     taxonomy = default_photo_labels()
     catalog = taxonomy.prompt_catalog()

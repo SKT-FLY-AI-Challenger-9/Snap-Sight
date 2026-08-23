@@ -14,17 +14,41 @@ import java.io.ByteArrayOutputStream
  * 링 버퍼가 분석 스레드에서 호출하므로 할당을 최소화한 단순 구현.
  */
 internal fun ImageProxy.toJpegBytes(quality: Int): ByteArray {
-    val nv21 = toNv21()
-    val yuv = YuvImage(nv21, ImageFormat.NV21, width, height, null)
-    val out = ByteArrayOutputStream()
-    yuv.compressToJpeg(Rect(0, 0, width, height), quality, out)
-    return out.toByteArray()
+    return YuvJpegEncoder().encode(this, quality)
+}
+
+/**
+ * 분석 스트림 전용 재사용 JPEG 인코더.
+ *
+ * [ImageProxy] 자체는 CameraX 소유라 호출이 끝난 뒤 보관할 수 없지만, NV21 작업 배열과
+ * [ByteArrayOutputStream]의 backing buffer는 같은 분석 스레드에서 계속 재사용할 수 있다.
+ * 반환 JPEG만 독립 배열로 복사되므로 링 버퍼에 안전하게 보관된다.
+ *
+ * 스레드 안전하지 않다. [RingFrameBuffer]가 한 번에 한 프레임만 인코딩하도록 보장한다.
+ */
+internal class YuvJpegEncoder {
+    private var nv21 = ByteArray(0)
+    private val output = ByteArrayOutputStream()
+
+    fun encode(image: ImageProxy, quality: Int): ByteArray {
+        val required = image.width * image.height * 3 / 2
+        if (nv21.size != required) nv21 = ByteArray(required)
+        image.copyToNv21(nv21)
+
+        output.reset()
+        val yuv = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
+        check(yuv.compressToJpeg(Rect(0, 0, image.width, image.height), quality, output)) {
+            "YUV frame could not be encoded as JPEG"
+        }
+        // ByteArrayOutputStream의 backing array는 다음 프레임에서 덮어쓰므로 정확한 길이로 복사한다.
+        return output.toByteArray()
+    }
 }
 
 /** row/pixel stride 를 고려해 YUV_420_888 → NV21 로 변환한다. */
-private fun ImageProxy.toNv21(): ByteArray {
+private fun ImageProxy.copyToNv21(nv21: ByteArray) {
     val ySize = width * height
-    val nv21 = ByteArray(ySize + ySize / 2)
+    require(nv21.size >= ySize + ySize / 2) { "NV21 destination is too small" }
 
     val yPlane = planes[0]
     val yBuffer = yPlane.buffer.duplicate()
@@ -60,5 +84,4 @@ private fun ImageProxy.toNv21(): ByteArray {
             nv21[pos++] = uBuffer.get(row * uPlane.rowStride + col * uPlane.pixelStride)
         }
     }
-    return nv21
 }

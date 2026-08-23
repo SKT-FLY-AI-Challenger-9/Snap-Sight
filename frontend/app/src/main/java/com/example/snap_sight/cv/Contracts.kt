@@ -105,13 +105,30 @@ data class Detection(
     }
 }
 
-/** 스트림 내내 유지되는 `track_id` 가 붙은, 현재 프레임에서 실제로 관측된 객체. */
+/**
+ * 하류 구도 판정이 현재 픽셀 관측과 추정치를 구분하는 공통 상태.
+ * [HELD]는 tracker 출력이 아니라 [FramingDeviation]이 직전 값을 유지할 때 사용한다.
+ */
+enum class ObservationFreshness { FRESH, PREDICTED, HELD }
+
+/**
+ * 스트림 내내 유지되는 `track_id` 가 붙은 객체.
+ *
+ * @property predicted true 면 이번 프레임에 공개 임계값 이상의 실제 관측이 없어 트래커가
+ *   **예측 위치로 이어간(coasting)** 객체다 (`ByteTrackLiteConfig.coastSeconds`). 저신뢰 검출로
+ *   association만 복구한 경우도 포함한다. 잠깐의 미검출·저신뢰로 피사체가 증발하지 않게 하려는
+ *   것이며, confidence/label은 마지막 신뢰 관측값이다. 픽셀을 직접 보는 소비자(얼굴·사물 신원
+ *   판정 등)는 이 객체를 건너뛰어야 한다.
+ */
 data class TrackedObject(
     val trackId: Int,
     val label: String,
     val confidence: Float,
     val bbox: BoundingBox,
     val classId: Int? = null,
+    val predicted: Boolean = false,
+    /** 마지막 실제 detector 관측 이후 경과 시간. 실제 관측이면 0. */
+    val observationAgeMs: Long = 0L,
 ) {
     init {
         require(trackId > 0) { "trackId must be a positive integer" }
@@ -122,7 +139,14 @@ data class TrackedObject(
         require(classId == null || classId >= 0) {
             "classId must be a non-negative integer when provided"
         }
+        require(observationAgeMs >= 0L) { "observationAgeMs must be non-negative" }
+        require(predicted || observationAgeMs == 0L) {
+            "fresh observations must have observationAgeMs=0"
+        }
     }
+
+    val freshness: ObservationFreshness
+        get() = if (predicted) ObservationFreshness.PREDICTED else ObservationFreshness.FRESH
 
     fun toJson(): String = buildString {
         append("{\"track_id\":").append(trackId)

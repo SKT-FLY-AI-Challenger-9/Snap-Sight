@@ -51,13 +51,29 @@ class FaceRegistry(context: Context) : SQLiteOpenHelper(
     }
 
     fun addEmbedding(name: String, embedding: FloatArray) {
-        registerPerson(name)
-        val values = ContentValues().apply {
-            put("person_name", name.trim())
-            put("vector", encode(embedding))
-            put("created_at", System.currentTimeMillis())
+        addEmbeddings(name, listOf(embedding))
+    }
+
+    /** 등록 중 수집한 임베딩을 한 transaction으로 반영한다. 취소 전에는 DB를 건드리지 않는다. */
+    fun addEmbeddings(name: String, embeddings: List<FloatArray>) {
+        if (embeddings.isEmpty()) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            registerPerson(name)
+            val createdAt = System.currentTimeMillis()
+            embeddings.forEach { embedding ->
+                val values = ContentValues().apply {
+                    put("person_name", name.trim())
+                    put("vector", encode(embedding))
+                    put("created_at", createdAt)
+                }
+                db.insertOrThrow("face_embeddings", null, values)
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
         }
-        writableDatabase.insert("face_embeddings", null, values)
     }
 
     /** 인물 삭제 — 임베딩까지 함께 지운다 (프라이버시: 삭제는 완전해야 한다). */

@@ -12,10 +12,13 @@ class CaptureResultClientTest {
     @Test
     fun doneWithImprovement() {
         val d = CaptureResultClient.parseDecision(
-            """{"status":"done","improved":true,"reason":"눈 감김이 적은 후보로 교체"}""")
+            """{"status":"done","improved":true,"reason":"눈 감김이 적은 후보로 교체",
+                "capture_revision":7,"final_frame_id":"candidate_02"}""")
         assertTrue(d is Decision.Done)
         assertTrue((d as Decision.Done).improved)
         assertEquals("눈 감김이 적은 후보로 교체", d.reason)
+        assertEquals(7L, d.captureRevision)
+        assertEquals("candidate_02", d.finalFrameId)
     }
 
     @Test
@@ -44,5 +47,24 @@ class CaptureResultClientTest {
         // 서버가 0이나 음수를 줘도 폴링 폭주하지 않게 최소 0.5초
         val d = CaptureResultClient.parseDecision("""{"status":"pending","retry_after_seconds":0}""")
         assertEquals(500L, (d as Decision.Pending).retryAfterMs)
+    }
+
+    @Test
+    fun failedStatusIsTerminal() {
+        val d = CaptureResultClient.parseDecision(
+            """{"status":"failed","reason":"capture pipeline failed"}"""
+        )
+
+        assertTrue(d is Decision.Failed)
+        assertEquals("capture pipeline failed", (d as Decision.Failed).reason)
+    }
+
+    @Test
+    fun `only allowlisted in-progress statuses remain pending`() {
+        listOf("pending", "processing", "selecting").forEach { status ->
+            assertTrue(CaptureResultClient.parseDecision("""{"status":"$status"}""") is Decision.Pending)
+        }
+        assertTrue(CaptureResultClient.parseDecision("""{"status":"queued"}""") is Decision.Failed)
+        assertTrue(CaptureResultClient.parseDecision("{}") is Decision.Failed)
     }
 }

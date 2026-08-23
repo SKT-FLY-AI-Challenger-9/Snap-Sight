@@ -12,7 +12,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 /**
  * ① 인식된 발화 텍스트를 백엔드로 보내 타겟 스펙을 받아오는 클라이언트.
@@ -29,23 +28,32 @@ import java.util.concurrent.TimeUnit
  */
 class UtteranceClient(
     private val baseUrl: String? = null, // null = 요청 시점에 BackendConfig.baseUrl 사용
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .writeTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
-        .build(),
+    private val client: OkHttpClient = SnapSightHttp.client(
+        connectSeconds = 5,
+        writeSeconds = 10,
+        readSeconds = 10,
+    ),
 ) {
 
     interface Callback {
         /** [spec]은 응답이 스키마를 어겼을 때만 null — HTTP 자체 실패는 [onFailure]로 온다. */
         fun onSuccess(spec: TargetSpec?)
+        fun onSuccess(sessionId: String, spec: TargetSpec?) = onSuccess(spec)
         fun onFailure(error: Throwable)
+        fun onFailure(sessionId: String, error: Throwable) = onFailure(error)
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val requests = SessionRequestRegistry()
 
-    fun sendUtterance(sessionId: String, rawText: String, callback: Callback) {
-        Thread({
+    fun sendUtterance(
+        sessionId: String,
+        rawText: String,
+        callback: Callback,
+    ): NetworkRequestHandle {
+        val handle = requests.replace(sessionId)
+        val worker = Thread({
+            var terminalPosted = false
             try {
                 val requestJson = JSONObject().apply {
                     put("session_id", sessionId)
@@ -56,22 +64,38 @@ class UtteranceClient(
                     .post(requestJson.toString().toRequestBody(JSON))
                     .build()
 
-                client.newCall(request).execute().use { response ->
+                val spec = client.executeCancellable(handle, request) { response ->
                     if (!response.isSuccessful) {
                         throw IllegalStateException("타겟 스펙 요청 실패: HTTP ${response.code}")
                     }
                     val body = response.body?.string().orEmpty()
-                    val spec = TargetSpec.fromJsonOrNull(body) { error ->
+                    TargetSpec.fromJsonOrNull(body) { error ->
                         Log.w(TAG, "타겟 스펙 응답 파싱 실패 [$sessionId]", error)
                     }
-                    mainHandler.post { callback.onSuccess(spec) }
+                }
+                terminalPosted = true
+                mainHandler.post {
+                    if (requests.finish(sessionId, handle)) callback.onSuccess(sessionId, spec)
                 }
             } catch (t: Throwable) {
+                if (handle.isCancelled) return@Thread
                 Log.e(TAG, "타겟 스펙 요청 실패 [$sessionId]", t)
-                mainHandler.post { callback.onFailure(t) }
+                terminalPosted = true
+                mainHandler.post {
+                    if (requests.finish(sessionId, handle)) callback.onFailure(sessionId, t)
+                }
+            } finally {
+                handle.clearWorker(Thread.currentThread())
+                if (!terminalPosted) requests.remove(sessionId, handle)
             }
-        }, "SnapSight-UtteranceUpload").start()
+        }, "SnapSight-UtteranceUpload-${sessionId.takeLast(8)}")
+        if (handle.attachWorker(worker)) worker.start()
+        return handle
     }
+
+    fun cancel(sessionId: String) = requests.cancel(sessionId)
+
+    fun cancelAll() = requests.cancelAll()
 
     companion object {
         private const val TAG = "UtteranceClient"

@@ -31,9 +31,26 @@ data class FramingDeviation(
      * 소비자는 구분 없이 써도 되지만, 정밀도가 필요한 곳(자동 셔터 등)은 이 값을 확인할 것.
      */
     val held: Boolean = false,
-)
+    /** 실제 detector 관측/트래커 예측/직전 값 유지 구분. */
+    val observationFreshness: ObservationFreshness =
+        if (held) ObservationFreshness.HELD else ObservationFreshness.FRESH,
+    /** 마지막 실제 detector 관측 이후 경과 시간. */
+    val observationAgeMs: Long = 0L,
+    /** bbox가 프레임 경계에 닿아 잘렸는지 판정할 수 있는 normalized 여백. */
+    val frameVisibility: FrameVisibility? = null,
+) {
+    init {
+        require(observationAgeMs >= 0L) { "observationAgeMs must be non-negative" }
+        require(!held || observationFreshness == ObservationFreshness.HELD) {
+            "held deviations must use HELD freshness"
+        }
+    }
+}
 
 interface DeviationCalculator {
+    /** Clears any target-specific sticky or stability state before a new intent is published. */
+    fun reset() = Unit
+
     /**
      * @param selection tracking·선택이 끝난 현재 프레임 결과
      * @param spec      의도. null 이면 목표가 없는 상태다.

@@ -1,8 +1,12 @@
 # tests/test_capture.py
 """POST /api/capture/frames, GET /api/capture/{session_id}/result 엔드포인트를 확인하는 테스트."""
 
+from io import BytesIO
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from backend.api.capture import router as capture_router
 from backend.config import RESULT_POLL_INTERVAL_SECONDS
@@ -13,7 +17,19 @@ app = FastAPI()
 app.include_router(capture_router)
 client = TestClient(app)
 
-DUMMY_JPEG = b"\xff\xd8\xff\xe0fake-jpeg-bytes"
+
+def _make_jpeg() -> bytes:
+    output = BytesIO()
+    Image.new("RGB", (2, 2), "white").save(output, format="JPEG")
+    return output.getvalue()
+
+
+DUMMY_JPEG = _make_jpeg()
+
+
+@pytest.fixture(autouse=True)
+def _stub_capture_pipeline(monkeypatch):
+    monkeypatch.setattr("backend.api.capture.trigger_capture_pipeline", lambda *args: None)
 
 
 def test_receive_capture_frames_saves_files_and_triggers_comparison(tmp_path, monkeypatch):
@@ -21,8 +37,8 @@ def test_receive_capture_frames_saves_files_and_triggers_comparison(tmp_path, mo
     monkeypatch.chdir(tmp_path)
     calls = []
     monkeypatch.setattr(
-        "backend.api.capture.trigger_comparison",
-        lambda session_id, raw_text, scores: calls.append((session_id, raw_text, scores)),
+        "backend.api.capture.trigger_capture_pipeline",
+        lambda *args: calls.append(args),
     )
 
     response = client.post(
@@ -40,21 +56,27 @@ def test_receive_capture_frames_saves_files_and_triggers_comparison(tmp_path, mo
         "session_id": "test-session",
         "received_candidate_count": 2,
         "status": "saved",
+        "capture_revision": 1,
+        "final_frame_id": None,
     }
 
     session_dir = tmp_path / "captures" / "test-session"
     assert (session_dir / "representative.jpg").read_bytes() == DUMMY_JPEG
     assert (session_dir / "candidate_0.jpg").read_bytes() == DUMMY_JPEG
     assert (session_dir / "candidate_1.jpg").read_bytes() == DUMMY_JPEG
-    assert calls == [("test-session", "인물 사진 찍어줘", [])]
+    assert len(calls) == 1
+    assert calls[0][0] == "test-session"
+    assert calls[0][1] == 1
+    assert calls[0][2] == "인물 사진 찍어줘"
+    assert calls[0][3] == []
 
 
-def test_receive_capture_frames_skips_comparison_when_no_candidates(tmp_path, monkeypatch):
-    """온디바이스 필터링으로 후보가 0장이면 MLLM 비교를 트리거하지 않는다."""
+def test_receive_capture_frames_finishes_pipeline_when_no_candidates(tmp_path, monkeypatch):
+    """후보가 0장이어도 대표 프레임 설명을 위해 파이프라인을 트리거한다."""
     monkeypatch.chdir(tmp_path)
     calls = []
     monkeypatch.setattr(
-        "backend.api.capture.trigger_comparison",
+        "backend.api.capture.trigger_capture_pipeline",
         lambda *args: calls.append(args),
     )
 
@@ -66,7 +88,9 @@ def test_receive_capture_frames_skips_comparison_when_no_candidates(tmp_path, mo
 
     assert response.status_code == 200
     assert response.json()["received_candidate_count"] == 0
-    assert calls == []
+    assert len(calls) == 1
+    assert calls[0][0] == "test-session-empty"
+    assert calls[0][3] == []
 
 
 def test_receive_capture_frames_passes_parsed_candidate_scores(tmp_path, monkeypatch):
@@ -74,8 +98,8 @@ def test_receive_capture_frames_passes_parsed_candidate_scores(tmp_path, monkeyp
     monkeypatch.chdir(tmp_path)
     calls = []
     monkeypatch.setattr(
-        "backend.api.capture.trigger_comparison",
-        lambda session_id, raw_text, scores: calls.append(scores),
+        "backend.api.capture.trigger_capture_pipeline",
+        lambda *args: calls.append(args[3]),
     )
 
     response = client.post(
@@ -166,8 +190,8 @@ def test_receive_capture_frames_accepts_empty_raw_text(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     calls = []
     monkeypatch.setattr(
-        "backend.api.capture.trigger_comparison",
-        lambda session_id, raw_text, scores: calls.append(raw_text),
+        "backend.api.capture.trigger_capture_pipeline",
+        lambda *args: calls.append(args[2]),
     )
 
     response = client.post(
@@ -198,6 +222,8 @@ def test_get_capture_result_returns_pending_while_comparison_runs(tmp_path, monk
         "improved": None,
         "reason": None,
         "retry_after_seconds": RESULT_POLL_INTERVAL_SECONDS,
+        "capture_revision": None,
+        "final_frame_id": None,
     }
 
 
@@ -228,4 +254,6 @@ def test_get_capture_result_returns_done_when_ready(tmp_path, monkeypatch):
         "improved": True,
         "reason": "더 낫습니다",
         "retry_after_seconds": None,
+        "capture_revision": None,
+        "final_frame_id": None,
     }

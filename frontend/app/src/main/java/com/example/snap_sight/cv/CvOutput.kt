@@ -17,8 +17,14 @@ data class CvFrameOutput(
      * (Python demo 의 selection JSONL `analyzed` 와 같은 의미)
      */
     val analyzed: Boolean,
+    /** 실제 detector 관측, tracker 예측, 마지막 값 유지 중 어느 출처인지. */
+    val observationFreshness: ObservationFreshness = ObservationFreshness.FRESH,
+    /** Target-intent generation used to select and judge this output. */
+    val targetIntentGeneration: Long = 0L,
     /** 현재 세션의 의도. 항상 null 일 수 있다 (마이크 권한 없음, 발화 생략). */
     val targetSpec: TargetSpec? = null,
+    /** Registered face/object name used to filter this output, if any. */
+    val targetIdentityName: String? = null,
     /**
      * 의도 기반 후보 선택 결과 ([Objects365TargetSelector]).
      * 의도 없는 세션이나 pass-through fallback 에서는 `DISABLED` + 전체 객체.

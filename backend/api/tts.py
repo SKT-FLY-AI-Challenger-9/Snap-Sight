@@ -1,16 +1,18 @@
 # backend/api/tts.py
 """① 재질문·에러 안내 등에 쓰이는 TTS(ElevenLabs) 프록시 엔드포인트."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from ai.tts_client import ElevenLabsTTSClient, TTSError
+from backend.api.guards import require_api_access
 from backend.utils.logger import load_logger
 
 logger = load_logger("tts.log")
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_api_access)])
 
 
 class TtsRequest(BaseModel):
@@ -27,7 +29,7 @@ async def synthesize_speech(request: TtsRequest) -> Response:
 
     try:
         client = ElevenLabsTTSClient()
-        audio = client.synthesize(request.text)
+        audio = await run_in_threadpool(client.synthesize, request.text)
     except RuntimeError as e:
         logger.error(f"TTS 클라이언트 초기화 실패: {e}")
         raise HTTPException(status_code=503, detail="TTS 서비스를 사용할 수 없습니다.") from e

@@ -1,6 +1,10 @@
 package com.example.snap_sight.ux
 
 import com.example.snap_sight.cv.DeviationResult
+import com.example.snap_sight.cv.CanonicalReadinessEvaluator
+import com.example.snap_sight.cv.CompositionProfile
+import com.example.snap_sight.cv.ReadinessBlocker
+import com.example.snap_sight.cv.ReadinessVerdict
 import kotlin.math.abs
 
 /**
@@ -19,8 +23,8 @@ import kotlin.math.abs
  *    "피사체를 찾지 못했습니다" 음성은 [LOST_SPEAK_AFTER_MS] 이상 계속 못 찾을 때 1회만.
  *  - READY 는 [READY_DEBOUNCE_MS] 유지 시 "지금 촬영하세요" 1회(유지 중 반복 없음). READY 를 벗어났다
  *    다시 들어와도 [READY_RESPEAK_MS] 안에는 반복하지 않는다.
- *  - 수직(dy)은 계약상 [GuidanceState.isReady] 에 포함되지 않지만, 안내 정책에서는 위/아래로 벗어나 있으면
- *    "촬영하세요" 대신 "위로/아래로" 를 말한다 (모순된 안내 방지).
+ *  - 수직(dy)은 [GuidanceState.isReady]와 canonical readiness에 항상 포함한다. 없거나 범위를
+ *    벗어나면 "촬영하세요"로 승격하지 않는다.
  *  - `zoomHandlesDistance=true` 면 CLOSER(너무 작음)는 자동 줌인이 처리 중이므로 "가까이"를 말하지 않는다.
  *    다른 축이 다 맞으면 줌이 끝날 때까지 침묵한다. 줌 한계에 닿아 false 가 되면 그때 "가까이".
  *  - READY 히스테리시스: 한 번 READY 에 들어오면 편차가 임계값 × [GuidanceStateMapper.READY_EXIT_FACTOR] 를
@@ -42,15 +46,21 @@ internal enum class GuidanceDirection(val utterance: String) {
     FARTHER("뒤로"),
 }
 
+/** 한 번의 canonical 평가에서 나온 최종 verdict와 렌더링 액션. */
+internal data class GuidanceDecision(
+    val verdict: ReadinessVerdict,
+    val actions: List<GuidanceAction>,
+)
+
 internal class GuidancePolicy(
     private val readyUtterance: String = READY_UTTERANCE,
     private val lostUtterance: String = LOST_UTTERANCE,
+    private val readinessEvaluator: CanonicalReadinessEvaluator = CanonicalReadinessEvaluator(),
 ) {
     private var lostSinceMs: Long? = null
     private var lastLostToneMs: Long = Long.MIN_VALUE / 2
     private var lostSpoken = false
 
-    private var readySinceMs: Long? = null
     private var readySpokenAtMs: Long = Long.MIN_VALUE / 2
     private var readySpokenThisEpisode = false
 
@@ -59,11 +69,12 @@ internal class GuidancePolicy(
     private var lastReadyBlockedSpokenAtMs: Long = Long.MIN_VALUE / 2
 
     /** 새 세션 시작 — 이전 세션의 "이미 말했음" 상태를 지운다. */
+    @Synchronized
     fun reset() {
         lostSinceMs = null
         lastLostToneMs = Long.MIN_VALUE / 2
         lostSpoken = false
-        readySinceMs = null
+        readinessEvaluator.reset()
         readySpokenAtMs = Long.MIN_VALUE / 2
         readySpokenThisEpisode = false
         lastDirection = null
@@ -82,32 +93,74 @@ internal class GuidancePolicy(
         nowMs: Long,
         zoomHandlesDistance: Boolean = false,
         readyBlockedReason: String? = null,
-    ): List<GuidanceAction> {
-        if (!state.detected) return onLost(nowMs)
+    ): List<GuidanceAction> = processJudgment(
+        state = state,
+        result = result,
+        nowMs = nowMs,
+        zoomHandlesDistance = zoomHandlesDistance,
+        readyBlockedReason = readyBlockedReason,
+    ).actions
+
+    /** 액션과 UI가 같은 evaluator 호출의 verdict를 공유하도록 하는 canonical 진입점. */
+    @Synchronized
+    fun processJudgment(
+        state: GuidanceState,
+        result: DeviationResult,
+        nowMs: Long,
+        zoomHandlesDistance: Boolean = false,
+        readyBlockedReason: String? = null,
+    ): GuidanceDecision {
+        val readiness = readinessEvaluator.evaluate(result, nowMs)
+        fun decision(actions: List<GuidanceAction>) = GuidanceDecision(readiness, actions)
+        if (!state.detected) return decision(onLost(nowMs))
 
         // 다시 찾음 — LOST 에피소드 종료
         lostSinceMs = null
         lostSpoken = false
 
-        if (isReadyWithHysteresis(state, result)) {
-            if (readyBlockedReason != null) return onReadyBlocked(readyBlockedReason, nowMs)
-            return onReady(nowMs)
+        if (readiness.ready) {
+            if (readyBlockedReason != null) {
+                return decision(onReadyBlocked(readyBlockedReason, nowMs))
+            }
+            return decision(onReady(nowMs))
+        }
+        // 추가 게이트(시선 등)는 구도 안정화 중에도 즉시 알려준다.
+        if (readiness.candidateReady && readyBlockedReason != null) {
+            return decision(onReadyBlocked(readyBlockedReason, nowMs))
         }
 
-        readySinceMs = null
+        // 추정 bbox나 오래된 관측으로 사용자에게 이동을 요구하지 않는다. 이 출력은 오버레이를
+        // 부드럽게 잇는 용도이며, 다음 detector keyframe에서 방향을 다시 확인한다.
+        val observationUncertain = readiness.blockers.any {
+            it == ReadinessBlocker.PREDICTED || it == ReadinessBlocker.HELD ||
+                it == ReadinessBlocker.STALE
+        }
+        if (observationUncertain) {
+            // PREDICTED/HELD alone is a short tracker gap and keeps the READY episode.
+            // STALE or a simultaneous geometry/visibility blocker is a canonical hard exit;
+            // after a fresh re-stabilization READY must be eligible to speak again.
+            val hasHardExit = readiness.blockers.any {
+                it != ReadinessBlocker.PREDICTED && it != ReadinessBlocker.HELD
+            }
+            if (hasHardExit) {
+                readySpokenThisEpisode = false
+                lastDirection = null
+            }
+            return decision(emptyList())
+        }
         readySpokenThisEpisode = false
-        val direction = pickDirection(state, result, zoomHandlesDistance) ?: return emptyList()
+        val direction = pickDirection(state, result, zoomHandlesDistance)
+            ?: return decision(emptyList())
         val changed = direction != lastDirection
         val elapsed = nowMs - lastDirectionAtMs
         val due = if (changed) elapsed >= DIRECTION_MIN_GAP_MS else elapsed >= DIRECTION_REPEAT_MS
-        if (!due) return emptyList()
+        if (!due) return decision(emptyList())
         lastDirection = direction
         lastDirectionAtMs = nowMs
-        return listOf(GuidanceAction.Speak(direction.utterance), GuidanceAction.Vibrate)
+        return decision(listOf(GuidanceAction.Speak(direction.utterance), GuidanceAction.Vibrate))
     }
 
     private fun onLost(nowMs: Long): List<GuidanceAction> {
-        readySinceMs = null
         readySpokenThisEpisode = false
         lastDirection = null // 다시 찾으면 방향을 바로 말해준다
         val since = lostSinceMs ?: run { lostSinceMs = nowMs; return emptyList() }
@@ -126,30 +179,11 @@ internal class GuidancePolicy(
     }
 
     /**
-     * 진입: 계약대로 x·size CENTERED(+ 수직이 있으면 위/아래로 벗어나지 않음).
-     * 유지: 이미 READY 에피소드 중이면 각 편차가 임계값 × READY_EXIT_FACTOR 안이면 계속 READY.
-     */
-    private fun isReadyWithHysteresis(state: GuidanceState, result: DeviationResult): Boolean {
-        val enter = state.isReady &&
-            state.vertical != VerticalAlignment.UP && state.vertical != VerticalAlignment.DOWN
-        if (enter) return true
-        if (readySinceMs == null) return false
-        val f = GuidanceStateMapper.READY_EXIT_FACTOR
-        val x = result.xDeviation ?: return false
-        val size = result.sizeDeviation ?: return false
-        val y = result.yDeviation ?: 0f
-        return abs(x) <= GuidanceStateMapper.MAX_ABS_X_DEVIATION * f &&
-            abs(size) <= GuidanceStateMapper.MAX_ABS_SIZE_DEVIATION * f &&
-            abs(y) <= GuidanceStateMapper.MAX_ABS_Y_DEVIATION * f
-    }
-
-    /**
      * 구도는 READY 인데 추가 조건(시선 등)이 안 맞음 — "지금 촬영하세요" 대신 사유를 말한다.
      * READY 에피소드는 유지해(hysteresis) 방향 안내로 튀지 않게 하고, 사유만 주기적으로 반복.
      */
     private fun onReadyBlocked(reason: String, nowMs: Long): List<GuidanceAction> {
         lastDirection = null
-        if (readySinceMs == null) readySinceMs = nowMs
         if (nowMs - lastReadyBlockedSpokenAtMs < DIRECTION_REPEAT_MS) return emptyList()
         lastReadyBlockedSpokenAtMs = nowMs
         return listOf(GuidanceAction.Speak(reason))
@@ -157,9 +191,7 @@ internal class GuidancePolicy(
 
     private fun onReady(nowMs: Long): List<GuidanceAction> {
         lastDirection = null
-        val since = readySinceMs ?: run { readySinceMs = nowMs; nowMs }
         if (readySpokenThisEpisode) return emptyList()
-        if (nowMs - since < READY_DEBOUNCE_MS) return emptyList()
         if (nowMs - readySpokenAtMs < READY_RESPEAK_MS) return emptyList()
         readySpokenAtMs = nowMs
         readySpokenThisEpisode = true
@@ -199,13 +231,14 @@ internal class GuidancePolicy(
             val x = result.xDeviation ?: 0f
             val y = result.yDeviation ?: 0f
             val size = result.sizeDeviation ?: 0f
+            val goal = result.goal ?: CompositionProfile.DEFAULT.goalFor(result.framing)
             consider(
                 when (state.horizontal) {
                     HorizontalAlignment.LEFT -> GuidanceDirection.LEFT
                     HorizontalAlignment.RIGHT -> GuidanceDirection.RIGHT
                     else -> null
                 },
-                abs(x) / GuidanceStateMapper.MAX_ABS_X_DEVIATION,
+                abs(x) / goal.maxAbsXDeviation.coerceAtLeast(1e-6f),
             )
             consider(
                 when (state.vertical) {
@@ -213,7 +246,7 @@ internal class GuidancePolicy(
                     VerticalAlignment.DOWN -> GuidanceDirection.DOWN
                     else -> null
                 },
-                abs(y) / GuidanceStateMapper.MAX_ABS_Y_DEVIATION,
+                abs(y) / goal.maxAbsYDeviation.coerceAtLeast(1e-6f),
             )
             consider(
                 when (state.distance) {
@@ -221,7 +254,7 @@ internal class GuidancePolicy(
                     DistanceAlignment.FARTHER -> null // "뒤로"는 안내하지 않는다 (KDoc 참고)
                     else -> null
                 },
-                abs(size) / GuidanceStateMapper.MAX_ABS_SIZE_DEVIATION,
+                abs(size) / goal.maxAbsAreaDeviation.coerceAtLeast(1e-6f),
             )
             return best
         }

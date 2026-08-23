@@ -36,7 +36,6 @@ import androidx.compose.ui.unit.sp
 private val EXAMPLES = listOf(
     "“앞에 있는 두 사람 같이 찍어줘”",
     "“바다를 배경으로 친구 전신을 찍어줘”",
-    "“식탁 위 음식 전체가 나오게 찍어줘”",
 )
 
 /**
@@ -190,24 +189,24 @@ fun HomeScreen(
         }
 
         Spacer(Modifier.weight(1f))
-        Surface(
-            shape = RoundedCornerShape(14.dp),
-            color = SnapPalette.Card,
+        // 설정 칩과 같은 clickable 패턴 — Surface(onClick) + 🖼 이모지 조합이 일부 기기에서
+        // 글자가 안 보이는 문제(실사용 피드백 2026-08-22)가 있어 교체했다
+        Box(
+            contentAlignment = Alignment.Center,
             modifier = Modifier
                 .fillMaxWidth()
+                .background(SnapPalette.Card, RoundedCornerShape(14.dp))
                 .border(1.dp, SnapPalette.CardBorder, RoundedCornerShape(14.dp))
+                .clickable(onClick = onOpenGallery)
                 .semantics { contentDescription = "사진 찾기 화면 열기" },
-            onClick = onOpenGallery,
         ) {
             Text(
-                text = "🖼  사진 찾기",
+                text = "사진 찾기",
                 color = SnapPalette.TextPrimary,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 16.dp),
+                modifier = Modifier.padding(vertical = 16.dp),
             )
         }
         Spacer(Modifier.height(16.dp))

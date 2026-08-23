@@ -7,15 +7,11 @@ import android.util.Log
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 class DescriptionLookup(
     context: Context,
     private val baseUrl: String? = null, // null = 요청 시점에 BackendConfig.baseUrl 사용
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(2, TimeUnit.SECONDS)
-        .readTimeout(3, TimeUnit.SECONDS)
-        .build(),
+    private val client: OkHttpClient = SnapSightHttp.client(connectSeconds = 2, readSeconds = 3),
 ) {
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

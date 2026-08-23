@@ -23,6 +23,16 @@ class CvPipeline(
     private val extensions: List<DetectionExtension> = emptyList(),
     private val config: PipelineConfig = PipelineConfig(),
 ) {
+    /**
+     * Last publication-quality observation for each tracker ID.
+     *
+     * ByteTrack deliberately accepts detections below [PipelineConfig.outputConfidenceThreshold]
+     * to preserve association. Exposing those detections as fresh would weaken readiness, while
+     * dropping them entirely makes the box and local identity blink. We therefore reuse only the
+     * last reliable label/confidence and expose the current tracker position as predicted.
+     */
+    private val lastPublishedByTrack = HashMap<Int, TrackedObject>()
+
     var isLoaded: Boolean = false
         private set
 
@@ -69,16 +79,22 @@ class CvPipeline(
             }
         }
 
-        val trackedObjects = tracker.update(allDetections, timestampS, motionHint)
-        val visibleObjects = trackedObjects
-            .filter { it.confidence >= config.outputConfidenceThreshold }
-            .sortedBy { it.trackId }
-        return FrameResult(visibleObjects)
+        return FrameResult(projectForPublication(tracker.update(allDetections, timestampS, motionHint)))
+    }
+
+    /**
+     * detector를 실행하지 않는 카메라 프레임에서 tracker 상태만 전진시킨다.
+     * 반환 객체는 실제 픽셀 관측이 아닌 `predicted=true`이며, detector miss로 계산되지 않는다.
+     */
+    fun predictOnly(timestampS: Double? = null, motionHint: MotionHint? = null): FrameResult {
+        check(isLoaded) { "CvPipeline.load() must be called before predictOnly()" }
+        return FrameResult(projectForPublication(tracker.predictOnly(timestampS, motionHint)))
     }
 
     /** 새 카메라 세션 시작 전 track 상태 초기화. ID 가 다시 1부터 시작한다. */
     fun reset() {
         tracker.reset()
+        lastPublishedByTrack.clear()
     }
 
     fun close() {
@@ -87,6 +103,23 @@ class CvPipeline(
             runCatching { extension.close() }
         }
         runCatching { detector.close() }
+        lastPublishedByTrack.clear()
         isLoaded = false
     }
+
+    private fun projectForPublication(trackedObjects: List<TrackedObject>): List<TrackedObject> =
+        trackedObjects.mapNotNull { current ->
+            if (current.confidence >= config.outputConfidenceThreshold) {
+                if (!current.predicted) lastPublishedByTrack[current.trackId] = current
+                current
+            } else {
+                val previous = lastPublishedByTrack[current.trackId] ?: return@mapNotNull null
+                current.copy(
+                    label = previous.label,
+                    confidence = previous.confidence,
+                    classId = previous.classId,
+                    predicted = true,
+                )
+            }
+        }.sortedBy { it.trackId }
 }

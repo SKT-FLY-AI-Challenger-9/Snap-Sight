@@ -21,8 +21,13 @@ import kotlinx.coroutines.withTimeoutOrNull
  * - 한 번 탭 → 아무것도 하지 않음 (버튼 등 일반 터치 UI 몫)
  *
  * 자식 컴포저블(버튼 등)이 소비한 이벤트는 무시하므로 일반 터치 UI와 충돌하지 않는다.
- * 두 번 탭은 세 번째 탭이 doubleTapTimeout(약 300ms) 안에 오는지 기다린 뒤 확정되고,
+ * 두 번 탭은 세 번째 탭이 [MULTI_TAP_WINDOW_MS] 안에 오는지 기다린 뒤 확정되고,
  * 세 번 탭은 즉시 확정된다.
+ *
+ * 타이밍 (실사용 피드백 2026-08-22 반영):
+ *  - 길게 누르기(뒤로)는 시스템 기본(≈400ms)이 너무 민감해 [BACK_LONG_PRESS_MS]로 늘렸다
+ *  - 탭 간격도 시스템 doubleTapTimeout(≈300ms)이 빠듯해 [MULTI_TAP_WINDOW_MS]로 늘렸다 —
+ *    대신 두 번 탭(셔터 포함) 확정이 그만큼 늦어지는 트레이드오프가 있다
  */
 fun Modifier.appTapGrammar(
     onDoubleTap: () -> Unit,
@@ -35,13 +40,13 @@ fun Modifier.appTapGrammar(
 
         // 첫 손가락: 길게 누르기인지, 탭인지 판정
         var cancelled = false
-        val firstUp = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+        val firstUp = withTimeoutOrNull(BACK_LONG_PRESS_MS) {
             waitForUpOrCancellation().also { if (it == null) cancelled = true }
         }
         when {
             cancelled -> return@awaitEachGesture
             firstUp == null -> {
-                // longPressTimeout 을 넘겼다 = 길게 누르기(뒤로). 손을 뗄 때까지 이벤트를 소진한다.
+                // BACK_LONG_PRESS_MS 를 넘겼다 = 길게 누르기(뒤로). 손을 뗄 때까지 이벤트를 소진한다.
                 onLongPress()
                 do {
                     val event = awaitPointerEvent(PointerEventPass.Main)
@@ -54,7 +59,7 @@ fun Modifier.appTapGrammar(
         // 이어지는 탭을 센다 — 3탭에서 즉시 확정, 2탭은 세 번째가 안 오면 확정
         var taps = 1
         while (taps < 3) {
-            val nextDown = withTimeoutOrNull(viewConfiguration.doubleTapTimeoutMillis) {
+            val nextDown = withTimeoutOrNull(MULTI_TAP_WINDOW_MS) {
                 awaitFirstDown(pass = PointerEventPass.Main)
             } ?: break
             if (nextDown.isConsumed) return@awaitEachGesture
@@ -71,3 +76,9 @@ fun Modifier.appTapGrammar(
         }
     }
 }
+
+/** 길게 누르기(뒤로) 판정 시간 — 시스템 기본(≈400ms)이 실사용에서 오작동이 잦아 늘렸다. */
+private const val BACK_LONG_PRESS_MS = 900L
+
+/** 연속 탭으로 인정하는 최대 간격 — 시스템 doubleTapTimeout(≈300ms)보다 여유를 뒀다. */
+private const val MULTI_TAP_WINDOW_MS = 500L

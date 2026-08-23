@@ -20,6 +20,7 @@ class YoloOutputDecoderTest {
     private fun endToEndDecoder(
         detectionSlots: Int = 4,
         maxDetections: Int = 300,
+        applyNms: Boolean = true,
     ) = YoloOutputDecoder(
         labels = labels,
         layout = YoloOutputLayout.END_TO_END,
@@ -28,7 +29,7 @@ class YoloOutputDecoderTest {
         minimumConfidence = 0.10f,
         nmsIouThreshold = 0.45f,
         maxDetections = maxDetections,
-        applyNms = true,
+        applyNms = applyNms,
     )
 
     /** `[x1, y1, x2, y2, conf, classId]` 행들을 고정 슬롯 텐서로 편다. */
@@ -140,11 +141,38 @@ class YoloOutputDecoderTest {
     }
 
     @Test
-    fun `end-to-end output keeps overlapping same-class detections`() {
+    fun `end-to-end output applies class-wise nms when requested`() {
         val decoder = endToEndDecoder()
         val geometry = LetterboxGeometry.of(640, 640, 640, 640)
-        // 나란히 겹쳐 선 사람 둘. NMS-free head 가 정당하게 둘 다 내보낸 것이므로
-        // 우리가 다시 NMS 를 돌려 하나를 지우면 안 된다.
+        // `[1,N,6]`은 tensor layout일 뿐 NMS 완료 증거가 아니다. 배포 export는 nms=false다.
+        val values = endToEndTensor(
+            4,
+            floatArrayOf(0.30f, 0.10f, 0.70f, 0.90f, 0.95f, 0f),
+            floatArrayOf(0.35f, 0.10f, 0.75f, 0.90f, 0.90f, 0f),
+        )
+
+        val detections = decoder.decode(values, geometry)
+        assertEquals(1, detections.size)
+        assertEquals(0.95f, detections.single().confidence, 1e-6f)
+    }
+
+    @Test
+    fun `end-to-end nms keeps overlapping boxes from different classes`() {
+        val decoder = endToEndDecoder()
+        val geometry = LetterboxGeometry.of(640, 640, 640, 640)
+        val values = endToEndTensor(
+            4,
+            floatArrayOf(0.30f, 0.10f, 0.70f, 0.90f, 0.95f, 0f),
+            floatArrayOf(0.35f, 0.10f, 0.75f, 0.90f, 0.90f, 1f),
+        )
+
+        assertEquals(listOf("person", "sneakers"), decoder.decode(values, geometry).map { it.label })
+    }
+
+    @Test
+    fun `end-to-end nms can be disabled for a model that already suppresses duplicates`() {
+        val decoder = endToEndDecoder(applyNms = false)
+        val geometry = LetterboxGeometry.of(640, 640, 640, 640)
         val values = endToEndTensor(
             4,
             floatArrayOf(0.30f, 0.10f, 0.70f, 0.90f, 0.95f, 0f),

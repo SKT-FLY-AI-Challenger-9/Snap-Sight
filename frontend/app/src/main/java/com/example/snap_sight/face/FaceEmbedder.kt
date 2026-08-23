@@ -40,19 +40,22 @@ class TfLiteFaceEmbedder(
     private var loadFailed = false
     private var inputSize = DEFAULT_INPUT_SIZE
     private var outputDim = 0
+    private var inputBuffer: ByteBuffer? = null
+    private var pixelBuffer: IntArray? = null
+    private var outputBuffer: Array<FloatArray>? = null
 
     override val isAvailable: Boolean
         get() = !loadFailed && (interpreter != null || assetExists())
 
     override fun embed(face: Bitmap): FloatArray? {
         val runtime = ensureLoaded() ?: return null
+        val scaled = if (face.width == inputSize && face.height == inputSize) face
+        else Bitmap.createScaledBitmap(face, inputSize, inputSize, true)
         return try {
-            val scaled = if (face.width == inputSize && face.height == inputSize) face
-            else Bitmap.createScaledBitmap(face, inputSize, inputSize, true)
-
-            val input = ByteBuffer.allocateDirect(inputSize * inputSize * 3 * 4)
-                .order(ByteOrder.nativeOrder())
-            val pixels = IntArray(inputSize * inputSize)
+            val input = inputBuffer ?: ByteBuffer.allocateDirect(inputSize * inputSize * 3 * 4)
+                .order(ByteOrder.nativeOrder()).also { inputBuffer = it }
+            val pixels = pixelBuffer ?: IntArray(inputSize * inputSize).also { pixelBuffer = it }
+            input.clear()
             scaled.getPixels(pixels, 0, inputSize, 0, 0, inputSize, inputSize)
             for (pixel in pixels) {
                 input.putFloat(((pixel shr 16 and 0xFF) - 127.5f) / 128f)
@@ -61,18 +64,23 @@ class TfLiteFaceEmbedder(
             }
             input.rewind()
 
-            val output = Array(1) { FloatArray(outputDim) }
+            val output = outputBuffer ?: Array(1) { FloatArray(outputDim) }.also { outputBuffer = it }
             runtime.run(input, output)
             l2Normalize(output[0])
         } catch (t: Throwable) {
             Log.w(TAG, "얼굴 임베딩 실패", t)
             null
+        } finally {
+            if (scaled !== face) scaled.recycle()
         }
     }
 
     override fun close() {
         runCatching { interpreter?.close() }
         interpreter = null
+        inputBuffer = null
+        pixelBuffer = null
+        outputBuffer = null
     }
 
     private fun ensureLoaded(): Interpreter? {
