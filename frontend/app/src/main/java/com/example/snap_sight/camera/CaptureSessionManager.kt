@@ -18,7 +18,7 @@ import java.util.UUID
 /** 촬영 세션 상태. docs/screen-design.md 의 S3 상태 정의와 1:1 대응한다. */
 enum class SessionState(val description: String) {
     // 화면 상태 카드·세 번 탭 상태 낭독에 쓰이는 문구 — 탭 문법(#84) 기준 (볼륨 버튼은 제거됨)
-    IDLE("화면을 두 번 탭해 시작"),
+    IDLE("두 번 탭하고 말하기 — 촬영·설정·갤러리"),
     LISTENING("무엇을 찍을까요? 말한 뒤 두 번 탭"),
     PARSING("음성을 확인하고 있어요…"),
     AIMING("조준 중 — 두 번 탭으로 촬영"),

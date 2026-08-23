@@ -33,9 +33,12 @@ SYSTEM_PROMPT = (
     "시각장애 사용자가 방금 찍은 사진을 들려주는 역할이다. 정확히 1문장, 존댓말로 아주 짧게 설명한다. "
     "무엇이 찍혔는지(주인공이 어디에 어떤 모습으로)만 한 문장에 담는다 — 낭독했을 때 한 줄 안에 끝나야 한다. "
     "세부를 나열하지 말고 핵심만 고르되, 확실하지 않은 세부는 지어내지 않는다. "
-    "등록 이름 또는 local_* 참조 토큰은 현재 사진에서 대응 위치의 대상이 분명히 보일 때만 그대로 "
-    "사용한다. 위치가 없거나 대응이 불확실하면 쓰지 않는다. local_* 토큰의 실제 이름이나 관계를 "
-    "추측하지 않고, 관계를 알 수 없는 사람을 친구·가족이라고 부르지 않는다. "
+    "등록 대상의 local_* 참조 토큰은 낭독 직전에 기기에서 실제 이름으로 치환된다 — 이름 자리에 "
+    "토큰을 그대로 쓴다. bbox 위치의 대상이 보이면(사진·화면 속 인물이어도) 일반 명사 대신 "
+    "토큰으로 지칭하는 것이 기본이고, 전혀 보이지 않을 때만 쓰지 않는다. 토큰의 실제 이름이나 "
+    "관계를 추측하지 않고, 관계를 알 수 없는 사람을 친구·가족이라고 부르지 않는다. "
+    "'촬영 의도 대상'으로 표시된 등록 대상이 사진에서 분명히 보이면 그 대상을 문장의 주인공으로 "
+    "삼는다 — 사용자가 찍으려던 대상이기 때문이다. 보이지 않으면 주인공으로 단정하지 않는다. "
     "문장은 반드시 '~있어요', '~이에요', '~보여요'처럼 부드러운 존댓말로 끝낸다. 반말 금지."
 )
 
@@ -68,6 +71,7 @@ def describe_photo(image_path: Path, known_subjects: list[dict] | None = None) -
         response = client.messages.create(
             model=MODEL_ID,
             max_tokens=MAX_TOKENS,
+            temperature=0.2, # 토큰 사용 일관성 (metadata.py 와 동일 근거)
             system=SYSTEM_PROMPT,
             messages=[
                 {
@@ -97,10 +101,34 @@ def format_known_subjects(known_subjects: list[dict]) -> str:
         identifier = str(subject.get("name") or subject.get("subject_ref") or "").strip()
         if not identifier:
             continue
+        if subject.get("named") is False:
+            # 이름 매핑이 없는 참조 — 토큰을 프롬프트에 노출하지 않고 역할로만 알린다.
+            # 모델은 이 대상을 보이는 대로(일반 명사) 지칭하며 중심으로 서술한다.
+            identifier = "요청한 촬영 대상"
         kind = "사람" if subject.get("kind") == "person" else "사물"
         position = describe_position(subject.get("bbox"))
-        lines.append(f"- {identifier} ({kind}{', ' + position if position else ''})")
+        # 9분할 단어만으로는 나란히 놓인 같은 종류 대상들을 구분 못 한다 (2026-08-23 실기기:
+        # 키티 인형의 옷을 오리 인형 토큰에 붙임) — 정확한 좌표 범위를 함께 준다.
+        coords = describe_bbox_range(subject.get("bbox"))
+        detail = ", ".join(part for part in (position, coords) if part)
+        marker = " — 촬영 의도 대상" if subject.get("intent_target") else ""
+        lines.append(f"- {identifier} ({kind}{', ' + detail if detail else ''}){marker}")
     return "\n".join(lines)
+
+
+def describe_bbox_range(bbox: dict | None) -> str | None:
+    """정규화 bbox를 '가로 12~34% · 세로 40~70%' 형태로 — 토큰↔대상 대응의 정밀 근거."""
+    if not bbox:
+        return None
+    try:
+        x_min, x_max = float(bbox["x_min"]), float(bbox["x_max"])
+        y_min, y_max = float(bbox["y_min"]), float(bbox["y_max"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (
+        f"가로 {round(x_min * 100)}~{round(x_max * 100)}% · "
+        f"세로 {round(y_min * 100)}~{round(y_max * 100)}%"
+    )
 
 
 def describe_position(bbox: dict | None) -> str | None:

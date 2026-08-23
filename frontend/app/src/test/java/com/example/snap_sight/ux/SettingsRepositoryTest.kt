@@ -71,21 +71,37 @@ class SettingsRepositoryTest {
 
         assertEquals(false, SettingsRepository(prefs).load().serverAiDescriptionEnabled)
     }
+
+    @Test
+    fun gridSettingsRoundTrip() {
+        val prefs = FakeSharedPreferences()
+        val state = SettingsUiState(
+            vibrationIntensity = 1f, soundVolume = 1f, speechRate = 1f,
+            gridEnabled = false,
+            gridColorArgb = GRID_COLOR_CHOICES[2].second, // 빨강
+            gridThicknessDp = 3f,
+        )
+
+        SettingsRepository(prefs).save(state)
+
+        assertEquals(state, SettingsRepository(prefs).load())
+    }
 }
 
-/** 테스트 전용 최소 인메모리 [SharedPreferences] 구현 — float 저장/조회만 실제로 동작한다. */
+/** 테스트 전용 최소 인메모리 [SharedPreferences] 구현 — float/boolean/int 저장이 실제로 동작한다. */
 private class FakeSharedPreferences : SharedPreferences {
     private val floats = mutableMapOf<String, Float>()
     private val booleans = mutableMapOf<String, Boolean>()
+    private val ints = mutableMapOf<String, Int>()
 
     override fun getFloat(key: String, defValue: Float): Float = floats[key] ?: defValue
 
-    override fun edit(): SharedPreferences.Editor = FakeEditor(floats, booleans)
+    override fun edit(): SharedPreferences.Editor = FakeEditor(floats, booleans, ints)
 
     override fun getAll(): MutableMap<String, *> = (floats.mapValues { it.value as Any } + booleans).toMutableMap()
     override fun getString(key: String?, defValue: String?): String? = defValue
     override fun getStringSet(key: String?, defValues: MutableSet<String>?): MutableSet<String>? = defValues
-    override fun getInt(key: String?, defValue: Int): Int = defValue
+    override fun getInt(key: String?, defValue: Int): Int = ints[key] ?: defValue
     override fun getLong(key: String?, defValue: Long): Long = defValue
     override fun getBoolean(key: String?, defValue: Boolean): Boolean = booleans[key] ?: defValue
     override fun contains(key: String?): Boolean = floats.containsKey(key) || booleans.containsKey(key)
@@ -99,9 +115,11 @@ private class FakeSharedPreferences : SharedPreferences {
     private class FakeEditor(
         private val floats: MutableMap<String, Float>,
         private val booleans: MutableMap<String, Boolean>,
+        private val ints: MutableMap<String, Int>,
     ) : SharedPreferences.Editor {
         private val pending = mutableMapOf<String, Float>()
         private val pendingBooleans = mutableMapOf<String, Boolean>()
+        private val pendingInts = mutableMapOf<String, Int>()
 
         override fun putFloat(key: String, value: Float): SharedPreferences.Editor {
             pending[key] = value
@@ -111,17 +129,20 @@ private class FakeSharedPreferences : SharedPreferences {
         override fun apply() {
             floats.putAll(pending)
             booleans.putAll(pendingBooleans)
+            ints.putAll(pendingInts)
         }
 
         override fun commit(): Boolean {
-            floats.putAll(pending)
-            booleans.putAll(pendingBooleans)
+            apply()
             return true
         }
 
         override fun putString(key: String?, value: String?) = this
         override fun putStringSet(key: String?, values: MutableSet<String>?) = this
-        override fun putInt(key: String?, value: Int) = this
+        override fun putInt(key: String?, value: Int): SharedPreferences.Editor {
+            if (key != null) pendingInts[key] = value
+            return this
+        }
         override fun putLong(key: String?, value: Long) = this
         override fun putBoolean(key: String?, value: Boolean): SharedPreferences.Editor {
             if (key != null) pendingBooleans[key] = value

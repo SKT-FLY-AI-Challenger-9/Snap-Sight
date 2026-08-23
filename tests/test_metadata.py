@@ -55,6 +55,19 @@ def test_save_metadata_drops_labels_outside_the_dictionary(tmp_path, monkeypatch
     assert payload["taxonomy_version"] == taxonomy.version
 
 
+def test_save_metadata_caps_auto_labels_to_the_top_five(tmp_path, monkeypatch):
+    """프롬프트는 '중요한 것부터 최대 5개'를 지시하고, 초과분은 저장 시 뒤에서 잘린다."""
+    monkeypatch.chdir(tmp_path)
+    taxonomy = default_photo_labels()
+    many = [label.id for label in taxonomy.labels[:8]]
+    result = PhotoMetadataOutput(long_description="설명", labels=many)
+
+    save_metadata("s_cap", result, taxonomy, requested_custom_labels=[])
+    payload = load_metadata("s_cap")
+
+    assert payload["labels"] == many[:5]  # 중요도 순서(앞) 보존, 6개째부터 잘림
+
+
 def test_save_metadata_failure_writes_null_payload(tmp_path, monkeypatch):
     """실패해도 파일은 저장된다 — 파일 존재가 '생성 시도 완료' 신호 (폴링 종료 규약)."""
     monkeypatch.chdir(tmp_path)
@@ -161,10 +174,49 @@ def test_known_subjects_are_rendered_into_prompt_with_position():
             {"name": "내 텀블러", "kind": "object", "bbox": None},
         ]
     )
-    assert "유재석 (사람, 화면 왼쪽 위)" in text
-    assert "내 텀블러 (사물)" in text
+    assert "유재석 (사람, 화면 왼쪽 위, 가로 0~30% · 세로 0~30%)" in text
+    assert "내 텀블러 (사물)" in text  # bbox 없음 — 좌표도 없음
     assert describe_position({"x_min": 0.4, "y_min": 0.4, "x_max": 0.6, "y_max": 0.6}) == "화면 가운데"
     assert describe_position(None) is None
+
+
+def test_intent_target_subject_is_marked_in_prompt():
+    """발화 의도 대상은 표시가 붙어 MLLM이 그 대상 중심으로 설명하게 한다 (이름은 여전히 미전송)."""
+    from backend.mllm.description import format_known_subjects
+
+    text = format_known_subjects(
+        [
+            {
+                "subject_ref": "local_track_3",
+                "kind": "person",
+                "bbox": {"x_min": 0.4, "y_min": 0.4, "x_max": 0.6, "y_max": 0.6},
+                "intent_target": True,
+            },
+            {"subject_ref": "local_track_7", "kind": "person", "bbox": None},
+        ]
+    )
+    assert "local_track_3 (사람, 화면 가운데, 가로 40~60% · 세로 40~60%) — 촬영 의도 대상" in text
+    assert "local_track_7 (사람)" in text
+    assert text.count("촬영 의도 대상") == 1
+
+
+def test_unnamed_intent_target_is_masked_in_prompt():
+    """이름 매핑 없는(named=False) 의도 대상은 토큰이 프롬프트에 노출되지 않는다 (2026-08-23)."""
+    from backend.mllm.description import format_known_subjects
+
+    text = format_known_subjects(
+        [
+            {
+                "subject_ref": "local_track_9",
+                "kind": "object",
+                "bbox": {"x_min": 0.4, "y_min": 0.4, "x_max": 0.6, "y_max": 0.6},
+                "intent_target": True,
+                "named": False,
+            }
+        ]
+    )
+    assert "local_track_9" not in text
+    assert "요청한 촬영 대상 (사물, 화면 가운데, 가로 40~60% · 세로 40~60%) — 촬영 의도 대상" in text
 
 
 def test_upload_rejects_malformed_custom_labels(tmp_path, monkeypatch):

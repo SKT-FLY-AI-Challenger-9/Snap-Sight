@@ -169,7 +169,10 @@ object CompositionReadiness {
         if (y == null || abs(y) > goal.maxAbsYDeviation * thresholdFactor) {
             blockers += ReadinessBlocker.VERTICAL
         }
-        if (size == null || abs(size) > goal.maxAbsAreaDeviation * thresholdFactor) {
+        // 크기 초과(FARTHER)는 READY 를 막지 않는다 (2026-08-23) — "뒤로 이동"은 안내하지 않는
+        // 정책과 짝: 사용자가 해소할 수 없는 조건으로 촬영을 막고 침묵하는 대신, 너무 클 때는
+        // 그대로 찍게 두고 처리(크롭 등)는 후처리로 넘긴다. 너무 작음(음수)만 막는다.
+        if (size == null || size < -goal.maxAbsAreaDeviation * thresholdFactor) {
             blockers += ReadinessBlocker.SIZE
         }
         val visibility = result.frameVisibility

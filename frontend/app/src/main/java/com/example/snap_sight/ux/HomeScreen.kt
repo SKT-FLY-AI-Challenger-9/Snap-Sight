@@ -118,7 +118,7 @@ fun HomeScreen(
                     .clickable(onClick = onStartSession)
                     .semantics {
                         contentDescription = if (isListening) "듣고 있어요"
-                        else "말해서 시작하기. 화면을 두 번 탭해서도 시작할 수 있습니다"
+                        else "말해서 시작하기. 촬영뿐 아니라 설정, 갤러리라고 말해 이동할 수도 있어요"
                     },
                 contentAlignment = Alignment.Center,
             ) {
@@ -198,10 +198,10 @@ fun HomeScreen(
                 .background(SnapPalette.Card, RoundedCornerShape(14.dp))
                 .border(1.dp, SnapPalette.CardBorder, RoundedCornerShape(14.dp))
                 .clickable(onClick = onOpenGallery)
-                .semantics { contentDescription = "사진 찾기 화면 열기" },
+                .semantics { contentDescription = "갤러리 열기" },
         ) {
             Text(
-                text = "사진 찾기",
+                text = "갤러리",
                 color = SnapPalette.TextPrimary,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Bold,

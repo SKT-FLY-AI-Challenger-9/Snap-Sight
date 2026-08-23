@@ -15,9 +15,12 @@
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+<!-- READ_MEDIA_IMAGES 제거 (2026-08-23) — 사진 찾기는 자기 앱이 저장한 사진만 읽으므로
+     scoped storage 에서 읽기 권한이 필요 없다 (MainActivity.openGallery 주석 참고) -->
     <!-- ⑥ GuidanceFeedback 햅틱 안내용. 선언 없이 vibrate() 호출 시 SecurityException 크래시 -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 사진 검색 인덱스의 촬영 장소 텍스트(기능 3-B) — 선택 권한. 거부해도 촬영·검색은 동작한다 -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <application
         android:networkSecurityConfig="@xml/network_security_config"

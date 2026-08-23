@@ -124,7 +124,11 @@ class GuidanceStateMapperTest {
         val offHorizontal = GuidanceStateMapper.from(result(x = 0.3f, size = 0f))
         assertFalse(offHorizontal.isReady)
 
-        val offDistance = GuidanceStateMapper.from(result(x = 0f, size = 0.2f))
+        // 크기 초과는 READY 를 막지 않는다 (2026-08-23) — 너무 작음(음수)만 막는다
+        val tooBig = GuidanceStateMapper.from(result(x = 0f, size = 0.2f))
+        assertTrue(tooBig.isReady)
+
+        val offDistance = GuidanceStateMapper.from(result(x = 0f, size = -0.2f))
         assertFalse(offDistance.isReady)
 
         val offBoth = GuidanceStateMapper.from(result(x = 0.3f, size = -0.2f))

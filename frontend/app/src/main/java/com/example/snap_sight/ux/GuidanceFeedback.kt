@@ -400,7 +400,7 @@ internal object GuidanceFeedbackSettingsMapper {
 
     /**
      * [TextToSpeech.setSpeechRate]에 그대로 전달할 값. 별도 변환·clamp는 하지 않는다 —
-     * 유효 범위는 `SettingsScreen`의 슬라이더(`SPEECH_RATE_RANGE`)가 이미 보장한다.
+     * 유효 범위는 설정 화면의 [SpeechSpeed] 3단계가 이미 보장한다.
      */
     fun speechRate(settings: SettingsUiState): Float = settings.speechRate
 }

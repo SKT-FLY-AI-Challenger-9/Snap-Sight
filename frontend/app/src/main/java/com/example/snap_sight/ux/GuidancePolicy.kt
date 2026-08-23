@@ -68,6 +68,17 @@ internal class GuidancePolicy(
     private var lastDirectionAtMs: Long = Long.MIN_VALUE / 2
     private var lastReadyBlockedSpokenAtMs: Long = Long.MIN_VALUE / 2
 
+    /**
+     * 마지막으로 어떤 음성이든 말한 시각 — 하트비트([heartbeat]) 게이트.
+     * 방향 단어가 나올 수 없는 상태(잘림, 자동 줌 처리 중, 안정화 대기)가
+     * 이어지면 정책이 영원히 침묵했는데(2026-08-23 실사용: "중간에 길게 빈다"), 이때만
+     * [HEARTBEAT_AFTER_MS] 간격으로 현재 상태를 짧게 말해 죽은 공백을 없앤다.
+     */
+    private var lastSpokenAtMs: Long = Long.MIN_VALUE / 2
+
+    /** 하트비트 대상 상태에 처음 들어온 시각 — 진입 즉시가 아니라 지속될 때만 말하기 위한 기준. */
+    private var heartbeatStateSinceMs: Long? = null
+
     /** 새 세션 시작 — 이전 세션의 "이미 말했음" 상태를 지운다. */
     @Synchronized
     fun reset() {
@@ -80,6 +91,8 @@ internal class GuidancePolicy(
         lastDirection = null
         lastDirectionAtMs = Long.MIN_VALUE / 2
         lastReadyBlockedSpokenAtMs = Long.MIN_VALUE / 2
+        lastSpokenAtMs = Long.MIN_VALUE / 2
+        heartbeatStateSinceMs = null
     }
 
     /**
@@ -150,19 +163,51 @@ internal class GuidancePolicy(
         }
         readySpokenThisEpisode = false
         val direction = pickDirection(state, result, zoomHandlesDistance)
-            ?: return decision(emptyList())
+        if (direction == null) {
+            return decision(heartbeat(readiness, zoomHandlesDistance, nowMs))
+        }
+        heartbeatStateSinceMs = null
         val changed = direction != lastDirection
         val elapsed = nowMs - lastDirectionAtMs
         val due = if (changed) elapsed >= DIRECTION_MIN_GAP_MS else elapsed >= DIRECTION_REPEAT_MS
         if (!due) return decision(emptyList())
         lastDirection = direction
         lastDirectionAtMs = nowMs
+        lastSpokenAtMs = nowMs
         return decision(listOf(GuidanceAction.Speak(direction.utterance), GuidanceAction.Vibrate))
+    }
+
+    /**
+     * 방향 단어가 없는데 READY 도 아닌 "죽은 상태"의 주기적 상태 안내 (진동 없음).
+     * 문구는 화면 카드([MainActivity.compositionGuidanceText])와 같은 표현을 쓴다 —
+     * 눈으로 보는 사람과 듣는 사람이 같은 상태 설명을 받게.
+     * 크기 초과(FARTHER)는 READY 를 막지 않으므로(CompositionReadiness, 2026-08-23)
+     * 여기서 다루지 않는다.
+     */
+    private fun heartbeat(
+        readiness: ReadinessVerdict,
+        zoomHandlesDistance: Boolean,
+        nowMs: Long,
+    ): List<GuidanceAction> {
+        val stateSince = heartbeatStateSinceMs ?: nowMs.also { heartbeatStateSinceMs = it }
+        // 진입 즉시가 아니라 "상태가 지속되고 + 다른 음성도 없는" 공백에서만 말한다 —
+        // 세션 시작 안내나 방금 나온 방향 단어를 하트비트가 자르지 않게.
+        if (nowMs - stateSince < HEARTBEAT_AFTER_MS) return emptyList()
+        if (nowMs - lastSpokenAtMs < HEARTBEAT_AFTER_MS) return emptyList()
+        val text = when {
+            ReadinessBlocker.VISIBILITY in readiness.blockers -> VISIBILITY_HEARTBEAT
+            ReadinessBlocker.SIZE in readiness.blockers && zoomHandlesDistance -> AUTO_ZOOM_HEARTBEAT
+            ReadinessBlocker.UNSTABLE in readiness.blockers -> HOLD_STEADY_HEARTBEAT
+            else -> return emptyList()
+        }
+        lastSpokenAtMs = nowMs
+        return listOf(GuidanceAction.Speak(text))
     }
 
     private fun onLost(nowMs: Long): List<GuidanceAction> {
         readySpokenThisEpisode = false
         lastDirection = null // 다시 찾으면 방향을 바로 말해준다
+        heartbeatStateSinceMs = null
         val since = lostSinceMs ?: run { lostSinceMs = nowMs; return emptyList() }
         if (nowMs - since < LOST_DEBOUNCE_MS) return emptyList()
 
@@ -173,6 +218,7 @@ internal class GuidancePolicy(
         }
         if (!lostSpoken && nowMs - since >= LOST_SPEAK_AFTER_MS) {
             lostSpoken = true
+            lastSpokenAtMs = nowMs
             actions.add(GuidanceAction.Speak(lostUtterance))
         }
         return actions
@@ -184,17 +230,21 @@ internal class GuidancePolicy(
      */
     private fun onReadyBlocked(reason: String, nowMs: Long): List<GuidanceAction> {
         lastDirection = null
+        heartbeatStateSinceMs = null
         if (nowMs - lastReadyBlockedSpokenAtMs < DIRECTION_REPEAT_MS) return emptyList()
         lastReadyBlockedSpokenAtMs = nowMs
+        lastSpokenAtMs = nowMs
         return listOf(GuidanceAction.Speak(reason))
     }
 
     private fun onReady(nowMs: Long): List<GuidanceAction> {
         lastDirection = null
+        heartbeatStateSinceMs = null
         if (readySpokenThisEpisode) return emptyList()
         if (nowMs - readySpokenAtMs < READY_RESPEAK_MS) return emptyList()
         readySpokenAtMs = nowMs
         readySpokenThisEpisode = true
+        lastSpokenAtMs = nowMs
         return listOf(GuidanceAction.Speak(readyUtterance))
     }
 
@@ -209,6 +259,12 @@ internal class GuidancePolicy(
         const val LOST_SPEAK_AFTER_MS = 6_000L
         const val READY_DEBOUNCE_MS = 300L
         const val READY_RESPEAK_MS = 3_000L
+
+        /** 어떤 음성도 없는 상태가 이만큼 이어지면 하트비트 상태 안내를 1회 말한다 (반복도 이 간격). */
+        const val HEARTBEAT_AFTER_MS = 4_000L
+        const val VISIBILITY_HEARTBEAT = "피사체 전체가 화면 안에 들어오게 비춰주세요"
+        const val AUTO_ZOOM_HEARTBEAT = "구도를 자동으로 맞추는 중이에요"
+        const val HOLD_STEADY_HEARTBEAT = "좋아요, 그대로 유지해주세요"
 
         /**
          * 벗어난 축 중 "임계값 대비 비율"이 가장 큰 축 하나를 고른다.

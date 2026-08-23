@@ -51,6 +51,12 @@ object PhotoSearchEngine {
         query.dateEndMs?.let { end ->
             if (entry.takenAtMs >= end) return false
         }
+        if (query.hourRanges.isNotEmpty()) {
+            val hour = java.util.Calendar.getInstance()
+                .apply { timeInMillis = entry.takenAtMs }
+                .get(java.util.Calendar.HOUR_OF_DAY)
+            if (query.hourRanges.none { (start, end) -> hour in start until end }) return false
+        }
         val haystack by lazy {
             PhotoLabelDictionary.normalize(
                 listOfNotNull(entry.longDescription, entry.shortDescription, entry.locationText)

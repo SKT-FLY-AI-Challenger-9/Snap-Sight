@@ -38,6 +38,7 @@ import com.example.snap_sight.camera.CameraController
 import com.example.snap_sight.camera.CanonicalFrameStore
 import com.example.snap_sight.camera.CameraMotionEstimator
 import com.example.snap_sight.camera.CaptureSessionManager
+import com.example.snap_sight.camera.EyesClosedScorer
 import com.example.snap_sight.camera.FrameScorer
 import com.example.snap_sight.camera.GalleryPhoto
 import com.example.snap_sight.camera.PhotoLibrary
@@ -63,6 +64,7 @@ import com.example.snap_sight.face.ObjectRegistry
 import com.example.snap_sight.face.RegistryReloadGate
 import com.example.snap_sight.face.SelfieGazeMonitor
 import com.example.snap_sight.face.TfLiteFaceEmbedder
+import com.example.snap_sight.face.TfLiteObjectEmbedder
 import com.example.snap_sight.cv.DeviationResult
 import com.example.snap_sight.cv.DeviationJudgment
 import com.example.snap_sight.cv.AnalysisMode
@@ -96,7 +98,9 @@ import com.example.snap_sight.search.PhotoSearchEngine
 import com.example.snap_sight.stt.SpeechToTextRecognizer
 import com.example.snap_sight.ux.CaptureScreen
 import com.example.snap_sight.ux.CaptureAnnouncementBuilder
+import com.example.snap_sight.ux.GALLERY_ALL_FOLDER
 import com.example.snap_sight.ux.GalleryScreen
+import com.example.snap_sight.ux.PhotoViewerScreen
 import com.example.snap_sight.ux.GuidanceFeedback
 import com.example.snap_sight.ux.GuidanceTextStabilizer
 import com.example.snap_sight.ux.HomeScreen
@@ -106,7 +110,13 @@ import com.example.snap_sight.ux.OnboardingScreen
 import com.example.snap_sight.ux.SettingsRepository
 import com.example.snap_sight.ux.SettingsScreen
 import com.example.snap_sight.ux.SettingsUiState
+import com.example.snap_sight.ux.SpeechSpeed
+import com.example.snap_sight.ux.AppVoiceCommand
+import com.example.snap_sight.ux.VoiceCommands
+import com.example.snap_sight.ux.LocalTapGrammarActions
+import com.example.snap_sight.ux.TapGrammarActions
 import com.example.snap_sight.ux.appTapGrammar
+import androidx.compose.runtime.CompositionLocalProvider
 import kotlin.math.roundToInt
 import com.example.snap_sight.ui.theme.SnapSightTheme
 import java.util.concurrent.Executors
@@ -183,7 +193,12 @@ class MainActivity : ComponentActivity() {
 
     // 사물 등록 — 얼굴 전용 모델과 분리한 경량 외형 임베더를 사용한다.
     private val objectRegistry by lazy { ObjectRegistry(this) }
-    private val objectEmbedder by lazy { LocalObjectAppearanceEmbedder() }
+    // 심층 특징 임베더 우선 (2026-08-23) — 자산이 없으면 수제 외형 임베더로 폴백.
+    // modelId 가 달라 DB 임베딩이 섞이지 않는다 (임베더가 바뀌면 재등록 필요).
+    private val objectEmbedder by lazy {
+        TfLiteObjectEmbedder(this).takeIf { it.isAvailable }
+            ?: LocalObjectAppearanceEmbedder()
+    }
     private val objectIdentifier by lazy {
         ObjectIdentifier(
             objectRegistry,
@@ -363,6 +378,10 @@ class MainActivity : ComponentActivity() {
     private var shutterIdentities: List<String> = emptyList()
     /** 셔터 순간의 track_id → 이름 — 즉시 상황 안내에서 이름 붙은 track 을 익명 집계에서 빼는 데 쓴다. */
     private var shutterIdentityMap: Map<Int, String> = emptyMap()
+
+    /** 조준 중 타겟 락이 따라가던 track — 미등록 대상도 셔터 때 의도 bbox 로 서버에 알린다. */
+    @Volatile
+    private var lastAimingTargetTrackId: Int? = null
     private data class LocalSubjectDisplay(val name: String, val isPerson: Boolean)
     private val subjectNamesBySession = LinkedHashMap<String, Map<String, LocalSubjectDisplay>>()
 
@@ -394,6 +413,13 @@ class MainActivity : ComponentActivity() {
     // 검색 인덱스(세션 ID → 항목)와 음성 필터 스택 (기능 3-C 점진 좁히기)
     private var galleryIndex by mutableStateOf<Map<String, PhotoIndexEntry>>(emptyMap())
     private var galleryFilterStack by mutableStateOf<List<PhotoQuery>>(emptyList())
+
+    /** 사진 찾기의 라벨 폴더 선택 (null = 폴더 화면). 음성 낭독과 화면이 같은 부분집합을 쓰게 호이스팅. */
+    private var galleryFolderFilter by mutableStateOf<String?>(null)
+
+    /** 사진 뷰어에 띄운 사진 (null = 목록/폴더 화면). 잔존시력 사용자를 위한 크게 보기 (2026-08-23). */
+    private var galleryViewerPhoto by mutableStateOf<GalleryPhoto?>(null)
+    private var galleryViewerBitmap by mutableStateOf<Bitmap?>(null)
 
     // 디버그 오버레이용 최신 추적 객체 (정식 화면에서는 음성·햅틱으로 대체)
     private var cvObjects by mutableStateOf<List<TrackedObject>>(emptyList())
@@ -434,12 +460,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-    private val galleryPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) openGalleryContent()
-            else guidanceFeedback.announce("사진을 찾으려면 사진 접근 권한이 필요해요")
-        }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -476,7 +496,16 @@ class MainActivity : ComponentActivity() {
         // "말해주세요"가 발화로 인식되던 문제의 수정 (실사용 피드백 2026-08-22)
         sessionManager.listeningPrompt = { isRetry, onDone ->
             guidanceFeedback.announce(
-                if (isRetry) "다시 한번 말씀해 주세요" else "무엇을 찍을지 말씀해 주세요",
+                when {
+                    isRetry -> "다시 한번 말씀해 주세요"
+                    // 긴 안내는 실행당 첫 세션에만 — 안내가 끝나야 인식이 시작되는 구조라
+                    // (에코 방지 게이트) 매 세션 길게 말하면 발화 대기가 그만큼 늘어난다
+                    firstListeningPrompt -> {
+                        firstListeningPrompt = false
+                        "무엇을 찍을까요? 설정, 갤러리 같은 화면 이름을 말해도 돼요"
+                    }
+                    else -> "무엇을 찍을까요?"
+                },
                 onDone = onDone,
             )
         }
@@ -503,7 +532,7 @@ class MainActivity : ComponentActivity() {
                         targetSpecPending = false
                         resetTargetDerivedStateLocked()
                         cvProcessor.startNewSession(spec = null)
-                        autoZoom.reset() // 넓게(0.6배, 기기 최소 배율) 시작해 피사체를 먼저 찾는다
+                        autoZoom.reset() // 세션 시작 배율로 복귀 (현재 1.0배 고정 — AutoZoomController 참고)
                         guidanceText = GENERAL_CAPTURE_WAITING_GUIDANCE
                     }
                     motionEstimator.start() // 조준 중에만 자이로 적분 (기능 1-C)
@@ -542,11 +571,10 @@ class MainActivity : ComponentActivity() {
                         } else {
                             emptyMap()
                         }
-                        // Photo people tags must never include registered object names.
-                        val peopleNames = registeredPeople.toSet()
-                        shutterIdentities = shutterIdentityMap.values
-                            .filter { it in peopleNames }
-                            .distinct()
+                        // 사진 태그에는 셔터 순간 식별된 등록 이름 전부(인물+사물)를 남긴다
+                        // (2026-08-23) — "내 텀블러 나온 사진" 검색·폴더가 동작하게. 태그는
+                        // 로컬 인덱스 전용이라 이름이 기기 밖으로 나가지 않는 것은 동일하다.
+                        shutterIdentities = shutterIdentityMap.values.distinct()
                         val captureSessionId = sessionManager.sessionId
                         val localGeneration = ++captureGenerationCounter
                         activeCaptureGeneration = localGeneration
@@ -556,6 +584,8 @@ class MainActivity : ComponentActivity() {
                             shutterObjects,
                             shutterIdentityMap,
                             registeredPeople.toSet(),
+                            intentTargetName = cvProcessor.targetIdentityName,
+                            aimedTargetTrackId = lastAimingTargetTrackId,
                         )
                         pendingCaptureUploads[captureSessionId] = PendingCaptureUpload(
                             sessionId = captureSessionId,
@@ -585,7 +615,7 @@ class MainActivity : ComponentActivity() {
                             captureHeadline(),
                             priority = GuidanceFeedback.SpeechPriority.CAPTURE,
                         )
-                        autoZoom.reset() // 촬영이 끝나면 다시 0.6배 광각으로
+                        autoZoom.reset() // 촬영이 끝나면 세션 시작 배율로 (현재 1.0배 고정)
                     }
                     SessionState.ERROR -> {
                         guidanceFeedback.announce("촬영에 실패했습니다. 화면을 두 번 탭해 처음으로 돌아갑니다")
@@ -626,6 +656,13 @@ class MainActivity : ComponentActivity() {
                     return
                 }
                 Log.i(TAG, "발화 인식 완료 [$sessionId] (${text.length}자)")
+                // 앱 명령("설정 열어줘" 등)이면 촬영이 아니라 그 동작을 실행한다 (2026-08-23) —
+                // 탭 문법이 배정되지 않은 진입점도 "두 번 탭 -> 말하기"로 열 수 있게.
+                VoiceCommands.parse(text)?.let { command ->
+                    Log.i(TAG, "앱 음성 명령 [$sessionId]: $command")
+                    executeVoiceCommand(command)
+                    return
+                }
                 val serverText = serverSafeUtterance(text)
                 sessionRawText = text // 시안(v31): 해석하는 동안 홈 마이크 아래에 발화 원문을 보여준다
                 currentRawText = serverText
@@ -697,7 +734,8 @@ class MainActivity : ComponentActivity() {
                     photoIndexStore.insertCapture(
                         sessionId = sessionId,
                         takenAtMs = System.currentTimeMillis(),
-                        locationText = null, // TODO 위치 권한 온보딩 후 Geocoder 연동 (기획 문서 3-B)
+                        // 이 스레드에서 조회 — Geocoder 는 블로킹 호출 (기획 문서 3-B)
+                        locationText = currentLocationText(),
                     )
                     // 기능 2 연동: 셔터 순간 인식된 인물을 로컬 인덱스에만 기록 → "민수 나온 사진" 검색
                     if (peopleAtShutter.isNotEmpty()) {
@@ -802,6 +840,9 @@ class MainActivity : ComponentActivity() {
                                         onShutterTap = if (sessionState == SessionState.AIMING) {
                                             { sessionManager.onVolumePressed() }
                                         } else null,
+                                        gridEnabled = settingsUiState.gridEnabled,
+                                        gridColorArgb = settingsUiState.gridColorArgb,
+                                        gridThicknessDp = settingsUiState.gridThicknessDp,
                                     )
                                 }
                                 if (homeVisible) {
@@ -830,14 +871,14 @@ class MainActivity : ComponentActivity() {
                                                     ?: "서버 AI 상세 설명을 준비하고 있어요"
                                             )
                                         },
-                                        onConfirm = { showResult = false }, // 사진은 이미 저장됨
+                                        onAddLabel = { startResultLabeling() },
+                                        // TalkBack 접근성 액션 경로 — 제스처 문법의 다시 촬영과 동일 동작
                                         onRetake = {
                                             showResult = false
                                             if (sessionManager.state == SessionState.IDLE) {
                                                 sessionManager.onVolumePressed()
                                             }
                                         },
-                                        onAddLabel = { startResultLabeling() },
                                     )
                                 }
                             }
@@ -873,6 +914,19 @@ class MainActivity : ComponentActivity() {
                             onSpeechRateChange = {
                                 updateSettings(settingsUiState.copy(speechRate = it))
                             },
+                            onGridEnabledChange = { enabled ->
+                                updateSettings(settingsUiState.copy(gridEnabled = enabled))
+                                guidanceFeedback.announce(
+                                    if (enabled) "촬영 그리드를 켰어요" else "촬영 그리드를 껐어요"
+                                )
+                            },
+                            onGridColorChange = {
+                                updateSettings(settingsUiState.copy(gridColorArgb = it))
+                            },
+                            onGridThicknessChange = {
+                                updateSettings(settingsUiState.copy(gridThicknessDp = it))
+                            },
+                            onAnnounceValue = { guidanceFeedback.announce(it) },
                             serverAiDescriptionEnabled = settingsUiState.serverAiDescriptionEnabled,
                             onServerAiDescriptionEnabledChange = {
                                 updateSettings(settingsUiState.copy(serverAiDescriptionEnabled = it))
@@ -896,20 +950,54 @@ class MainActivity : ComponentActivity() {
                         }
 
                         AppScreen.GALLERY -> {
-                            BackHandler { leaveGalleryToHome() }
+                            // 뷰어가 열려 있으면 복귀 한 단계 = 목록 (홈은 다음 단계)
+                            BackHandler {
+                                if (galleryViewerPhoto != null) closePhotoViewer()
+                                else leaveGalleryToHome()
+                            }
+                            // 두 번 탭=말해서 찾기(메인), 세 번 탭=결과 듣기(서브), 길게=홈
+                            // 뷰어에서는: 두 번 탭=설명 다시 듣기, 세 번 탭·길게=목록으로
+                            val galleryGrammar = TapGrammarActions(
+                                onDoubleTap = {
+                                    galleryViewerPhoto?.let(::speakPhotoDetails)
+                                        ?: startGalleryVoiceSearch()
+                                },
+                                onTripleTap = {
+                                    if (galleryViewerPhoto != null) closePhotoViewer()
+                                    else speakCurrentResults()
+                                },
+                                onLongPress = {
+                                    if (galleryViewerPhoto != null) closePhotoViewer()
+                                    else leaveGalleryToHome()
+                                },
+                            )
                             Box(
-                                // 두 번 탭=말해서 찾기(메인), 세 번 탭=결과 듣기(서브), 길게=홈
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .appTapGrammar(
-                                        onDoubleTap = { startGalleryVoiceSearch() },
-                                        onTripleTap = { speakCurrentResults() },
-                                        onLongPress = { leaveGalleryToHome() },
+                                        onDoubleTap = galleryGrammar.onDoubleTap,
+                                        onTripleTap = galleryGrammar.onTripleTap,
+                                        onLongPress = galleryGrammar.onLongPress,
                                     ),
                             ) {
+                            // 갤러리는 화면 대부분이 클릭 요소 — 요소 위에서도 전역 문법이
+                            // 동작하도록 grammarClickable 이 이 액션으로 위임한다
+                            CompositionLocalProvider(LocalTapGrammarActions provides galleryGrammar) {
+                            val viewerPhoto = galleryViewerPhoto
+                            if (viewerPhoto != null) {
+                                PhotoViewerScreen(
+                                    photo = viewerPhoto,
+                                    fullBitmap = galleryViewerBitmap,
+                                    description = photoDetailText(viewerPhoto),
+                                    onReplayDescription = { speakPhotoDetails(viewerPhoto) },
+                                    onClose = { closePhotoViewer() },
+                                )
+                            } else {
                             GalleryScreen(
                             photos = applyGalleryFilters(galleryPhotos),
                             onBack = { leaveGalleryToHome() },
+                            selectedFolder = galleryFolderFilter,
+                            onFolderSelect = { galleryFolderFilter = it },
                             onVoiceSearch = { startGalleryVoiceSearch() },
                             filterSummaries = galleryFilterStack.map {
                                 it.summary(photoLabelDictionary)
@@ -918,9 +1006,11 @@ class MainActivity : ComponentActivity() {
                                 galleryFilterStack = emptyList()
                                 speak("검색 조건을 지웠어요")
                             },
-                            onPhotoClick = { photo -> speakPhotoDetails(photo) },
+                            onPhotoClick = { photo -> openPhotoViewer(photo) },
                             onReadResults = { speakCurrentResults() },
                             )
+                            }
+                            }
                             }
                         }
                     }
@@ -949,6 +1039,24 @@ class MainActivity : ComponentActivity() {
         settingsUiState = newState
         settingsRepository.save(newState)
         guidanceFeedback.applySettings(newState)
+    }
+
+    /** 홈 발화로 받은 앱 명령 실행 — 촬영 세션을 정리하고 해당 동작으로 넘어간다 (2026-08-23). */
+    private fun executeVoiceCommand(command: AppVoiceCommand) {
+        sessionManager.cancel()
+        sessionRawText = ""
+        when (command) {
+            AppVoiceCommand.OPEN_SETTINGS -> enterScreen(AppScreen.SETTINGS)
+            AppVoiceCommand.OPEN_GALLERY -> openGallery()
+            AppVoiceCommand.GRID_ON -> {
+                updateSettings(settingsUiState.copy(gridEnabled = true))
+                returnHome(prefix = "그리드를 켰어요")
+            }
+            AppVoiceCommand.GRID_OFF -> {
+                updateSettings(settingsUiState.copy(gridEnabled = false))
+                returnHome(prefix = "그리드를 껐어요")
+            }
+        }
     }
 
     /**
@@ -1091,12 +1199,16 @@ class MainActivity : ComponentActivity() {
         lastCapturedSessionId == sessionId && activeServerCaptureRevision == serverRevision
 
     private fun cancelCaptureNetworkWork() {
+        uploadRetryHandler.removeCallbacksAndMessages(null) // 대기 중인 업로드 재시도 취소
         frameUploader.cancelAll()
         metadataClient.cancelAll()
         finalFrameClient.cancelAll()
     }
 
     private var welcomed = false
+
+    /** 발화 안내의 긴 버전(이동 명령 소개)은 앱 실행당 첫 세션에만 말한다. */
+    private var firstListeningPrompt = true
     private var wentToBackground = false
     private var sessionCancelledInBackground = false
 
@@ -1116,8 +1228,13 @@ class MainActivity : ComponentActivity() {
                 if (firstVisit) "설정 화면입니다. 진동, 사운드, 음성 속도를 조절할 수 있어요"
                 else "설정 화면입니다"
             AppScreen.GALLERY ->
-                if (firstVisit) "사진 찾기 화면입니다. 아래에 말해서 찾기 버튼이 있어요"
-                else "사진 찾기 화면입니다"
+                if (firstVisit) {
+                    "갤러리입니다. 사진이 분류별 폴더로 정리돼 있고, " +
+                        "말해서 찾기 버튼으로 음성 검색도 할 수 있어요. " +
+                        "검색 조건은 처음부터라고 말하면 지워져요"
+                } else {
+                    "갤러리입니다"
+                }
             else -> null
         }
         message?.let { guidanceFeedback.announce(it) }
@@ -1141,6 +1258,9 @@ class MainActivity : ComponentActivity() {
     /** 사진 찾기 → 홈 공통 복귀 경로. */
     private fun leaveGalleryToHome() {
         galleryFilterStack = emptyList()
+        galleryFolderFilter = null
+        galleryViewerPhoto = null
+        galleryViewerBitmap = null
         returnHome()
     }
 
@@ -1212,8 +1332,9 @@ class MainActivity : ComponentActivity() {
         guidanceFeedback.announce(
             "진동 강도 ${(s.vibrationIntensity * 100).roundToInt()}퍼센트, " +
                 "사운드 강도 ${(s.soundVolume * 100).roundToInt()}퍼센트, " +
-                "음성 속도 ${"%.1f".format(s.speechRate)}배, " +
-                "서버 AI 사진 설명은 ${if (s.serverAiDescriptionEnabled) "켜짐" else "꺼짐"}입니다"
+                "음성 속도 ${SpeechSpeed.fromRate(s.speechRate).label}, " +
+                "서버 AI 사진 설명 ${if (s.serverAiDescriptionEnabled) "켜짐" else "꺼짐"}, " +
+                "촬영 그리드 ${if (s.gridEnabled) "켜짐" else "꺼짐"}입니다"
         )
     }
 
@@ -1269,27 +1390,44 @@ class MainActivity : ComponentActivity() {
 
     /** 사진 찾기 진입 — 목록·검색 인덱스를 매번 새로 읽는다 (촬영 직후 돌아와도 최신이 보이게). */
     private fun openGallery() {
-        val permission = galleryReadPermission()
-        if (permission != null &&
-            ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED
-        ) {
-            galleryPermissionLauncher.launch(permission)
-            return
-        }
+        // 갤러리 읽기 권한은 요청하지 않는다 (2026-08-23) — 사진 찾기는 이 앱이 직접 저장한
+        // 사진(SnapSight_*)만 읽고, API 29+ scoped storage 에서 자기 앱이 저장한 미디어는
+        // 권한 없이 읽을 수 있다 (API 28 이하의 READ_EXTERNAL_STORAGE 는 온보딩 필수 권한에 포함).
+        // 유일한 예외인 "재설치 후 옛 사진"은 어차피 로컬 인덱스(설명·라벨)도 함께 사라지므로
+        // 권한을 받아도 얻는 것이 거의 없다 — 권한 다이얼로그 부담을 없애는 쪽을 택한다.
         openGalleryContent()
     }
 
     private fun openGalleryContent() {
         galleryPhotos = null
         galleryFilterStack = emptyList()
+        galleryFolderFilter = null
         enterScreen(AppScreen.GALLERY)
         Thread({
             descriptionLookup.beginBatch()
-            val photos = PhotoLibrary.loadRecentPhotos(this, describe = descriptionLookup::get)
             val entries = photoIndexStore.allEntries().associateBy { it.sessionId }
+            // 인덱스의 이름 치환된 사본을 우선 쓴다. 결과 화면을 일찍 닫아 사본이 없으면
+            // 서버 원문을 받되, 이름 치환 + 남은 local_* 토큰 제거를 거친다 (2026-08-23 실기기:
+            // "local_track_1 이 설명에 그대로 남음").
+            val photos = PhotoLibrary.loadRecentPhotos(this, describe = { sid ->
+                entries[sid]?.shortDescription
+                    ?: localizeSubjectRefs(sid, descriptionLookup.get(sid))
+            })
             val labels = photoIndexStore.allCustomLabels()
+            // 라벨 폴더 화면용 표시 라벨 — 고정 라벨은 한글명으로 변환, 커스텀·인물은 그대로
+            val labeled = photos.map { photo ->
+                val entry = photo.sessionId?.let(entries::get) ?: return@map photo
+                photo.copy(labels = buildSet {
+                    entry.fixedLabels.forEach { id ->
+                        photoLabelDictionary.labels.firstOrNull { it.id == id }?.name?.let(::add)
+                    }
+                    addAll(entry.customAuto)
+                    addAll(entry.customUser)
+                    addAll(entry.people)
+                })
+            }
             runOnUiThread {
-                galleryPhotos = photos
+                galleryPhotos = labeled
                 galleryIndex = entries
                 customLabelsCache = labels
             }
@@ -1350,8 +1488,8 @@ class MainActivity : ComponentActivity() {
         val parser = PhotoQueryParser(
             dictionary = photoLabelDictionary,
             customLabels = customLabelsCache,
-            // 기능 2 연동 — people 태그에는 실제 등록 인물만 저장한다.
-            peopleNames = registeredPeople,
+            // 등록 인물 + 등록 사물 — 둘 다 셔터 태그로 인덱스에 남으므로 같은 경로로 검색된다.
+            peopleNames = registeredPeople + registeredObjects,
         )
         val query = parser.parse(utterance)
         if (query.isEmpty) {
@@ -1367,13 +1505,24 @@ class MainActivity : ComponentActivity() {
         if (results.size in 1..PhotoSearchEngine.AUTO_ROLL_CALL_MAX) {
             message += ". " + PhotoSearchEngine.rollCall(results.map { it.toRollCallItem() })
         }
+        // 조건 지우기의 음성 경로 안내 — 0건이거나 조건이 쌓였을 때만 (매번 말하면 소음)
+        if (results.isEmpty() || galleryFilterStack.size >= 2) {
+            message += ". 조건을 지우려면 처음부터라고 말씀하세요"
+        }
         speak(message)
     }
 
     /** "목록 읽어줘" — 지금 화면에 로딩된(필터 적용된) 사진들을 훑어 낭독한다. */
     private fun speakCurrentResults() {
-        val results = applyGalleryFilters(galleryPhotos).orEmpty()
+        val results = applyFolderFilter(applyGalleryFilters(galleryPhotos)).orEmpty()
         speak(PhotoSearchEngine.rollCall(results.map { it.toRollCallItem() }))
+    }
+
+    /** 선택된 라벨 폴더로 좁힌다 — 화면 목록과 "결과 듣기"가 같은 부분집합을 쓴다. */
+    private fun applyFolderFilter(photos: List<GalleryPhoto>?): List<GalleryPhoto>? {
+        val folder = galleryFolderFilter ?: return photos
+        if (folder == GALLERY_ALL_FOLDER) return photos
+        return photos?.filter { folder in it.labels }
     }
 
     /** 훑어 읽기 항목 — 인덱스의 짧은 설명 우선, 없으면 갤러리 카드 설명. */
@@ -1805,15 +1954,42 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 사진 카드 탭 — 저장된 상세 설명(long_desc)을 낭독한다. 없으면 짧은 설명으로 폴백. */
-    private fun speakPhotoDetails(photo: GalleryPhoto) {
+    /** 사진 1장의 낭독·표시용 상세 설명 — LLM long_desc 우선, 등록 인물 이름은 로컬에서 앞에 붙인다. */
+    private fun photoDetailText(photo: GalleryPhoto): String {
         val entry = photo.sessionId?.let { galleryIndex[it] }
-        val detail = entry?.longDescription
+        val raw = entry?.longDescription
             ?: entry?.shortDescription
             ?: photo.description.takeIf { it.isNotBlank() && it != "설명을 준비 중이에요" }
+        // 어떤 경로로 온 텍스트든 이름 치환·잔여 토큰 제거를 한 번 더 거친다 (방어선)
+        val detail = raw?.let { localizeSubjectRefs(photo.sessionId ?: "", it) }
         // 등록 인물·사물 이름은 서버 설명에 없으므로(기기 밖으로 안 내보냄) 앞에 붙여 읽는다
         val names = entry?.people.orEmpty()
         val prefix = if (names.isNotEmpty()) "${names.joinToString(", ")} 나온 사진이에요. " else ""
-        speak(prefix + (detail ?: "이 사진의 설명이 아직 준비되지 않았어요"))
+        return prefix + (detail ?: "이 사진의 설명이 아직 준비되지 않았어요")
+    }
+
+    private fun speakPhotoDetails(photo: GalleryPhoto) = speak(photoDetailText(photo))
+
+    /**
+     * 사진 뷰어 열기 — 사진을 크게 띄우고 상세 설명을 바로 낭독한다 (2026-08-23).
+     * 원본은 백그라운드에서 디코딩하고, 그동안 썸네일이 자리를 지킨다.
+     */
+    private fun openPhotoViewer(photo: GalleryPhoto) {
+        galleryViewerPhoto = photo
+        galleryViewerBitmap = null
+        speakPhotoDetails(photo)
+        Thread({
+            val bitmap = runCatching { decodeUprightBitmap(photo.uri) }.getOrNull()
+            runOnUiThread {
+                if (galleryViewerPhoto?.uri == photo.uri) galleryViewerBitmap = bitmap
+            }
+        }, "SnapSight-ViewerDecode").start()
+    }
+
+    private fun closePhotoViewer() {
+        galleryViewerPhoto = null
+        galleryViewerBitmap = null
+        speak("목록입니다")
     }
 
     /** 앱 진입(권한 확인 완료) 시 1회 — 시각장애 사용자가 첫 화면에서 할 일을 알 수 있게 한다 (실사용 피드백 #2). */
@@ -2060,6 +2236,9 @@ class MainActivity : ComponentActivity() {
                 framing = output.targetSpec?.framing ?: TargetSpec.Framing.FULL_BODY,
             )
         } else null
+        if (sessionManager.state == SessionState.AIMING) {
+            lastAimingTargetTrackId = output.deviation?.trackId
+        }
         val readiness = deviation?.let {
             val verdict = guidanceFeedback.processDeviation(it, output.timestampMs)
             // 셔터 게이트 근거 갱신 — "피사체 없이 찍기 직전" 판정에 쓴다
@@ -2068,8 +2247,9 @@ class MainActivity : ComponentActivity() {
             verdict
         }
 
-        // 세션 배율: 0.6배(찾기용)로 시작 → 구도가 5개 관측 프레임 안정되면 1.0배로 복귀. 면적 기반 자동 줌인은
-        // AutoZoomController.ZOOM_IN_ENABLED 로 꺼져 있다 (깊이 판단 부정확 — 후처리 붙인 뒤 재검토).
+        // 세션 배율은 1.0배로 고정돼 있다 (AutoZoomController.SESSION_START_ZOOM == BASE_ZOOM,
+        // 2026-08-23: 광각↔기본 왕복이 어지러웠다). 면적 기반 자동 줌인도 ZOOM_IN_ENABLED 로 꺼져 있다
+        // (깊이 판단 부정확 — 후처리 붙인 뒤 재검토). 아래 호출은 두 스위치를 되살릴 때를 위해 남긴다.
         if (sessionManager.state == SessionState.AIMING) {
             // 예측 프레임까지 streak에 넣으면 detector keyframe 사이 PREDICTED가 매번 정렬 횟수를
             // 0으로 만들어 1.0배 복귀가 영원히 일어나지 않는다. 줌 상태는 실제 관측으로만 갱신한다.
@@ -2245,15 +2425,21 @@ class MainActivity : ComponentActivity() {
         return when {
             ReadinessBlocker.VISIBILITY in verdict.blockers ->
                 "피사체 전체가 화면 안에 들어오게 비춰주세요"
-            ReadinessBlocker.SIZE in verdict.blockers && (result.sizeDeviation ?: 0f) < 0f &&
+            // SIZE 는 이제 "너무 작음"만 의미한다 — 크기 초과는 READY 를 막지 않는다 (2026-08-23)
+            ReadinessBlocker.SIZE in verdict.blockers &&
                 autoZoom.canResolveSmallTarget -> "구도를 자동으로 맞추는 중이에요"
-            ReadinessBlocker.SIZE in verdict.blockers -> "피사체가 화면에 너무 크게 잡혀 있어요"
             ReadinessBlocker.UNSTABLE in verdict.blockers -> "좋아요, 그대로 유지해주세요"
             else -> "구도를 확인하고 있어요"
         }
     }
 
-    /** 대표 컷과 후보 프레임이 모두 모이면 백엔드로 업로드 (⑤→④). */
+    /** 업로드 재시도 지연용 — [cancelCaptureNetworkWork] 에서 대기 중인 재시도까지 취소한다. */
+    private val uploadRetryHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /** 후보 프레임 눈감음 점수 — 업로드 스레드에서만 사용, onDestroy 에서 해제. */
+    private val eyesClosedScorer by lazy { EyesClosedScorer() }
+
+    /** 대표 컷과 후보 프레임이 모두 모이면 백엔드로 업로드 (⑤→④). 실패 시 짧은 백오프로 재시도. */
     private fun maybeUploadFrames(sessionId: String) {
         val pending = pendingCaptureUploads[sessionId] ?: return
         val representative = pending.representative ?: return
@@ -2265,7 +2451,8 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        frameUploader.uploadCaptureFrames(
+        fun attempt(retriesLeft: Int) {
+            frameUploader.uploadCaptureFrames(
             sessionId = sessionId,
             rawText = pending.rawText,
             representativeJpegProvider = {
@@ -2284,6 +2471,13 @@ class MainActivity : ComponentActivity() {
                     // 블러 기준치(SHARPNESS_REF) 캘리브레이션용 분포 데이터 — 이슈 #42
                     Log.d(TAG, "블러 점수 [$sessionId]: " +
                         scores.joinToString(", ") { "%.2f".format(it) })
+                }
+            },
+            // 눈감음 의심도 (2026-08-23) — MLLM 이 "눈 뜬 컷"을 고르는 tie-breaker 재료
+            candidateEyesClosedProvider = {
+                candidates.map { eyesClosedScorer.score(it.jpeg, it.rotationDegrees) }.also { scores ->
+                    Log.d(TAG, "눈감음 점수 [$sessionId]: " +
+                        scores.joinToString(", ") { it?.let { v -> "%.2f".format(v) } ?: "없음" })
                 }
             },
             callback = object : FrameUploader.Callback {
@@ -2308,15 +2502,31 @@ class MainActivity : ComponentActivity() {
 
                 override fun onFailure(error: Throwable) {
                     if (!isCurrentCapture(sessionId, pending.localGeneration)) return
-                    // 업로드 실패는 촬영 성공과 무관 — 사진은 이미 기기에 저장됨 (재시도는 추후)
-                    Log.w(TAG, "업로드 실패 (사진은 기기에 저장됨)", error)
+                    // 업로드 실패는 촬영 성공과 무관 — 사진은 이미 기기에 저장됨
+                    if (retriesLeft > 0) {
+                        val attemptNumber = UPLOAD_MAX_RETRIES - retriesLeft + 1
+                        val delayMs = UPLOAD_RETRY_BASE_DELAY_MS * attemptNumber
+                        Log.w(TAG, "업로드 실패 — ${delayMs}ms 후 재시도 (${retriesLeft}회 남음)", error)
+                        if (isCurrentVisibleResult(sessionId)) {
+                            lastResultDescriptionStatus = "서버 전송에 실패해 다시 시도하고 있어요…"
+                        }
+                        uploadRetryHandler.postDelayed({
+                            if (isCurrentCapture(sessionId, pending.localGeneration)) {
+                                attempt(retriesLeft - 1)
+                            }
+                        }, delayMs)
+                        return
+                    }
+                    Log.w(TAG, "업로드 최종 실패 (사진은 기기에 저장됨)", error)
                     if (isCurrentVisibleResult(sessionId)) {
                         lastResultDescriptionStatus =
                             "서버에 사진을 보내지 못했어요. 서버 주소와 연결을 확인해 주세요."
                     }
                 }
             },
-        )
+            )
+        }
+        attempt(UPLOAD_MAX_RETRIES)
     }
 
     /**
@@ -2327,6 +2537,8 @@ class MainActivity : ComponentActivity() {
         objects: List<TrackedObject>,
         identities: Map<Int, String>,
         peopleNames: Set<String>,
+        intentTargetName: String? = null,
+        aimedTargetTrackId: Int? = null,
     ): List<FrameUploader.KnownSubject> {
         val byName = LinkedHashMap<String, FrameUploader.KnownSubject>()
         val localNames = LinkedHashMap<String, LocalSubjectDisplay>()
@@ -2338,6 +2550,9 @@ class MainActivity : ComponentActivity() {
                 subjectRef = subjectRef,
                 kind = if (name in peopleNames) "person" else "object",
                 bbox = obj.bbox,
+                // 발화 의도가 이 등록 대상을 가리켰음을 표시 — 서버 설명이 이 대상을
+                // 주인공으로 서술하는 근거. 이름이 아니라 불리언 1개만 나간다.
+                isIntentTarget = name == intentTargetName,
             )
             localNames[subjectRef] = LocalSubjectDisplay(name, name in peopleNames)
         }
@@ -2345,16 +2560,40 @@ class MainActivity : ComponentActivity() {
         while (subjectNamesBySession.size > MAX_LOCAL_SUBJECT_SESSIONS) {
             subjectNamesBySession.remove(subjectNamesBySession.keys.first())
         }
-        return byName.values.toList()
+        val subjects = byName.values.toMutableList()
+        // 등록 대상이 의도 타겟으로 표시되지 못했다면(미등록 인물·일반 사물 의도), 조준 중
+        // 타겟 락이 따라가던 track 의 bbox 를 이름 없이 보낸다 — 서버가 "요청한 촬영 대상"
+        // 으로 다루며 그 중심으로 서술한다 (2026-08-23). 이름 치환이 없으므로 named=false.
+        if (subjects.none { it.isIntentTarget } && aimedTargetTrackId != null) {
+            val target = objects.firstOrNull { it.trackId == aimedTargetTrackId }
+            val ref = target?.let { "local_track_${it.trackId}" }
+            if (target != null && subjects.none { it.subjectRef == ref }) {
+                subjects += FrameUploader.KnownSubject(
+                    subjectRef = ref!!,
+                    kind = if (target.label.trim().equals("person", ignoreCase = true)) {
+                        "person"
+                    } else {
+                        "object"
+                    },
+                    bbox = target.bbox,
+                    isIntentTarget = true,
+                    hasLocalName = false,
+                )
+            }
+        }
+        return subjects
     }
 
     private fun localizeSubjectRefs(sessionId: String, text: String?): String? {
         var localized = text ?: return null
         subjectNamesBySession[sessionId].orEmpty().forEach { (ref, subject) ->
             val display = if (subject.isPerson) "${subject.name}님" else subject.name
-            localized = localized.replace(ref, display)
+            // 조사까지 함께 교정 — 모델은 토큰 기준으로 조사를 붙이므로 "내 인형가"가 된다
+            localized = KoreanJosa.replaceTokenWithName(localized, ref, display)
         }
-        return localized
+        // 이름 매핑이 없는 참조가 남았다면(서버가 지시를 어기고 토큰을 썼을 때) 낭독에
+        // "local_track_3" 이 그대로 나오지 않게 일반 표현으로 바꾼다 (2026-08-23 방어선).
+        return localized.replace(LEFTOVER_SUBJECT_REF, "촬영한 대상")
     }
 
     /**
@@ -2441,11 +2680,22 @@ class MainActivity : ComponentActivity() {
         val allGranted = required.all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
+        // 위치는 선택 권한 — 요청 다이얼로그에는 함께 올리되, 거부해도 앱 진행을 막지 않는다
+        // (hasRequiredPermissions 판정에 포함되지 않음). 촬영 장소 텍스트(기능 3-B)에만 쓰이고,
+        // 거부한 사용자를 앱 시작마다 다시 조르지 않도록 1회만 묻는다.
+        val locationAsked = appPrefs.getBoolean(KEY_LOCATION_ASKED, false)
+        val optional = if (locationAsked) emptyList() else {
+            listOf(Manifest.permission.ACCESS_COARSE_LOCATION).filter {
+                ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+            }
+        }
+        if (optional.isNotEmpty()) appPrefs.edit().putBoolean(KEY_LOCATION_ASKED, true).apply()
         if (allGranted) {
             permissionsGranted = true
             announceWelcomeOnce()
+            if (optional.isNotEmpty()) permissionLauncher.launch(optional.toTypedArray())
         } else {
-            permissionLauncher.launch(required)
+            permissionLauncher.launch(required + optional)
         }
     }
 
@@ -2462,10 +2712,38 @@ class MainActivity : ComponentActivity() {
         }
     }.toTypedArray()
 
-    private fun galleryReadPermission(): String? = when {
-        Build.VERSION.SDK_INT >= 33 -> Manifest.permission.READ_MEDIA_IMAGES
-        Build.VERSION.SDK_INT >= 29 -> Manifest.permission.READ_EXTERNAL_STORAGE
-        else -> null
+    /**
+     * 촬영 장소 텍스트 (기능 3-B, "제주도에서 찍은 사진" 검색용) — 마지막으로 알려진 위치를
+     * 역지오코딩해 "서울특별시 강남구" 수준으로 만든다. 위치 권한이 없거나(선택 권한),
+     * 위치·지오코더 조회에 실패하면 null — 촬영 흐름은 영향받지 않는다.
+     * Geocoder 는 블로킹 호출이므로 **백그라운드 스레드에서만** 부른다.
+     */
+    private fun currentLocationText(): String? {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) !=
+            PackageManager.PERMISSION_GRANTED
+        ) return null
+        return try {
+            val locationManager =
+                getSystemService(LOCATION_SERVICE) as? android.location.LocationManager ?: return null
+            val location = locationManager.getProviders(true)
+                .mapNotNull { provider ->
+                    runCatching { locationManager.getLastKnownLocation(provider) }.getOrNull()
+                }
+                .maxByOrNull { it.time } ?: return null
+            if (!android.location.Geocoder.isPresent()) return null
+            @Suppress("DEPRECATION") // 동기 호출 — 이미 백그라운드 스레드라 안전하다
+            val address = android.location.Geocoder(applicationContext, java.util.Locale.KOREAN)
+                .getFromLocation(location.latitude, location.longitude, 1)
+                ?.firstOrNull() ?: return null
+            listOfNotNull(
+                address.adminArea,                        // 서울특별시
+                address.locality ?: address.subAdminArea, // 성남시 / (광역시는 없음)
+                address.subLocality ?: address.thoroughfare, // 강남구 / 동
+            ).distinct().joinToString(" ").ifBlank { null }
+        } catch (t: Throwable) {
+            Log.w(TAG, "촬영 장소 텍스트 조회 실패 — 위치 없이 저장", t)
+            null
+        }
     }
 
     // 볼륨 버튼 매핑 제거 (#84 4-2 3단계) — 탭 문법이 주 조작이 되면서 볼륨 키는
@@ -2479,6 +2757,7 @@ class MainActivity : ComponentActivity() {
         cancelCaptureNetworkWork()
         faceEmbedder.close()
         objectEmbedder.close()
+        runCatching { eyesClosedScorer.close() }
         identityReloadClosed = true
         identityReloadExecutor.shutdownNow()
         // 분리 시 onDetached() 가 불려 TFLite 인터프리터가 해제된다.
@@ -2487,7 +2766,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private companion object {
-        const val WELCOME_TEXT = "스냅사이트입니다. 화면을 두 번 탭해 시작하세요"
+        const val WELCOME_TEXT = "스냅사이트입니다. 화면을 두 번 탭하고 무엇을 찍을지 말하세요. " +
+            "설정이나 갤러리라고 말하면 그 화면으로 이동해요"
         const val TAG = "SnapSight"
 
         // 즉시 상황 안내용 자주 나오는 라벨 한글 표기 — 없는 라벨은 영문 그대로 읽는다
@@ -2513,6 +2793,7 @@ class MainActivity : ComponentActivity() {
         const val CV_TAG = "SnapSightCV"
         const val PREFS_NAME = "snap_sight_prefs"
         const val KEY_ONBOARDING_DONE = "onboarding_done"
+        const val KEY_LOCATION_ASKED = "location_permission_asked"
 
         // 갤러리 음성 검색의 "필터 전체 해제" 명령 (공백 제거 후 포함 비교)
         private val RESET_COMMANDS = listOf("처음부터", "조건지워", "조건취소", "전체보여", "다시검색")
@@ -2537,7 +2818,14 @@ class MainActivity : ComponentActivity() {
          */
         private const val ANALYSIS_INTERVAL_MS = 150L
         private const val PROPAGATION_UI_INTERVAL_MS = 66L
-        private const val SHUTTER_IDENTITY_MAX_AGE_MS = 450L
+        /**
+         * 셔터 순간 신원 스냅샷의 최대 나이 — 객체 스냅샷의 hold 창([CAPTURE_SNAPSHOT_HOLD_MS])과
+         * 같은 값이어야 한다. 예전 450ms 는 두 번 탭 판정 지연(~300ms) + detector 주기(300ms~,
+         * 발열 시 배수)만으로도 초과돼, 인식은 됐는데 셔터에서 신원이 통째로 버려지는 일이 잦았다
+         * (2026-08-23 실기기: "유재석을 찍었는데 라벨·설명에 없다"). 객체 bbox 를 신뢰하는
+         * 시간만큼 그 track 에 바인딩된 이름도 신뢰한다.
+         */
+        private const val SHUTTER_IDENTITY_MAX_AGE_MS = 1_500L
         private const val CAPTURE_SNAPSHOT_HOLD_MS = 1_500L
         private const val GENERAL_CAPTURE_WAITING_GUIDANCE =
             "일반 촬영 모드예요. 화면을 두 번 탭하면 촬영합니다"
@@ -2553,11 +2841,18 @@ class MainActivity : ComponentActivity() {
         private const val IDENTIFY_ATTEMPT_INTERVAL_MS = 1_000L
         private const val MAX_LOCAL_SUBJECT_SESSIONS = 20
 
+        /** 이름 치환 뒤에도 남은 익명 참조 토큰 — 낭독 전 마지막 방어선에서 지운다. */
+        private val LEFTOVER_SUBJECT_REF = Regex("local_[A-Za-z0-9_-]+")
+
         /** 얼굴 매칭 임계값 — 진짜(0.65~0.75)와 타인 최고점(≈0.5) 사이. 실측 분포가 바뀌면 조정. */
         private const val FACE_MATCH_THRESHOLD = 0.58f
 
         // 셔터 게이트가 신뢰하는 CV 판정의 최대 나이 — CV 가 멈춰 있으면 막지 않는다 (fail-open)
         private const val VERDICT_FRESH_MS = 1_500L
+
+        // 프레임 업로드 실패 재시도 — 시연장 Wi-Fi 순간 끊김 대비. 지연은 회차 × base (4s, 8s).
+        private const val UPLOAD_MAX_RETRIES = 2
+        private const val UPLOAD_RETRY_BASE_DELAY_MS = 4_000L
 
         /** 홈 뒤로가기 2회 종료 확인 창 (#84) — 1회차 예고 후 이 시간 안에 다시 누르면 종료. */
         private const val HOME_EXIT_CONFIRM_MS = 2_000L
