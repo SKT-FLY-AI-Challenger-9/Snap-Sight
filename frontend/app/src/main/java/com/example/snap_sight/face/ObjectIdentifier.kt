@@ -30,7 +30,10 @@ import com.example.snap_sight.cv.TrackedObject
 class ObjectIdentifier(
     private val registry: ObjectRegistry,
     private val embedder: ObjectEmbedder,
-    private val matchConfig: FaceMatchConfig = FaceMatchConfig(similarityThreshold = 0.86f, margin = 0.03f),
+    // 심층 특징 임베더(TfLiteObjectEmbedder) 실기기 캘리브레이션 (2026-08-23, 인형 5개 장면):
+    // 진짜 등록 인형 0.90, 다른 인형들 0.56~0.71. 0.78 은 가짜 최고와 0.07, 진짜와 0.12 여유 —
+    // 양쪽 모두에서 안전 마진 확보. 분포가 달라 보이면 ObjectIdentifier 판정 로그로 재조정.
+    private val matchConfig: FaceMatchConfig = FaceMatchConfig(similarityThreshold = 0.78f, margin = 0.05f),
     private val attemptIntervalMs: Long = 1_000L,
     /** 디버그 빌드에서만 연결 — 등록 크롭·식별 시도 크롭과 점수를 파일로 남긴다 (null 이면 없음). */
     private val debugSink: FaceDebugSink? = null,

@@ -4,10 +4,12 @@ package com.example.snap_sight.ux
 
 import androidx.camera.core.CameraSelector
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -25,6 +27,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.contentDescription
@@ -60,6 +64,10 @@ fun CaptureScreen(
     showOverlays: Boolean = true,
     onLensChanged: (isFront: Boolean) -> Unit = {},
     onShutterTap: (() -> Unit)? = null,
+    // 3x3 구도 그리드 (2026-08-23) — 미리보기 전용 오버레이, 찍힌 사진에는 남지 않는다
+    gridEnabled: Boolean = false,
+    gridColorArgb: Int = DEFAULT_GRID_COLOR,
+    gridThicknessDp: Float = 1.5f,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -95,6 +103,27 @@ fun CaptureScreen(
                     }
                 },
         )
+
+        // 3x3 그리드 — 미리보기와 같은 3:4 프레임(FIT_CENTER)에 맞춰 중앙 정렬로 그린다.
+        // 촬영 파이프라인과 무관한 순수 UI 오버레이라 사진에는 절대 남지 않는다.
+        if (gridEnabled) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(3f / 4f),
+                ) {
+                    val color = Color(gridColorArgb)
+                    val stroke = gridThicknessDp.dp.toPx()
+                    for (i in 1..2) {
+                        val x = size.width * i / 3f
+                        val y = size.height * i / 3f
+                        drawLine(color, Offset(x, 0f), Offset(x, size.height), stroke)
+                        drawLine(color, Offset(0f, y), Offset(size.width, y), stroke)
+                    }
+                }
+            }
+        }
 
         DetectionOverlay(objects = cvObjects, mirrored = isFrontLens, identities = identities)
 

@@ -21,10 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -37,6 +34,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -52,8 +50,8 @@ fun ResultScreen(
     rawText: String,
     description: String?,
     onReplayDescription: () -> Unit,
-    onConfirm: () -> Unit,
-    onRetake: () -> Unit,
+    /** TalkBack 전용 다시 촬영 경로 — 전역 탭 문법은 TalkBack이 가로채므로 접근성 액션으로 노출한다. */
+    onRetake: (() -> Unit)? = null,
     headline: String? = null,
     details: List<Pair<String, String>> = emptyList(),
     /** "이 사진 라벨 붙이기" — 음성으로 커스텀 라벨을 부착한다 (기능 3). null 이면 버튼 숨김. */
@@ -194,29 +192,27 @@ fun ResultScreen(
         }
 
         Spacer(Modifier.height(14.dp))
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(
-                onClick = onConfirm,
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = SnapPalette.Accent),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .semantics { contentDescription = "저장하고 홈으로 돌아가기" },
-            ) {
-                Text("저장하기", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            }
-            OutlinedButton(
-                onClick = onRetake,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .semantics { contentDescription = "다시 촬영하기" },
-            ) {
-                Text("↺  다시 촬영", color = SnapPalette.TextPrimary, fontSize = 15.sp)
-            }
-        }
+        // 저장/다시 촬영 버튼은 제거 (2026-08-23) — 사진은 셔터 순간 이미 저장돼 있고
+        // ("먼저 저장, 나중에 개선"), 다시 촬영·홈 복귀는 전역 탭 문법이 이미 담당한다.
+        // 잔존시력 사용자를 위한 문법 힌트만 남긴다.
+        Text(
+            text = "✓ 사진은 저장됐어요 — 두 번 탭 다시 촬영 · 길게 눌러 홈",
+            color = SnapPalette.TextSecondary,
+            fontSize = 13.sp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics {
+                    contentDescription = "사진은 이미 저장돼 있어요. 화면을 두 번 탭하면 다시 촬영하고, " +
+                        "길게 누르면 홈으로 돌아갑니다"
+                    // TalkBack: 이 노드를 두 번 탭하면 다시 촬영 (일반 터치에는 반응하지 않는다)
+                    if (onRetake != null) {
+                        onClick(label = "다시 촬영") {
+                            onRetake()
+                            true
+                        }
+                    }
+                },
+        )
         Spacer(Modifier.height(16.dp))
     }
 }

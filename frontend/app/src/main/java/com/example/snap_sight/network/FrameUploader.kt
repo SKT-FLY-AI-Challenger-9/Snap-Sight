@@ -54,6 +54,17 @@ class FrameUploader(
         val subjectRef: String,
         val kind: String,
         val bbox: BoundingBox?,
+        /**
+         * 이 대상이 세션 발화 의도("민수 찍어줘")의 타겟이면 true. 서버 MLLM 이 설명을
+         * 이 대상 중심으로 서술하는 근거가 된다 — 이름이 아니라 표시 1비트만 나간다.
+         */
+        val isIntentTarget: Boolean = false,
+        /**
+         * 기기에 이 참조의 이름 매핑이 있으면 true (기본). false 면 서버는 토큰을 문장에
+         * 쓰지 말고 "요청한 촬영 대상"으로 다뤄야 한다 — 치환할 이름이 없어 토큰이
+         * 낭독에 그대로 노출되는 것을 막는다 (2026-08-23, 미등록 의도 대상 지원).
+         */
+        val hasLocalName: Boolean = true,
     ) {
         init {
             require(OPAQUE_REF.matches(subjectRef)) {
@@ -91,6 +102,8 @@ class FrameUploader(
         representativeJpegProvider: () -> ByteArray,
         candidates: List<RingFrameBuffer.Frame>,
         candidateScoresProvider: (() -> List<Float>)? = null,
+        /** 후보 순서대로의 눈감음 의심도(0..1, null=판정 불가) — MLLM tie-breaker (2026-08-23). */
+        candidateEyesClosedProvider: (() -> List<Float?>)? = null,
         customLabels: List<String> = emptyList(),
         detectedObjects: List<String> = emptyList(),
         knownSubjects: List<KnownSubject> = emptyList(),
@@ -129,10 +142,12 @@ class FrameUploader(
                         "후보 점수 개수 불일치(${suppliedScores.size}/${candidates.size}) — blur 점수만 생략",
                     )
                 }
+                val eyesScores = candidateEyesClosedProvider?.invoke()
+                    ?.takeIf { it.size == candidates.size }
                 if (candidates.isNotEmpty()) {
                     bodyBuilder.addFormDataPart(
                         "candidate_scores",
-                        buildCandidateScoresJson(candidates, scores),
+                        buildCandidateScoresJson(candidates, scores, eyesScores),
                     )
                 }
 
@@ -205,8 +220,10 @@ class FrameUploader(
         internal fun buildCandidateScoresJson(
             candidates: List<RingFrameBuffer.Frame>,
             scores: List<Float>?,
+            eyesClosedScores: List<Float?>? = null,
         ): String {
             require(scores == null || scores.size == candidates.size)
+            require(eyesClosedScores == null || eyesClosedScores.size == candidates.size)
             return JSONArray().apply {
                 candidates.forEachIndexed { index, frame ->
                     require(frame.rotationDegrees == 0 || frame.rotationDegrees == 90 ||
@@ -216,6 +233,8 @@ class FrameUploader(
                     put(JSONObject().apply {
                         put("rotation_degrees", frame.rotationDegrees)
                         scores?.get(index)?.let { put("blur_score", it.toDouble()) }
+                        // null = 얼굴 없음/판정 불가 — 필드를 생략해 MLLM 프롬프트에서 빠진다
+                        eyesClosedScores?.get(index)?.let { put("eyes_closed_score", it.toDouble()) }
                     })
                 }
             }.toString()
@@ -227,6 +246,8 @@ class FrameUploader(
                     put(JSONObject().apply {
                         put("subject_ref", subject.subjectRef)
                         put("kind", subject.kind)
+                        if (subject.isIntentTarget) put("intent_target", true)
+                        if (!subject.hasLocalName) put("named", false)
                         subject.bbox?.let { box ->
                             put("bbox", JSONObject().apply {
                                 put("x_min", box.xMin.toDouble())

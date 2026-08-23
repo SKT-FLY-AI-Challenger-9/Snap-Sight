@@ -13,6 +13,9 @@ import java.util.Calendar
  * @param customLabels 커스텀 라벨 이름 (전부 만족해야 함)
  * @param people       등록 인물 이름 (전부 만족해야 함)
  * @param freeTerms    사전에 없던 검색어 — 설명 본문(long/short desc) 포함 검색으로 폴백
+ * @param hourRanges   촬영 시각(시 단위) 창 목록 — [시작, 끝) 0..24, 자정을 넘는 표현("밤")은
+ *                     두 창으로 나눠 담는다. 하나라도 만족하면 통과 (OR). 빈 목록 = 시각 조건 없음.
+ *                     날짜 조건(dateStartMs)과는 AND — "어제 저녁 6시"가 가능하다 (2026-08-23).
  */
 data class PhotoQuery(
     val rawText: String,
@@ -22,10 +25,11 @@ data class PhotoQuery(
     val customLabels: Set<String> = emptySet(),
     val people: Set<String> = emptySet(),
     val freeTerms: List<String> = emptyList(),
+    val hourRanges: List<Pair<Int, Int>> = emptyList(),
 ) {
     val isEmpty: Boolean
-        get() = dateStartMs == null && labelIds.isEmpty() && customLabels.isEmpty() &&
-            people.isEmpty() && freeTerms.isEmpty()
+        get() = dateStartMs == null && hourRanges.isEmpty() && labelIds.isEmpty() &&
+            customLabels.isEmpty() && people.isEmpty() && freeTerms.isEmpty()
 
     /** 사용자에게 다시 읽어줄 조건 요약 (예: "지난주, 음식"). */
     fun summary(dictionary: PhotoLabelDictionary): String {
@@ -59,8 +63,15 @@ class PhotoQueryParser(
     fun parse(utterance: String, nowMs: Long = System.currentTimeMillis()): PhotoQuery {
         val normalized = PhotoLabelDictionary.normalize(utterance)
 
-        val (range, timePhrase) = extractDateRange(normalized, nowMs)
-        val labelIds = dictionary.matchUtterance(utterance)
+        val (range, datePhrase) = extractDateRange(normalized, nowMs)
+        val (hourRanges, hourPhrase) = extractHourRanges(normalized)
+        val timePhrase = listOfNotNull(datePhrase, hourPhrase)
+            .joinToString(" ")
+            .ifBlank { null }
+        // 시각으로 이미 해석된 단어("저녁 6시"의 저녁)가 라벨 동의어(밤←저녁)로 이중 매칭돼
+        // 엉뚱한 라벨 조건을 만들지 않게, 시각 표현을 지운 발화로 라벨을 매칭한다 (2026-08-23).
+        val labelSource = if (hourPhrase == null) utterance else stripHourWords(utterance)
+        val labelIds = dictionary.matchUtterance(labelSource)
         val matchedCustom = customLabels
             .filter { normalized.contains(PhotoLabelDictionary.normalize(it)) }
             .toSet()
@@ -76,7 +87,55 @@ class PhotoQueryParser(
             customLabels = matchedCustom,
             people = matchedPeople,
             freeTerms = extractFreeTerms(utterance, timePhrase, matchedCustom, matchedPeople, labelIds),
+            hourRanges = hourRanges,
         ).also { it.timePhrase = timePhrase }
+    }
+
+    /** 시각 표현으로 소비된 단어(N시, 오전/오후, 시간대 단어)를 발화에서 지운다 — 라벨 매칭 전처리. */
+    private fun stripHourWords(utterance: String): String {
+        var cleaned = HOUR_PATTERN.replace(utterance, " ")
+        (PM_WORDS + AM_WORDS + TIME_OF_DAY_RANGES.map { it.first }).forEach { word ->
+            cleaned = cleaned.replace(word, " ")
+        }
+        return cleaned
+    }
+
+    /**
+     * 시각(하루 중 시간) 표현 → 시 단위 창 목록과 표면형 (2026-08-23).
+     *  - "저녁 6시"/"오후 3시": 오전·오후 단어로 보정한 한 창 [18,19)
+     *  - "18시": 24시간 표기 그대로 [18,19)
+     *  - "6시"(오전/오후 불명): 두 창 [6,7)+[18,19) — 어느 쪽이든 잡는다
+     *  - "아침"/"저녁"/"밤" 등 시간대 단어만: 관습적 구간 (자정을 넘는 "밤"은 두 창)
+     * 분 단위는 무시한다 — "5시 30분"은 5시 창에 든다. "N시간(전)"은 시각이 아니라 매칭하지 않는다.
+     */
+    private fun extractHourRanges(normalized: String): Pair<List<Pair<Int, Int>>, String?> {
+        fun window(hour: Int): Pair<Int, Int> = (hour % 24).let { it to it + 1 }
+
+        HOUR_PATTERN.find(normalized)?.let { match ->
+            val spoken = match.groupValues[1].toInt()
+            if (spoken > 24) return emptyList<Pair<Int, Int>>() to null
+            val pmWord = PM_WORDS.firstOrNull { normalized.contains(it) }
+            val amWord = AM_WORDS.firstOrNull { normalized.contains(it) }
+            return when {
+                // 13~24시는 24시간 표기 — 오전/오후 보정 불필요 (24시 = 0시)
+                spoken >= 13 || spoken == 0 -> listOf(window(spoken)) to "${spoken % 24}시"
+                pmWord != null -> {
+                    val hour = if (spoken == 12) 0 else spoken + 12 // "밤 12시" = 자정
+                    listOf(window(hour)) to "$pmWord ${spoken}시"
+                }
+                amWord != null -> {
+                    val hour = if (spoken == 12) 0 else spoken // "오전 12시" = 자정
+                    listOf(window(hour)) to "$amWord ${spoken}시"
+                }
+                // 오전/오후 불명 — 두 창 모두 후보
+                else -> listOf(window(spoken), window(spoken + 12)) to "${spoken}시"
+            }
+        }
+
+        TIME_OF_DAY_RANGES.forEach { (word, ranges) ->
+            if (normalized.contains(word)) return ranges to word
+        }
+        return emptyList<Pair<Int, Int>>() to null
     }
 
     /** 시간 표현 → (시작ms, 끝ms-exclusive) 범위와 표면형. 없으면 (null, null). */
@@ -198,6 +257,21 @@ class PhotoQueryParser(
         val MONTH_THIS = listOf("이번달")
         val YEAR_LAST = listOf("작년", "지난해")
         val MONTH_PATTERN = Regex("(\\d{1,2})월")
+
+        // 시각 검색 (2026-08-23) — "N시" ("N시간"은 제외: 기간 표현이지 시각이 아님)
+        val HOUR_PATTERN = Regex("(\\d{1,2})시(?!간)")
+        val PM_WORDS = listOf("오후", "저녁", "밤")
+        val AM_WORDS = listOf("오전", "아침", "새벽")
+        // 시간대 단어만 있을 때의 관습적 구간 — 구체적 단어가 먼저 매칭되게 순서 고정
+        val TIME_OF_DAY_RANGES = listOf(
+            "새벽" to listOf(0 to 6),
+            "아침" to listOf(5 to 11),
+            "점심" to listOf(11 to 14),
+            "저녁" to listOf(17 to 21),
+            "밤" to listOf(21 to 24, 0 to 5),
+            "오전" to listOf(5 to 12),
+            "오후" to listOf(12 to 18),
+        )
 
         // 검색 발화의 군더더기 — 매칭에 쓰면 안 되는 기능어 (normalize 형태로 비교)
         val FILLER_WORDS = setOf(

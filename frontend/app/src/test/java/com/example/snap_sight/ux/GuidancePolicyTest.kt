@@ -1,6 +1,7 @@
 package com.example.snap_sight.ux
 
 import com.example.snap_sight.cv.DeviationResult
+import com.example.snap_sight.cv.FrameVisibility
 import com.example.snap_sight.cv.ObservationFreshness
 import com.example.snap_sight.cv.ReadinessBlocker
 import org.junit.Assert.assertEquals
@@ -20,6 +21,7 @@ class GuidancePolicyTest {
         y: Float? = 0f,
         freshness: ObservationFreshness = ObservationFreshness.FRESH,
         ageMs: Long = 0L,
+        visibility: FrameVisibility? = null,
     ) = DeviationResult(
         subjectDetected = true,
         xDeviation = x,
@@ -27,6 +29,7 @@ class GuidancePolicyTest {
         yDeviation = y,
         observationFreshness = freshness,
         observationAgeMs = ageMs,
+        frameVisibility = visibility,
     )
 
     private val lostResult = DeviationResult(subjectDetected = false, xDeviation = null, sizeDeviation = null)
@@ -98,15 +101,19 @@ class GuidancePolicyTest {
     fun `too small is left to auto zoom while zoom has headroom`() {
         val policy = GuidancePolicy()
         val r = result(x = 0f, size = -0.30f)
-        // 줌 여유 있음 → 침묵 (READY 도 아님)
+        // 줌 여유 있음 → "가까이"는 말하지 않는다 (READY 도 아님). 다만 무한 침묵 대신
+        // 4초 뒤 하트비트로 "자동으로 맞추는 중"임을 알린다 (2026-08-23 죽은 공백 방지)
         assertTrue(policy.onJudgment(GuidanceStateMapper.from(r), r, 0, zoomHandlesDistance = true).isEmpty())
-        assertTrue(policy.onJudgment(GuidanceStateMapper.from(r), r, 5_000, zoomHandlesDistance = true).isEmpty())
+        assertEquals(
+            listOf(GuidancePolicy.AUTO_ZOOM_HEARTBEAT),
+            speech(policy.onJudgment(GuidanceStateMapper.from(r), r, 5_000, zoomHandlesDistance = true)),
+        )
         // 줌 한계 → 그때 "가까이"
         assertEquals(listOf("가까이"), speech(policy.onJudgment(GuidanceStateMapper.from(r), r, 6_000, zoomHandlesDistance = false)))
         // 다른 축이 벗어나 있으면 그 축은 여전히 말한다
         val r2 = result(x = -0.30f, size = -0.30f)
         assertEquals(listOf("왼쪽으로"), speech(GuidancePolicy().onJudgment(GuidanceStateMapper.from(r2), r2, 0, zoomHandlesDistance = true)))
-        // 너무 큰 것(FARTHER)은 "뒤로"를 말하지 않는다 → 침묵 (READY 도 아님)
+        // 너무 큰 것(FARTHER)은 "뒤로"를 말하지 않고, READY 도 막지 않는다 (2026-08-23) — 안정화 대기만
         val r3 = result(x = 0f, size = 0.30f)
         assertTrue(GuidancePolicy().onJudgment(GuidanceStateMapper.from(r3), r3, 0, zoomHandlesDistance = true).isEmpty())
     }
@@ -310,6 +317,53 @@ class GuidancePolicyTest {
         assertEquals(
             listOf(GuidancePolicy.READY_UTTERANCE),
             speech(policy.feed(result(0f, 0f), now = GuidancePolicy.READY_DEBOUNCE_MS + 100)),
+        )
+    }
+
+    // ---- 하트비트 — 방향 단어가 없는 상태에서 죽은 공백을 없앤다 (2026-08-23) ----
+
+    @Test
+    fun `oversized subject no longer blocks READY`() {
+        // 크기 초과(FARTHER)는 READY 를 막지 않는다 (2026-08-23) — 그대로 찍게 두고 후처리로 넘긴다
+        val policy = GuidancePolicy()
+        policy.feed(result(x = 0f, size = 0.5f), now = 0)
+        assertEquals(
+            listOf(GuidancePolicy.READY_UTTERANCE),
+            speech(policy.feed(result(x = 0f, size = 0.5f), now = GuidancePolicy.READY_DEBOUNCE_MS + 100)),
+        )
+    }
+
+    @Test
+    fun `visibility-blocked state speaks a heartbeat instead of staying silent`() {
+        val policy = GuidancePolicy()
+        // 머리가 잘린 전신 구도 — x/y/size 는 다 맞는데 VISIBILITY 만 막힌 상태
+        val cropped = result(
+            x = 0f, size = 0f,
+            visibility = FrameVisibility(
+                leftMargin = 0.4f, topMargin = 0f, rightMargin = 0.4f, bottomMargin = 0.1f,
+            ),
+        )
+        assertTrue(policy.feed(cropped, now = 0).isEmpty())
+        val actions = policy.feed(cropped, now = GuidancePolicy.HEARTBEAT_AFTER_MS)
+        assertEquals(listOf(GuidancePolicy.VISIBILITY_HEARTBEAT), speech(actions))
+    }
+
+    @Test
+    fun `heartbeat waits for both state persistence and speech silence`() {
+        val policy = GuidancePolicy()
+        policy.feed(result(x = 0.3f, size = 0f), now = 0) // "오른쪽으로"
+        val cropped = result(
+            x = 0f, size = 0f,
+            visibility = FrameVisibility(
+                leftMargin = 0.4f, topMargin = 0f, rightMargin = 0.4f, bottomMargin = 0.1f,
+            ),
+        )
+        // t=1s 부터 잘림 상태 — 상태 지속 4s 와 음성 공백 4s 를 모두 채워야 말한다
+        assertTrue(policy.feed(cropped, now = 1_000).isEmpty())
+        assertTrue(policy.feed(cropped, now = 4_500).isEmpty())
+        assertEquals(
+            listOf(GuidancePolicy.VISIBILITY_HEARTBEAT),
+            speech(policy.feed(cropped, now = 5_000)),
         )
     }
 }

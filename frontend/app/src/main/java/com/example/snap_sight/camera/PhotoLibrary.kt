@@ -25,6 +25,11 @@ data class GalleryPhoto(
     val sessionId: String? = null,
     /** 촬영 시각 (MediaStore DATE_ADDED). 인덱스에 없는 옛 사진의 시간 검색 폴백. */
     val takenAtMs: Long = 0L,
+    /**
+     * 이 사진에 붙은 표시용 라벨 이름 통합(고정 사전 한글명 + 커스텀 + 인물 이름) —
+     * 사진 찾기의 라벨 폴더 화면이 사용한다. 인덱스에 없는 옛 사진은 빈 집합.
+     */
+    val labels: Set<String> = emptySet(),
 )
 
 object PhotoLibrary {

@@ -14,12 +14,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.OutlinedTextField
@@ -38,11 +40,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 @Composable
@@ -53,6 +57,12 @@ fun SettingsScreen(
     onSpeechRateChange: (Float) -> Unit,
     serverAiDescriptionEnabled: Boolean = true,
     onServerAiDescriptionEnabledChange: (Boolean) -> Unit = {},
+    // 촬영 그리드 (2026-08-23) — 잔존시력·조력자용 시각 보조
+    onGridEnabledChange: (Boolean) -> Unit = {},
+    onGridColorChange: (Int) -> Unit = {},
+    onGridThicknessChange: (Float) -> Unit = {},
+    /** 슬라이더·선택 조작이 끝날 때 바뀐 값을 음성으로 알린다 — 화면을 보지 않는 조작 지원. */
+    onAnnounceValue: (String) -> Unit = {},
     onBack: () -> Unit,
     // 백엔드 서버 주소 재정의 (시연장 Wi-Fi 변경 대비) — 적용·저장 시점은 호출부(돌아가기) 책임
     serverUrl: String = "",
@@ -79,31 +89,18 @@ fun SettingsScreen(
             // 스크롤로 키보드 위에 보이게 한다 (실사용 피드백 2026-08-22)
             .imePadding(),
     ) {
-        // 상단 바: ‹ (뒤로) + 설정 — 뒤로가기가 서버 주소 적용 시점이기도 하다
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-        ) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(48.dp)
-                    .clickable(onClick = onBack)
-                    .semantics { contentDescription = "설정 닫고 홈으로 돌아가기" },
-            ) {
-                Text(text = "‹", color = SnapPalette.Accent, fontSize = 28.sp, fontWeight = FontWeight.Bold)
-            }
-            Text(
-                text = "설정",
-                color = SnapPalette.TextPrimary,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-            )
-        }
+        // 상단 대형 헤더 (#84 시각 채널) — 뒤로가기가 서버 주소 적용 시점이기도 하다
+        SatelliteHeader(
+            title = "설정",
+            onBack = onBack,
+            backDescription = "설정 닫고 홈으로 돌아가기",
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+        )
 
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .weight(1f) // 최하단 전폭 복귀 버튼이 항상 보이도록 스크롤 영역을 나머지 높이로 제한
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp),
         ) {
@@ -119,6 +116,7 @@ fun SettingsScreen(
                 lowLabel = "약하게",
                 highLabel = "강하게",
                 onValueChange = onVibrationIntensityChange,
+                onAnnounce = onAnnounceValue,
             )
             Spacer(Modifier.height(12.dp))
             SliderCard(
@@ -131,20 +129,24 @@ fun SettingsScreen(
                 lowLabel = "작게",
                 highLabel = "크게",
                 onValueChange = onSoundVolumeChange,
+                onAnnounce = onAnnounceValue,
             )
 
             SectionLabel("음성 안내", topPadding = 20.dp)
 
-            SliderCard(
+            // 슬라이더 대신 3단계 버튼 — 화면을 보지 않고 조작할 때 "몇 배인지"보다 "느리게/보통/
+            // 빠르게" 중 하나를 고르는 편이 훨씬 확실하다. 저장값은 계속 배속(Float)이라 예전에
+            // 슬라이더로 저장한 값도 [SpeechSpeed.fromRate]가 가장 가까운 단계로 받아준다.
+            ChoiceCard(
                 label = "음성 속도",
                 description = "주요 상태 음성 안내의 말하기 속도",
-                valueText = formatSpeechRate(state.speechRate),
-                value = state.speechRate,
-                valueRange = SPEECH_RATE_RANGE,
-                steps = 14,
-                lowLabel = "느리게",
-                highLabel = "빠르게",
-                onValueChange = onSpeechRateChange,
+                options = SpeechSpeed.entries.map { it.label },
+                selectedIndex = SpeechSpeed.entries.indexOf(SpeechSpeed.fromRate(state.speechRate)),
+                onSelect = { index ->
+                    val speed = SpeechSpeed.entries[index]
+                    onSpeechRateChange(speed.rate)
+                    onAnnounceValue("음성 속도 ${speed.label}")
+                },
             )
 
             Spacer(Modifier.height(12.dp))
@@ -192,6 +194,112 @@ fun SettingsScreen(
                 }
             }
 
+            SectionLabel("촬영 화면", topPadding = 20.dp)
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = SnapPalette.Card,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, SnapPalette.CardBorder, RoundedCornerShape(20.dp)),
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "3\u00d73 그리드",
+                                color = SnapPalette.TextPrimary,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(
+                                text = "촬영 화면에 구도 격자를 표시합니다. 미리보기에만 보이고 " +
+                                    "찍힌 사진에는 남지 않아요. 음성으로도 켜고 끌 수 있어요 " +
+                                    "(\"그리드 켜줘, 그리드 꺼줘\").",
+                                color = SnapPalette.TextSecondary,
+                                fontSize = 13.sp,
+                                lineHeight = 19.sp,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                        }
+                        Switch(
+                            checked = state.gridEnabled,
+                            onCheckedChange = onGridEnabledChange,
+                            colors = SwitchDefaults.colors(checkedTrackColor = SnapPalette.Accent),
+                            modifier = Modifier.semantics {
+                                contentDescription = if (state.gridEnabled) {
+                                    "촬영 그리드 켜짐. 누르면 끄기"
+                                } else {
+                                    "촬영 그리드 꺼짐. 누르면 켜기"
+                                }
+                            },
+                        )
+                    }
+                    AnimatedVisibility(visible = state.gridEnabled) {
+                        Column {
+                            Text(
+                                text = "색상",
+                                color = SnapPalette.TextPrimary,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(top = 14.dp),
+                            )
+                            Row(modifier = Modifier.padding(top = 8.dp)) {
+                                GRID_COLOR_CHOICES.forEach { (name, argb) ->
+                                    val selected = state.gridColorArgb == argb
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(end = 12.dp)
+                                            .size(36.dp)
+                                            .background(
+                                                Color(argb).copy(alpha = 1f),
+                                                RoundedCornerShape(18.dp),
+                                            )
+                                            .border(
+                                                width = if (selected) 3.dp else 1.dp,
+                                                color = if (selected) SnapPalette.Accent
+                                                else SnapPalette.CardBorder,
+                                                shape = RoundedCornerShape(18.dp),
+                                            )
+                                            .clickable {
+                                                onGridColorChange(argb)
+                                                onAnnounceValue("그리드 색 $name")
+                                            }
+                                            .semantics {
+                                                contentDescription = if (selected) {
+                                                    "그리드 색 $name, 선택됨"
+                                                } else {
+                                                    "그리드 색을 $name(으)로 바꾸기"
+                                                }
+                                            },
+                                    )
+                                }
+                            }
+                            Text(
+                                text = "굵기",
+                                color = SnapPalette.TextPrimary,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(top = 14.dp),
+                            )
+                            // 카드 안이라 [ChoiceCard]의 Surface 없이 버튼 줄만 쓴다 (카드 중첩 방지).
+                            ChoiceRow(
+                                label = "그리드 굵기",
+                                options = GridThickness.entries.map { it.label },
+                                selectedIndex = GridThickness.entries
+                                    .indexOf(GridThickness.fromDp(state.gridThicknessDp)),
+                                onSelect = { index ->
+                                    val thickness = GridThickness.entries[index]
+                                    onGridThicknessChange(thickness.dp)
+                                    onAnnounceValue("그리드 굵기 ${thickness.label}")
+                                },
+                                modifier = Modifier.padding(top = 8.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
             // 접이식 "안내 방식" 설명 — 시안의 파란 노트 카드
             Spacer(Modifier.height(12.dp))
             Surface(
@@ -436,6 +544,12 @@ fun SettingsScreen(
 
             Spacer(Modifier.height(32.dp))
         }
+
+        // 최하단 전폭 복귀 버튼 (#84 배치 문법 통일) — 제스처·뒤로가기와 같은 공통 복귀 경로
+        HomeReturnButton(
+            onClick = onBack,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+        )
     }
 }
 
@@ -463,6 +577,8 @@ private fun SliderCard(
     lowLabel: String,
     highLabel: String,
     onValueChange: (Float) -> Unit,
+    /** 조작이 끝나면 "라벨 현재값"을 알린다 — 화면을 보지 않고도 결과를 확인할 수 있게. */
+    onAnnounce: ((String) -> Unit)? = null,
 ) {
     Surface(
         shape = RoundedCornerShape(20.dp),
@@ -496,6 +612,7 @@ private fun SliderCard(
             Slider(
                 value = value,
                 onValueChange = onValueChange,
+                onValueChangeFinished = onAnnounce?.let { announce -> { announce("$label $valueText") } },
                 valueRange = valueRange,
                 steps = steps,
                 colors = SliderDefaults.colors(
@@ -519,10 +636,104 @@ private fun SliderCard(
     }
 }
 
-/** 1.0 → "1×", 1.2 → "1.2×" — 시안 표기와 동일하게 소수점 0은 감춘다. */
-private fun formatSpeechRate(rate: Float): String {
-    val rounded = (rate * 10).roundToInt() / 10f
-    return if (rounded % 1f == 0f) "${rounded.toInt()}×" else "$rounded×"
+/**
+ * 3단계 선택 카드 — 라벨 + 설명 + 가로로 꽉 채운 버튼 줄.
+ *
+ * 슬라이더는 화면을 보며 미세 조정할 때나 쓸 만하다. 값이 실질적으로 몇 단계뿐인 설정은
+ * 버튼으로 나누는 편이 낫다: 터치 표적이 크고, 각 버튼이 TalkBack 에서 "3개 중 2번째 보통"
+ * 처럼 자기 위치를 스스로 말해 준다.
+ */
+@Composable
+private fun ChoiceCard(
+    label: String,
+    description: String,
+    options: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = SnapPalette.Card,
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, SnapPalette.CardBorder, RoundedCornerShape(20.dp)),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
+            Text(
+                text = label,
+                color = SnapPalette.TextPrimary,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = description,
+                color = Color(0xFFB8B8BD),
+                fontSize = 14.sp,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            ChoiceRow(
+                label = label,
+                options = options,
+                selectedIndex = selectedIndex,
+                onSelect = onSelect,
+                modifier = Modifier.padding(top = 12.dp),
+            )
+        }
+    }
+}
+
+/**
+ * [ChoiceCard]의 버튼 줄만 떼어낸 것 — 이미 카드 안에 있는 설정(그리드 굵기)에서 쓴다.
+ *
+ * 선택 상태를 색으로만 알리지 않도록 글자 굵기도 함께 바꾸고, 각 버튼의 [Role.RadioButton]과
+ * contentDescription 으로 "무엇의 몇 번째 선택지인지"를 낭독하게 한다.
+ */
+@Composable
+private fun ChoiceRow(
+    label: String,
+    options: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(modifier = modifier.fillMaxWidth()) {
+        options.forEachIndexed { index, option ->
+            val selected = index == selectedIndex
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = if (selected) SnapPalette.Accent else SnapPalette.Card,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = if (index == options.lastIndex) 0.dp else 8.dp)
+                    // 48dp — 화면을 보지 않고 누르는 표적의 최소 크기.
+                    .heightIn(min = 48.dp)
+                    .border(
+                        width = if (selected) 0.dp else 1.dp,
+                        color = SnapPalette.CardBorder,
+                        shape = RoundedCornerShape(14.dp),
+                    )
+                    .selectable(
+                        selected = selected,
+                        role = Role.RadioButton,
+                        onClick = { onSelect(index) },
+                    )
+                    .semantics {
+                        contentDescription = "$label, 현재 ${options[selectedIndex]}, " +
+                            "${options.size}개 중 ${index + 1}번째 $option"
+                    },
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = option,
+                        color = if (selected) SnapPalette.Background else SnapPalette.TextPrimary,
+                        fontSize = 15.sp,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                        modifier = Modifier.padding(vertical = 14.dp),
+                    )
+                }
+            }
+        }
+    }
 }
 
 /** [SettingsScreen]이 그리는 값 — 영속화·기본값 결정은 호출부(MainActivity 연결 시) 책임. */
@@ -531,10 +742,68 @@ data class SettingsUiState(
     val vibrationIntensity: Float,
     /** 0f(무음)..1f(최대) */
     val soundVolume: Float,
-    /** [SPEECH_RATE_RANGE] 범위 — [android.speech.tts.TextToSpeech.setSpeechRate]와 동일 단위(1f = 기본 속도) */
+    /**
+     * [android.speech.tts.TextToSpeech.setSpeechRate]와 동일 단위(1f = 기본 속도).
+     * 설정 화면은 [SpeechSpeed] 3단계로만 고르지만, 저장·전달은 계속 배속 값으로 한다 —
+     * 예전에 슬라이더로 저장된 값도 그대로 읽히고 TTS 에도 바로 넘길 수 있다.
+     */
     val speechRate: Float,
     /** 설정한 Snap-Sight 서버의 설명 API에 사진 업로드를 허용했을 때 true. */
     val serverAiDescriptionEnabled: Boolean = true,
+    /** 촬영 미리보기 3×3 그리드 표시 — 잔존시력·조력자용 시각 보조 (2026-08-23). */
+    val gridEnabled: Boolean = true,
+    /** 그리드 선 색 (ARGB, 반투명 알파 포함). */
+    val gridColorArgb: Int = DEFAULT_GRID_COLOR,
+    /** 그리드 선 굵기 (dp). 설정 화면은 [GridThickness] 3단계로 고른다. */
+    val gridThicknessDp: Float = GridThickness.DEFAULT.dp,
 )
 
-private val SPEECH_RATE_RANGE = 0.5f..2f
+/** 기본 그리드 색 — 흰색 70% (밝은·어두운 장면 모두에서 무난). */
+const val DEFAULT_GRID_COLOR = 0xB3FFFFFF.toInt()
+
+/** 그리드 색 선택지 — 이름은 TalkBack 낭독용. */
+val GRID_COLOR_CHOICES: List<Pair<String, Int>> = listOf(
+    "흰색" to DEFAULT_GRID_COLOR,
+    "노랑" to 0xB3FFD60A.toInt(),
+    "빨강" to 0xB3FF453A.toInt(),
+    "파랑" to 0xB30A84FF.toInt(),
+    "검정" to 0xB3000000.toInt(),
+)
+
+/**
+ * 음성 안내 말하기 속도 3단계.
+ *
+ * [rate]는 [android.speech.tts.TextToSpeech.setSpeechRate] 단위라 저장값을 그대로 TTS 에 넘긴다.
+ */
+enum class SpeechSpeed(val label: String, val rate: Float) {
+    SLOW("느리게", 0.8f),
+    NORMAL("보통", 1.0f),
+    FAST("빠르게", 1.5f),
+    ;
+
+    companion object {
+        val DEFAULT = NORMAL
+
+        /** 저장된 배속에 가장 가까운 단계. 연속 슬라이더 시절에 저장된 값도 받아준다. */
+        fun fromRate(rate: Float): SpeechSpeed = entries.minBy { abs(it.rate - rate) }
+    }
+}
+
+/**
+ * 3×3 그리드 선 굵기 3단계.
+ *
+ * [dp]는 그대로 [SettingsUiState.gridThicknessDp]에 저장되므로, 예전 슬라이더로 저장된
+ * 임의의 값(1f~5f)도 [fromDp]가 가장 가까운 단계로 매핑해 준다.
+ */
+enum class GridThickness(val label: String, val dp: Float) {
+    THIN("얇게", 1.5f),
+    MEDIUM("보통", 3f),
+    THICK("굵게", 5f),
+    ;
+
+    companion object {
+        val DEFAULT = THIN
+
+        fun fromDp(dp: Float): GridThickness = entries.minBy { abs(it.dp - dp) }
+    }
+}

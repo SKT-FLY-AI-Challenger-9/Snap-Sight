@@ -21,7 +21,8 @@ class PhotoSearchTest {
             {"id": "food", "name": "음식", "synonyms": ["먹을 거", "밥", "요리"]},
             {"id": "nature", "name": "자연", "synonyms": ["바다", "바닷가", "산"]},
             {"id": "birthday", "name": "생일", "synonyms": ["생파", "케이크"]},
-            {"id": "indoor", "name": "실내", "synonyms": ["집", "방"]}
+            {"id": "indoor", "name": "실내", "synonyms": ["집", "방"]},
+            {"id": "night", "name": "밤", "synonyms": ["야경", "저녁", "밤에"]}
           ]
         }
     """.trimIndent()
@@ -315,5 +316,90 @@ class PhotoSearchTest {
         assertEquals("1장을 찾았어요", PhotoSearchEngine.announcement(1))
         assertEquals("3장을 찾았어요", PhotoSearchEngine.announcement(3))
         assertTrue(PhotoSearchEngine.announcement(20).contains("좁혀"))
+    }
+
+    // --- 시각(하루 중 시간) 검색 (2026-08-23) ---
+
+    private fun atHour(hour: Int, daysAgo: Int = 0): Long = Calendar.getInstance().run {
+        timeInMillis = nowMs
+        add(Calendar.DAY_OF_YEAR, -daysAgo)
+        set(Calendar.HOUR_OF_DAY, hour); set(Calendar.MINUTE, 30)
+        timeInMillis
+    }
+
+    @Test
+    fun explicitHourIn24HourFormIsParsed() {
+        val query = parser().parse("18시에 찍은 사진", nowMs)
+        assertEquals(listOf(18 to 19), query.hourRanges)
+        assertEquals("18시", query.timePhrase)
+        assertTrue(query.freeTerms.isEmpty()) // "18시에"가 검색어로 새지 않는다
+        assertTrue(PhotoSearchEngine.matches(entry(takenAtMs = atHour(18)), query))
+        assertFalse(PhotoSearchEngine.matches(entry(takenAtMs = atHour(10)), query))
+    }
+
+    @Test
+    fun meridiemWordCorrectsTheHour() {
+        assertEquals(listOf(18 to 19), parser().parse("저녁 6시 사진", nowMs).hourRanges)
+        assertEquals(listOf(15 to 16), parser().parse("오후 3시에 찍은 거", nowMs).hourRanges)
+        assertEquals(listOf(8 to 9), parser().parse("아침 8시 사진", nowMs).hourRanges)
+        // "밤 12시" = 자정
+        assertEquals(listOf(0 to 1), parser().parse("밤 12시에 찍은 사진", nowMs).hourRanges)
+    }
+
+    @Test
+    fun bareAmbiguousHourMatchesBothMeridiems() {
+        val query = parser().parse("6시에 찍은 사진", nowMs)
+        assertEquals(listOf(6 to 7, 18 to 19), query.hourRanges)
+        assertTrue(PhotoSearchEngine.matches(entry(takenAtMs = atHour(6)), query))
+        assertTrue(PhotoSearchEngine.matches(entry(takenAtMs = atHour(18)), query))
+        assertFalse(PhotoSearchEngine.matches(entry(takenAtMs = atHour(12)), query))
+    }
+
+    @Test
+    fun timeOfDayWordAloneMatchesItsWindow() {
+        val evening = parser().parse("저녁에 찍은 사진", nowMs)
+        assertEquals(listOf(17 to 21), evening.hourRanges)
+        // 자정을 넘는 "밤"은 두 창 — 23시와 2시 모두 잡히고 낮 12시는 아니다
+        val night = parser().parse("밤에 찍은 거 보여줘", nowMs)
+        assertEquals(listOf(21 to 24, 0 to 5), night.hourRanges)
+        assertTrue(PhotoSearchEngine.matches(entry(takenAtMs = atHour(23)), night))
+        assertTrue(PhotoSearchEngine.matches(entry(takenAtMs = atHour(2)), night))
+        assertFalse(PhotoSearchEngine.matches(entry(takenAtMs = atHour(12)), night))
+    }
+
+    @Test
+    fun dateAndHourConditionsCombineWithAnd() {
+        val query = parser().parse("어제 저녁 6시에 찍은 사진", nowMs)
+        assertNotNull(query.dateStartMs)
+        assertEquals(listOf(18 to 19), query.hourRanges)
+        assertEquals("어제 저녁 6시", query.timePhrase)
+        assertTrue(PhotoSearchEngine.matches(entry(takenAtMs = atHour(18, daysAgo = 1)), query))
+        assertFalse(PhotoSearchEngine.matches(entry(takenAtMs = atHour(10, daysAgo = 1)), query))
+        assertFalse(PhotoSearchEngine.matches(entry(takenAtMs = atHour(18, daysAgo = 0)), query))
+    }
+
+    @Test
+    fun hourWordsDoNotDoubleAsLabelConditions() {
+        // 실기기 버그 (2026-08-23): "저녁 6시" 발화가 시각(18시)과 동시에 night 라벨(동의어 "저녁")로도
+        // 매칭돼, 밤 라벨 없는 사진이 전부 걸러졌다. 시각으로 해석된 단어는 라벨이 되면 안 된다.
+        val query = parser().parse("오늘 저녁 6시에 찍은 사진", nowMs)
+        assertEquals(listOf(18 to 19), query.hourRanges)
+        assertTrue(query.labelIds.isEmpty())
+        // 오늘 18:30 사진 — night 라벨이 없어도 잡힌다
+        assertTrue(PhotoSearchEngine.matches(entry(takenAtMs = atHour(18)), query, dictionary))
+
+        val eveningOnly = parser().parse("저녁에 찍은 사진", nowMs)
+        assertTrue(eveningOnly.labelIds.isEmpty())
+        assertEquals(listOf(17 to 21), eveningOnly.hourRanges)
+
+        // 시각 표현이 없으면 기존처럼 라벨 매칭 유지 ("야경 사진" = night 라벨)
+        val nightLabel = parser().parse("야경 사진 찾아줘", nowMs)
+        assertEquals(setOf("night"), nightLabel.labelIds)
+    }
+
+    @Test
+    fun durationExpressionIsNotAnHourQuery() {
+        // "N시간"은 기간이지 시각이 아니다 — 시각 조건을 만들지 않는다
+        assertTrue(parser().parse("6시간 전에 찍은 사진", nowMs).hourRanges.isEmpty())
     }
 }

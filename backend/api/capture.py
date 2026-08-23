@@ -440,7 +440,23 @@ def _parse_known_subjects(raw: str) -> list[dict]:
         if kind not in {"person", "object"}:
             raise HTTPException(status_code=422, detail="known_subjects.kind is invalid")
         bbox = _validate_bbox(item.get("bbox"))
+        intent_target = item.get("intent_target", False)
+        if not isinstance(intent_target, bool):
+            raise HTTPException(
+                status_code=422, detail="known_subjects.intent_target must be a boolean"
+            )
+        named = item.get("named", True)
+        if not isinstance(named, bool):
+            raise HTTPException(status_code=422, detail="known_subjects.named must be a boolean")
         subject = {"kind": kind, "bbox": bbox}
+        if intent_target:
+            # 발화 의도가 이 등록 대상을 가리켰다는 표시 — MLLM 설명이 이 대상 중심으로
+            # 서술되는 근거다. 이름은 여전히 기기 밖으로 나오지 않는다.
+            subject["intent_target"] = True
+        if not named:
+            # 기기에 이름 매핑이 없는 참조 — 프롬프트에서 토큰 대신 "요청한 촬영 대상"으로
+            # 다뤄 토큰이 설명 문장에 노출되지 않게 한다.
+            subject["named"] = False
         if has_legacy_name:
             subject["name"] = name.strip()
         else:

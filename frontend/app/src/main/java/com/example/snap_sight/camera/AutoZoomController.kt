@@ -1,8 +1,10 @@
 // 이 파일: 세션 배율 관리.
-//  - 세션 시작(AIMING): 0.6배 광각으로 넓게 보며 피사체를 찾는다
-//  - 피사체가 잡혀 구도가 안정되면(기준 충족): 정상 1.0배로 돌아온다 — 촬영은 항상 1.0 이상
-//  - 촬영이 끝나면(SAVED/IDLE): 다시 0.6배
-// 면적 기반 자동 "줌인"(멀리 있는 피사체를 프레이밍 목표 크기로 당기기)은 구현은 남겨두되
+// 현재 배율은 **1.0배로 고정**돼 있다 ([SESSION_START_ZOOM] == [BASE_ZOOM]) — 2026-08-23 피드백:
+// 세션 시작 0.6배 광각 → 구도 안정 시 1.0배 복귀 → 촬영 후 다시 0.6배 라는 왕복이 화면을
+// 보는 사용자(잔존시력·조력자)에게 어지러웠다. 배율이 변하지 않으므로 아래 복귀 로직들은
+// 사실상 동작하지 않지만, 되돌리기 쉽도록 구현은 그대로 둔다.
+//  - 광각 탐색을 되살리려면 [SESSION_START_ZOOM] 을 다시 0.6f 로 되돌리면 된다.
+// 면적 기반 자동 "줌인"(멀리 있는 피사체를 프레이밍 목표 크기로 당기기)도 구현은 남겨두되
 // **비활성화**돼 있다([ZOOM_IN_ENABLED]) — 2026-08-19 피드백: bbox 면적만으로는 깊이 판단이 부정확해
 // 확대가 오히려 혼란을 줬다. 깊이 추정/후처리가 붙은 뒤 다시 켠다.
 package com.example.snap_sight.camera
@@ -85,7 +87,8 @@ class AutoZoomController(private val cameraController: CameraController) {
             deviceMax = cameraController.maxZoomRatio,
         )
 
-    // 세션 시작·종료 시 호출 — 넓게(가능하면 0.6배) 돌아가 피사체를 찾기 쉽게 한다. 기기 최소 배율로 클램프된다.
+    // 세션 시작·종료 시 호출 — [SESSION_START_ZOOM] 로 돌아간다. 기기 배율 범위로 클램프된다.
+    // 지금은 그 값이 1.0배라 실제로는 배율이 움직이지 않는다 (파일 상단 참고).
     fun reset() {
         lastZoomAtMs = 0L
         alignedStreak = 0
@@ -115,7 +118,12 @@ class AutoZoomController(private val cameraController: CameraController) {
         const val ALIGN_FRAMES = 5
         /** 광각에서 1.0배 복귀까지 허용하는 연속 타겟 미탐지 프레임 수 (약 2초 @ 3fps). */
         const val NO_TARGET_FRAMES = 6
-        const val SESSION_START_ZOOM = 0.6f
+        /**
+         * 세션 시작·종료 시 돌아가는 배율. **[BASE_ZOOM] 과 같은 값이라 배율이 고정된다** —
+         * 0.6f 로 바꾸면 예전처럼 광각으로 넓게 피사체를 찾고 구도가 잡히면 1.0배로 복귀한다
+         * (2026-08-23 피드백으로 껐다: 배율 왕복이 어지럽다).
+         */
+        const val SESSION_START_ZOOM = 1.0f
         /** 피사체를 찾은 뒤 돌아오는 기본 배율. 촬영은 항상 이 값 이상에서 한다. */
         const val BASE_ZOOM = 1.0f
         const val COOLDOWN_MS = 2_000L

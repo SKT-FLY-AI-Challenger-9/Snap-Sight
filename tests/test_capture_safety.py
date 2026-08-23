@@ -139,6 +139,42 @@ def test_upload_accepts_private_opaque_subject_reference(tmp_path, monkeypatch, 
     ]
 
 
+def test_upload_passes_through_intent_target_and_rejects_non_boolean(
+    tmp_path, monkeypatch, client
+):
+    """발화 의도 대상 표시(intent_target=true)는 파이프라인까지 전달되고, 타입은 검증된다."""
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        "backend.api.capture.trigger_capture_pipeline", lambda *args: calls.append(args)
+    )
+    response = client.post(
+        "/api/capture/frames",
+        data={
+            "session_id": "intent-subject",
+            "known_subjects": (
+                '[{"subject_ref":"local_track_3","kind":"person","intent_target":true,'
+                '"bbox":{"x_min":0.1,"y_min":0.1,"x_max":0.4,"y_max":0.8}}]'
+            ),
+        },
+        files=[("representative_frame", ("frame.jpg", DUMMY_JPEG, "image/jpeg"))],
+    )
+    assert response.status_code == 200
+    assert calls[0][6][0]["intent_target"] is True
+
+    bad = client.post(
+        "/api/capture/frames",
+        data={
+            "session_id": "intent-subject-bad",
+            "known_subjects": (
+                '[{"subject_ref":"local_track_3","kind":"person","intent_target":"yes"}]'
+            ),
+        },
+        files=[("representative_frame", ("frame.jpg", DUMMY_JPEG, "image/jpeg"))],
+    )
+    assert bad.status_code == 422
+
+
 def test_candidate_rotation_is_validated_and_pixels_are_saved_upright(
     tmp_path, monkeypatch, client
 ):
