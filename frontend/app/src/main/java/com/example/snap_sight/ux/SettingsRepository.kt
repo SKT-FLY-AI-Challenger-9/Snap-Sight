@@ -22,6 +22,8 @@ class SettingsRepository(private val prefs: SharedPreferences) {
         gridEnabled = prefs.getBoolean(KEY_GRID_ENABLED, true),
         gridColorArgb = prefs.getInt(KEY_GRID_COLOR, DEFAULT_GRID_COLOR),
         gridThicknessDp = prefs.getFloat(KEY_GRID_THICKNESS, GridThickness.DEFAULT.dp),
+        // 모르는 키가 저장돼 있어도 fromKey 가 기본 프리셋으로 받아준다
+        voicePreset = VoicePreset.fromKey(prefs.getString(KEY_VOICE_PRESET, null)).key,
     )
 
     fun save(state: SettingsUiState) {
@@ -33,6 +35,7 @@ class SettingsRepository(private val prefs: SharedPreferences) {
             .putBoolean(KEY_GRID_ENABLED, state.gridEnabled)
             .putInt(KEY_GRID_COLOR, state.gridColorArgb)
             .putFloat(KEY_GRID_THICKNESS, state.gridThicknessDp)
+            .putString(KEY_VOICE_PRESET, state.voicePreset)
             .apply()
     }
 
@@ -46,5 +49,6 @@ class SettingsRepository(private val prefs: SharedPreferences) {
         const val KEY_GRID_ENABLED = "grid_enabled"
         const val KEY_GRID_COLOR = "grid_color"
         const val KEY_GRID_THICKNESS = "grid_thickness"
+        const val KEY_VOICE_PRESET = "voice_preset"
     }
 }

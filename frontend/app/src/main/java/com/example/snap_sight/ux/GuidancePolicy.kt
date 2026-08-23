@@ -36,14 +36,15 @@ internal sealed interface GuidanceAction {
     object WarningTone : GuidanceAction
 }
 
+// 노션 확정 스크립트(스크립트 - 준서) 문장 — SpeechCatalog 의 프리캐싱 음원과 1:1 로 일치해야 한다.
 internal enum class GuidanceDirection(val utterance: String) {
-    LEFT("왼쪽으로"),
-    RIGHT("오른쪽으로"),
-    UP("위로"),
-    DOWN("아래로"),
-    CLOSER("가까이"),
+    LEFT("조금 왼쪽으로 이동해 주세요."),
+    RIGHT("조금 오른쪽으로 이동해 주세요."),
+    UP("조금 위로 이동해 주세요."),
+    DOWN("조금 아래로 이동해 주세요."),
+    CLOSER("조금 가까이 가 주세요."),
     /** 정의만 남김 — [GuidancePolicy.pickDirection] 은 FARTHER 를 고르지 않는다. */
-    FARTHER("뒤로"),
+    FARTHER("조금 뒤로 당겨 주세요."),
 }
 
 /** 한 번의 canonical 평가에서 나온 최종 verdict와 렌더링 액션. */
@@ -249,8 +250,9 @@ internal class GuidancePolicy(
     }
 
     companion object {
-        const val READY_UTTERANCE = "지금 촬영하세요"
-        const val LOST_UTTERANCE = "피사체를 찾지 못했습니다"
+        // 노션 확정 스크립트 문장 (5-1 READY / 4-9 이탈) — SpeechCatalog 프리캐싱 음원과 일치
+        const val READY_UTTERANCE = "좋아요. 촬영할 수 있어요."
+        const val LOST_UTTERANCE = "피사체가 화면에서 벗어났어요. 다시 찾을게요."
 
         const val DIRECTION_REPEAT_MS = 2_500L
         const val DIRECTION_MIN_GAP_MS = 1_000L

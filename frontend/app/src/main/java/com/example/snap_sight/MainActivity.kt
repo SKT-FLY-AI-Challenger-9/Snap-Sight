@@ -496,13 +496,14 @@ class MainActivity : ComponentActivity() {
         // "말해주세요"가 발화로 인식되던 문제의 수정 (실사용 피드백 2026-08-22)
         sessionManager.listeningPrompt = { isRetry, onDone ->
             guidanceFeedback.announce(
+                // 노션 확정 스크립트 문장 (i1/o3/o4) — SpeechCatalog 프리캐싱 음원과 일치
                 when {
-                    isRetry -> "다시 한번 말씀해 주세요"
+                    isRetry -> "잘 못 들었어요. 다시 말씀해 주세요."
                     // 긴 안내는 실행당 첫 세션에만 — 안내가 끝나야 인식이 시작되는 구조라
                     // (에코 방지 게이트) 매 세션 길게 말하면 발화 대기가 그만큼 늘어난다
                     firstListeningPrompt -> {
                         firstListeningPrompt = false
-                        "무엇을 찍을까요? 설정, 갤러리 같은 화면 이름을 말해도 돼요"
+                        "무엇을 찍을지 말씀해 주세요. 예를 들어, 앞에 있는 사람 찍어줘."
                     }
                     else -> "무엇을 찍을까요?"
                 },
@@ -554,8 +555,8 @@ class MainActivity : ComponentActivity() {
                 when (state) {
                     // LISTENING 안내는 listeningPrompt 게이트가 담당 — 안내가 끝난 뒤에
                     // 인식이 시작되므로 안내 음성이 발화로 인식되지 않는다 (2026-08-22)
-                    // #84 탭 우선: 탭을 먼저, 볼륨은 병행 수단으로 나중에 말한다
-                    SessionState.AIMING -> guidanceFeedback.announce("카메라를 비춰 주세요. 화면을 두 번 탭하면 촬영합니다")
+                    // 노션 확정 스크립트 문장 (4-1 조정 시작) — 프레이밍은 사운드·햅틱 주도
+                    SessionState.AIMING -> guidanceFeedback.announce("소리와 진동을 따라 천천히 움직여 주세요.")
                     SessionState.CAPTURING -> {
                         val now = System.currentTimeMillis()
                         synchronized(cvSnapshotLock) {
@@ -611,14 +612,23 @@ class MainActivity : ComponentActivity() {
                         guidanceFeedback.playShutter()
                     }
                     SessionState.SAVED -> {
+                        // 스크립트 6-1(저장) → 6-2(짧은 결과 설명) 순서 — r1 음원 뒤에 온디바이스 요약
+                        val headline = captureHeadline()
                         guidanceFeedback.announce(
-                            captureHeadline(),
+                            "사진을 저장했어요.",
+                            onDone = {
+                                guidanceFeedback.announce(
+                                    headline,
+                                    priority = GuidanceFeedback.SpeechPriority.CAPTURE,
+                                )
+                            },
                             priority = GuidanceFeedback.SpeechPriority.CAPTURE,
                         )
                         autoZoom.reset() // 촬영이 끝나면 세션 시작 배율로 (현재 1.0배 고정)
                     }
                     SessionState.ERROR -> {
-                        guidanceFeedback.announce("촬영에 실패했습니다. 화면을 두 번 탭해 처음으로 돌아갑니다")
+                        // 노션 확정 스크립트 문장 (5-6 촬영 실패)
+                        guidanceFeedback.announce("저장하지 못했어요. 다시 촬영할까요?")
                         autoZoom.reset()
                     }
                     else -> Unit
@@ -868,7 +878,7 @@ class MainActivity : ComponentActivity() {
                                             speak(
                                                 lastResultDescription
                                                     ?: lastResultDescriptionStatus
-                                                    ?: "서버 AI 상세 설명을 준비하고 있어요"
+                                                    ?: "사진 설명을 준비하고 있어요."
                                             )
                                         },
                                         onAddLabel = { startResultLabeling() },
@@ -927,6 +937,12 @@ class MainActivity : ComponentActivity() {
                                 updateSettings(settingsUiState.copy(gridThicknessDp = it))
                             },
                             onAnnounceValue = { guidanceFeedback.announce(it) },
+                            onVoicePresetChange = { key ->
+                                updateSettings(settingsUiState.copy(voicePreset = key))
+                                // 미리듣기 (기획: 실사용 문구를 새 목소리로 바로 재생) —
+                                // 카탈로그 문장이라 프리셋 음원으로, 기본 프리셋이면 내장 TTS 로 나온다
+                                guidanceFeedback.announce("조금 왼쪽으로 이동해 주세요.")
+                            },
                             serverAiDescriptionEnabled = settingsUiState.serverAiDescriptionEnabled,
                             onServerAiDescriptionEnabledChange = {
                                 updateSettings(settingsUiState.copy(serverAiDescriptionEnabled = it))
@@ -1084,7 +1100,8 @@ class MainActivity : ComponentActivity() {
                     val description = localizedDetail ?: localizedBrief
                     lastResultDescription = description
                     lastResultDescriptionStatus = if (description == null) {
-                        "서버가 이 사진의 상세 설명을 만들지 못했어요. 사진은 정상적으로 저장됐어요."
+                        // 노션 확정 스크립트 문장 (6-4 설명 실패)
+                        "설명을 못 불러왔어요. 사진은 저장됐어요."
                     } else {
                         null
                     }
@@ -1120,8 +1137,8 @@ class MainActivity : ComponentActivity() {
             override fun onGaveUp(reason: String) {
                 Log.w(TAG, "통합 사진 이해 폴링 중단 [$sessionId]: $reason")
                 if (isCurrentVisibleResult(sessionId)) {
-                    lastResultDescriptionStatus =
-                        "서버 AI 상세 설명을 가져오지 못했어요. 서버 연결을 확인해 주세요."
+                    // 노션 확정 스크립트 문장 (6-4 설명 실패)
+                    lastResultDescriptionStatus = "설명을 못 불러왔어요. 사진은 저장됐어요."
                 }
             }
         })
@@ -1286,7 +1303,8 @@ class MainActivity : ComponentActivity() {
         activeServerCaptureRevision = null
         sessionManager.cancel()
         guidanceFeedback.playScreenExit()
-        guidanceFeedback.announce("촬영을 취소했어요. 홈입니다")
+        // 노션 확정 스크립트 문장 (8-1 취소)
+        guidanceFeedback.announce("촬영을 취소했어요.")
     }
 
     /** MAIN 화면 아무 곳 두 번 탭 = 메인 기능 — 상태별 진행(시작/발화 종료/셔터/처음으로). */
@@ -1315,7 +1333,7 @@ class MainActivity : ComponentActivity() {
     private fun onMainSubAction() {
         if (enrollmentActive) return
         when {
-            showResult -> lastResultDescription?.let(::speak) ?: speak("설명을 만드는 중이에요")
+            showResult -> lastResultDescription?.let(::speak) ?: speak("사진 설명을 준비하고 있어요.")
             sessionManager.state != SessionState.IDLE -> {
                 val summary = listOf(statusText, guidanceText)
                     .filter { it.isNotBlank() }
@@ -2031,9 +2049,10 @@ class MainActivity : ComponentActivity() {
         if (!wentToBackground) return
         wentToBackground = false
         if (currentScreen != AppScreen.MAIN || !permissionsGranted) return
+        // 노션 확정 스크립트 문장 (0-5/F-3 복귀)
         guidanceFeedback.announce(
-            if (sessionCancelledInBackground) "스냅사이트로 돌아왔습니다. 진행 중이던 촬영은 취소됐어요. 화면을 두 번 탭해 다시 시작하세요"
-            else "스냅사이트로 돌아왔습니다. 화면을 두 번 탭해 시작하세요"
+            if (sessionCancelledInBackground) "다시 시작할게요. 무엇을 찍을까요?"
+            else "무엇을 찍을까요?"
         )
         sessionCancelledInBackground = false
     }
@@ -2766,8 +2785,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private companion object {
-        const val WELCOME_TEXT = "스냅사이트입니다. 화면을 두 번 탭하고 무엇을 찍을지 말하세요. " +
-            "설정이나 갤러리라고 말하면 그 화면으로 이동해요"
+        // 노션 확정 스크립트 문장 (0-1 첫 인사) — SpeechCatalog 프리캐싱 음원과 일치
+        const val WELCOME_TEXT = "안녕하세요. 찍고 싶은 장면을 말씀해 주세요."
         const val TAG = "SnapSight"
 
         // 즉시 상황 안내용 자주 나오는 라벨 한글 표기 — 없는 라벨은 영문 그대로 읽는다

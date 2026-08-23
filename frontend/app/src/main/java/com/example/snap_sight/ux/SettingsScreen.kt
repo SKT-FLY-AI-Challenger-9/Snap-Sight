@@ -57,6 +57,8 @@ fun SettingsScreen(
     onSpeechRateChange: (Float) -> Unit,
     serverAiDescriptionEnabled: Boolean = true,
     onServerAiDescriptionEnabledChange: (Boolean) -> Unit = {},
+    /** 안내 목소리 프리셋 변경 ([VoicePreset.key]) — 호출부가 적용·저장·미리듣기를 담당한다. */
+    onVoicePresetChange: (String) -> Unit = {},
     // 촬영 그리드 (2026-08-23) — 잔존시력·조력자용 시각 보조
     onGridEnabledChange: (Boolean) -> Unit = {},
     onGridColorChange: (Int) -> Unit = {},
@@ -133,6 +135,18 @@ fun SettingsScreen(
             )
 
             SectionLabel("음성 안내", topPadding = 20.dp)
+
+            // 안내 목소리 프리셋 3종 (기획: 선택 시 실사용 문구로 즉시 미리듣기) —
+            // 아리아·올리버는 SKT A.X TTS 프리캐싱 음원, 기본은 내장 TTS.
+            ChoiceCard(
+                label = "안내 목소리",
+                description = "촬영 안내 목소리를 고르세요. 고르면 바로 들려드려요",
+                options = VoicePreset.entries.map { it.label },
+                selectedIndex = VoicePreset.entries.indexOf(VoicePreset.fromKey(state.voicePreset)),
+                onSelect = { index -> onVoicePresetChange(VoicePreset.entries[index].key) },
+            )
+
+            Spacer(Modifier.height(12.dp))
 
             // 슬라이더 대신 3단계 버튼 — 화면을 보지 않고 조작할 때 "몇 배인지"보다 "느리게/보통/
             // 빠르게" 중 하나를 고르는 편이 훨씬 확실하다. 저장값은 계속 배속(Float)이라 예전에
@@ -756,6 +770,8 @@ data class SettingsUiState(
     val gridColorArgb: Int = DEFAULT_GRID_COLOR,
     /** 그리드 선 굵기 (dp). 설정 화면은 [GridThickness] 3단계로 고른다. */
     val gridThicknessDp: Float = GridThickness.DEFAULT.dp,
+    /** 안내 목소리 프리셋 키 ([VoicePreset.key]) — system / aria / oliver. */
+    val voicePreset: String = VoicePreset.DEFAULT.key,
 )
 
 /** 기본 그리드 색 — 흰색 70% (밝은·어두운 장면 모두에서 무난). */
@@ -769,6 +785,25 @@ val GRID_COLOR_CHOICES: List<Pair<String, Int>> = listOf(
     "파랑" to 0xB30A84FF.toInt(),
     "검정" to 0xB3000000.toInt(),
 )
+
+/**
+ * 안내 목소리 프리셋 3종 — 기본(내장 TTS) + SKT A.X TTS 프리캐싱 음원 2종.
+ *
+ * [assetDir]가 null 이 아니면 [SpeechCatalog]의 확정 문장을 그 assets 디렉터리의 mp3 로
+ * 재생한다 (내비게이션식 즉시 재생). 카탈로그 밖 동적 문장은 어느 프리셋이든 내장 TTS.
+ */
+enum class VoicePreset(val key: String, val label: String, val assetDir: String?) {
+    SYSTEM("system", "기본", null),
+    ARIA("aria", "아리아", "tts/aria"),
+    OLIVER("oliver", "올리버", "tts/oliver"),
+    ;
+
+    companion object {
+        val DEFAULT = SYSTEM
+
+        fun fromKey(key: String?): VoicePreset = entries.firstOrNull { it.key == key } ?: DEFAULT
+    }
+}
 
 /**
  * 음성 안내 말하기 속도 3단계.
