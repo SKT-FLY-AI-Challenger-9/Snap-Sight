@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 개발용: 백엔드 개발 서버가 평문 HTTP 라서 전체 허용한다.
-     실기기 테스트 시 PC LAN IP 가 매번 달라 도메인 고정이 불가능하기 때문.
-     배포 전에는 반드시 도메인 고정(https) 구성으로 되돌릴 것. -->
+<!-- 배포 빌드는 사진·음성·설명 메타데이터를 평문으로 보내지 않는다.
+     로컬 개발 HTTP 허용은 src/debug의 동일 이름 리소스로만 덮어쓴다. -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true" />
+    <base-config cleartextTrafficPermitted="false" />
 </network-security-config>

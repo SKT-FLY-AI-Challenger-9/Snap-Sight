@@ -20,12 +20,12 @@ import java.util.concurrent.TimeUnit
  * 스레딩: [onFrame] 은 CV 분석 스레드에서 동기 호출된다 (CvFrame 버퍼 재사용 규약 준수 —
  * 필요한 변환은 호출 안에서 끝낸다). 상태는 volatile 스냅샷으로 노출한다.
  *
- * 비용: [enabled] 가 아니면 완전 no-op. 켜져 있으면 [analyzeEveryNthFrame] 프레임마다
+ * 비용: [enabled] 가 아니면 완전 no-op. 켜져 있으면 [analysisIntervalMs] 간격으로
  * 1회 얼굴 검출(분류+컨투어)을 돌린다 — 컨투어 모드는 가장 두드러진 얼굴 1개만 처리하므로
  * 셀카 용도에 맞고, 동공 탐색은 눈 영역(수십 픽셀)만 봐서 비용이 미미하다.
  */
 class SelfieGazeMonitor(
-    private val analyzeEveryNthFrame: Int = 3,
+    private val analysisIntervalMs: Long = 500L,
 ) {
 
     enum class GazeState {
@@ -54,7 +54,7 @@ class SelfieGazeMonitor(
     var lastVerdictAtMs: Long = 0L
         private set
 
-    private var frameCounter = 0L
+    private var nextAnalysisAtMs = 0L
 
     // 분류(눈 뜸) + 컨투어(눈 윤곽 → 동공 탐색)까지 켠 검출기 —
     // FaceIdentifier(FAST·부가정보 없음)와 요구 옵션이 달라 분리한다
@@ -71,45 +71,50 @@ class SelfieGazeMonitor(
     fun reset() {
         state = GazeState.NO_FACE
         lastVerdictAtMs = 0L
-        frameCounter = 0
+        nextAnalysisAtMs = 0L
     }
 
     /** 분석 프레임마다 호출 (CV 분석 스레드). 꺼져 있으면 즉시 리턴. */
     fun onFrame(frame: CvFrame) {
         if (!enabled) return
-        frameCounter++
-        if (frameCounter % analyzeEveryNthFrame != 0L) return
+        val now = System.currentTimeMillis()
+        if (now < nextAnalysisAtMs) return
+        nextAnalysisAtMs = now + analysisIntervalMs
 
         val bitmap = frame.toBitmap() ?: return
-        val face = try {
-            Tasks.await(
-                detector.process(InputImage.fromBitmap(bitmap, 0)),
-                DETECT_TIMEOUT_MS, TimeUnit.MILLISECONDS,
-            ).maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
-        } catch (t: Throwable) {
-            Log.w(TAG, "셀카 시선 검출 실패 — 이 프레임은 건너뜀", t)
-            return
-        }
-
-        state = if (face == null) {
-            GazeState.NO_FACE
-        } else {
-            when (
-                GazeJudge.judge(
-                    eulerYawDegrees = face.headEulerAngleY,
-                    eulerPitchDegrees = face.headEulerAngleX,
-                    leftEyeOpenProbability = face.leftEyeOpenProbability,
-                    rightEyeOpenProbability = face.rightEyeOpenProbability,
-                    pupilHorizontalRatio = averagePupilRatio(bitmap, face),
-                )
-            ) {
-                GazeJudge.Verdict.LOOKING -> GazeState.LOOKING
-                GazeJudge.Verdict.HEAD_TURNED -> GazeState.HEAD_TURNED
-                GazeJudge.Verdict.EYES_CLOSED -> GazeState.EYES_CLOSED
-                GazeJudge.Verdict.EYES_AWAY -> GazeState.EYES_AWAY
+        try {
+            val face = try {
+                Tasks.await(
+                    detector.process(InputImage.fromBitmap(bitmap, 0)),
+                    DETECT_TIMEOUT_MS, TimeUnit.MILLISECONDS,
+                ).maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
+            } catch (t: Throwable) {
+                Log.w(TAG, "셀카 시선 검출 실패 — 이 프레임은 건너뜀", t)
+                return
             }
+
+            state = if (face == null) {
+                GazeState.NO_FACE
+            } else {
+                when (
+                    GazeJudge.judge(
+                        eulerYawDegrees = face.headEulerAngleY,
+                        eulerPitchDegrees = face.headEulerAngleX,
+                        leftEyeOpenProbability = face.leftEyeOpenProbability,
+                        rightEyeOpenProbability = face.rightEyeOpenProbability,
+                        pupilHorizontalRatio = averagePupilRatio(bitmap, face),
+                    )
+                ) {
+                    GazeJudge.Verdict.LOOKING -> GazeState.LOOKING
+                    GazeJudge.Verdict.HEAD_TURNED -> GazeState.HEAD_TURNED
+                    GazeJudge.Verdict.EYES_CLOSED -> GazeState.EYES_CLOSED
+                    GazeJudge.Verdict.EYES_AWAY -> GazeState.EYES_AWAY
+                }
+            }
+            lastVerdictAtMs = now
+        } finally {
+            bitmap.recycle()
         }
-        lastVerdictAtMs = System.currentTimeMillis()
     }
 
     /**

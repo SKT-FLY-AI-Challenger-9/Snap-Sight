@@ -4,19 +4,22 @@
 from fastapi import FastAPI
 
 from backend.api.capture import router as capture_router
+from backend.api.labels import router as labels_router
 from backend.api.session import router as session_router
 from backend.api.tts import router as tts_router
 from backend.config import load_server_host, load_server_port, validate_required_env
+from backend.lifecycle import app_lifespan
 from backend.utils.logger import load_logger
 
 logger = load_logger("main.log")
 
 validate_required_env()
 
-app = FastAPI(title="Snap-Sight Backend")
+app = FastAPI(title="Snap-Sight Backend", lifespan=app_lifespan)
 
 # 각 라우터가 전체 경로를 내부에 이미 지정하므로 prefix를 주지 않는다.
 app.include_router(capture_router)
+app.include_router(labels_router)
 app.include_router(session_router)
 app.include_router(tts_router)
 

@@ -2,9 +2,11 @@
 """검색용 상세 메타데이터(backend/mllm/metadata.py)와 조회 API 테스트 (기능 3-B)."""
 
 import json
+from io import BytesIO
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from ai.photo_labels import default_photo_labels
 from backend.api.capture import router as capture_router
@@ -20,7 +22,14 @@ app = FastAPI()
 app.include_router(capture_router)
 client = TestClient(app)
 
-DUMMY_JPEG = b"\xff\xd8\xff\xe0fake-jpeg-bytes"
+
+def _make_jpeg() -> bytes:
+    output = BytesIO()
+    Image.new("RGB", (2, 2), "white").save(output, format="JPEG")
+    return output.getvalue()
+
+
+DUMMY_JPEG = _make_jpeg()
 
 
 # --- save/load: 폐쇄형 계약 강제 ---
@@ -32,8 +41,8 @@ def test_save_metadata_drops_labels_outside_the_dictionary(tmp_path, monkeypatch
     known = next(iter(taxonomy.ids()))
     result = PhotoMetadataOutput(
         long_description="따뜻한 조명 아래 케이크가 놓여 있어요.",
-        labels=[known, "invented-by-llm"],
-        custom_labels=["제주도 여행", "LLM이 지어낸 라벨"],
+        labels=[known, "invented-by-llm", known],
+        custom_labels=["제주도 여행", "LLM이 지어낸 라벨", "제주도 여행"],
         people_count=2,
     )
 
@@ -85,19 +94,32 @@ def test_prompt_marks_missing_context_explicitly():
     assert "(없음)" in prompt
 
 
+def test_prompt_uses_opaque_subject_reference_without_exposing_real_identity():
+    prompt = build_user_prompt(
+        raw_text="",
+        custom_labels=[],
+        detected_objects=[],
+        taxonomy=default_photo_labels(),
+        known_subjects=[
+            {
+                "subject_ref": "local_person_1",
+                "kind": "person",
+                "bbox": {"x_min": 0.1, "y_min": 0.1, "x_max": 0.4, "y_max": 0.8},
+            }
+        ],
+    )
+    assert "local_person_1" in prompt
+
+
 # --- 업로드 → 트리거 배선 ---
 
 
 def test_upload_triggers_metadata_with_parsed_fields(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("backend.api.capture.trigger_comparison", lambda *args: None)
-    monkeypatch.setattr("backend.api.capture.trigger_description", lambda *args: None)
     calls = []
     monkeypatch.setattr(
-        "backend.api.capture.trigger_metadata",
-        lambda session_id, raw_text, custom_labels, detected_objects: calls.append(
-            (session_id, raw_text, custom_labels, detected_objects)
-        ),
+        "backend.api.capture.trigger_capture_pipeline",
+        lambda *args: calls.append(args),
     )
 
     response = client.post(
@@ -107,12 +129,42 @@ def test_upload_triggers_metadata_with_parsed_fields(tmp_path, monkeypatch):
             "raw_text": "케이크 찍어줘",
             "custom_labels": json.dumps(["제주도 여행"], ensure_ascii=False),
             "detected_objects": json.dumps(["cake"]),
+            # 셔터 순간 식별된 등록 인물·사물 — 설명이 이름으로 부르게 하는 재료 (2026-08-23)
+            "known_subjects": json.dumps(
+                [{"name": "유재석", "kind": "person", "bbox": {"x_min": 0.1, "y_min": 0.2, "x_max": 0.4, "y_max": 0.9}}],
+                ensure_ascii=False,
+            ),
         },
         files=[("representative_frame", ("rep.jpg", DUMMY_JPEG, "image/jpeg"))],
     )
 
     assert response.status_code == 200
-    assert calls == [("s_meta", "케이크 찍어줘", ["제주도 여행"], ["cake"])]
+    assert len(calls) == 1
+    assert calls[0][0:4] == ("s_meta", 1, "케이크 찍어줘", [])
+    assert calls[0][4] == ["제주도 여행"]
+    assert calls[0][5] == ["cake"]
+    assert calls[0][6] == [
+        {
+            "name": "유재석",
+            "kind": "person",
+            "bbox": {"x_min": 0.1, "y_min": 0.2, "x_max": 0.4, "y_max": 0.9},
+        }
+    ]
+
+
+def test_known_subjects_are_rendered_into_prompt_with_position():
+    from backend.mllm.description import describe_position, format_known_subjects
+
+    text = format_known_subjects(
+        [
+            {"name": "유재석", "kind": "person", "bbox": {"x_min": 0.0, "y_min": 0.0, "x_max": 0.3, "y_max": 0.3}},
+            {"name": "내 텀블러", "kind": "object", "bbox": None},
+        ]
+    )
+    assert "유재석 (사람, 화면 왼쪽 위)" in text
+    assert "내 텀블러 (사물)" in text
+    assert describe_position({"x_min": 0.4, "y_min": 0.4, "x_max": 0.6, "y_max": 0.6}) == "화면 가운데"
+    assert describe_position(None) is None
 
 
 def test_upload_rejects_malformed_custom_labels(tmp_path, monkeypatch):

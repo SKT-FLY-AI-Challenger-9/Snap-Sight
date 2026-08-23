@@ -1,6 +1,8 @@
 package com.example.snap_sight.ux
 
 import com.example.snap_sight.cv.DeviationResult
+import com.example.snap_sight.cv.CompositionProfile
+import com.example.snap_sight.cv.CompositionReadiness
 
 /**
  * [DeviationResult] → [GuidanceState] 판정.
@@ -15,41 +17,55 @@ import com.example.snap_sight.cv.DeviationResult
 object GuidanceStateMapper {
 
     /** 2026-08-19 실사용 피드백으로 0.15 → 0.20 완화 (프레임 폭의 ±20% 안이면 CENTERED). */
-    const val MAX_ABS_X_DEVIATION = 0.20f
-    const val MAX_ABS_SIZE_DEVIATION = 0.10f
-    /** 수직 허용 오차 [추정] — 세로 구도는 여유를 더 둔다(전신은 중심이 아래로 치우치기 쉬움). */
-    const val MAX_ABS_Y_DEVIATION = 0.25f
+    val MAX_ABS_X_DEVIATION: Float
+        get() = CompositionProfile.DEFAULT.fullBody.maxAbsXDeviation
+    val MAX_ABS_SIZE_DEVIATION: Float
+        get() = CompositionProfile.DEFAULT.fullBody.maxAbsAreaDeviation
+    val MAX_ABS_Y_DEVIATION: Float
+        get() = CompositionProfile.DEFAULT.fullBody.maxAbsYDeviation
     /**
      * READY 유지 히스테리시스 — 한 번 READY 에 들어오면 임계값의 이 배수를 넘어야 벗어난 것으로 본다.
      * 손떨림으로 READY ↔ 방향 안내가 튀는 것을 막는다. [GuidancePolicy] 가 쓴다.
      */
-    const val READY_EXIT_FACTOR = 1.5f
+    val READY_EXIT_FACTOR: Float
+        get() = CompositionProfile.DEFAULT.fullBody.readyExitFactor
 
-    fun from(result: DeviationResult): GuidanceState {
+    fun from(
+        result: DeviationResult,
+        profile: CompositionProfile = CompositionProfile.DEFAULT,
+    ): GuidanceState {
         if (!result.subjectDetected) {
             return GuidanceState(detected = false, horizontal = null, distance = null)
         }
         val x = requireNotNull(result.xDeviation) { "subjectDetected=true인데 xDeviation이 null" }
         val size = requireNotNull(result.sizeDeviation) { "subjectDetected=true인데 sizeDeviation이 null" }
+        val goal = result.goal ?: profile.goalFor(result.framing)
 
         val horizontal = when {
-            x < -MAX_ABS_X_DEVIATION -> HorizontalAlignment.LEFT
-            x > MAX_ABS_X_DEVIATION -> HorizontalAlignment.RIGHT
+            x < -goal.maxAbsXDeviation -> HorizontalAlignment.LEFT
+            x > goal.maxAbsXDeviation -> HorizontalAlignment.RIGHT
             else -> HorizontalAlignment.CENTERED
         }
         val distance = when {
-            size < -MAX_ABS_SIZE_DEVIATION -> DistanceAlignment.CLOSER
-            size > MAX_ABS_SIZE_DEVIATION -> DistanceAlignment.FARTHER
+            size < -goal.maxAbsAreaDeviation -> DistanceAlignment.CLOSER
+            size > goal.maxAbsAreaDeviation -> DistanceAlignment.FARTHER
             else -> DistanceAlignment.CENTERED
         }
         // y: 음수 = 피사체가 프레임 중심보다 위 → 카메라를 위로 올려야 한다
         val vertical = result.yDeviation?.let { y ->
             when {
-                y < -MAX_ABS_Y_DEVIATION -> VerticalAlignment.UP
-                y > MAX_ABS_Y_DEVIATION -> VerticalAlignment.DOWN
+                y < -goal.maxAbsYDeviation -> VerticalAlignment.UP
+                y > goal.maxAbsYDeviation -> VerticalAlignment.DOWN
                 else -> VerticalAlignment.CENTERED
             }
         }
-        return GuidanceState(detected = true, horizontal = horizontal, distance = distance, vertical = vertical)
+        return GuidanceState(
+            detected = true,
+            horizontal = horizontal,
+            distance = distance,
+            vertical = vertical,
+            canonicalReadyCandidate =
+                CompositionReadiness.candidateVerdict(result, profile).candidateReady,
+        )
     }
 }

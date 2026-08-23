@@ -113,6 +113,8 @@ class SpecDeviationCalculatorTest {
         nowMs += 100
         val held = calculator.compute(selection(), spec())!!
         assertTrue(held.held)
+        assertEquals(ObservationFreshness.HELD, held.observationFreshness)
+        assertEquals(100L, held.observationAgeMs)
         assertEquals(1, held.trackId)
         // hold 창 만료 → LOST
         nowMs += TargetLockConfig().holdMs + 1
@@ -159,6 +161,21 @@ class SpecDeviationCalculatorTest {
     }
 
     @Test
+    fun predictedTargetDoesNotRefreshTheLastRealObservationTime() {
+        val fresh = tracked(trackId = 1, xMin = 0.3f, yMin = 0.2f, xMax = 0.7f, yMax = 0.8f)
+        calculator.compute(selection(fresh), spec())
+        nowMs = 300L
+        val predicted = fresh.copy(predicted = true, observationAgeMs = 300L)
+        val propagated = calculator.compute(selection(predicted), spec())!!
+        assertEquals(ObservationFreshness.PREDICTED, propagated.observationFreshness)
+        assertEquals(300L, propagated.observationAgeMs)
+
+        // 예측 bbox를 반복해서 받아도 hold 기준은 t=0의 실제 관측이다.
+        nowMs = TargetLockConfig().holdMs + 1L
+        assertNull(calculator.compute(selection(), spec()))
+    }
+
+    @Test
     fun landscapeIntentReturnsNull() {
         val target = tracked(xMin = 0.3f, yMin = 0.3f, xMax = 0.7f, yMax = 0.7f)
         assertNull(calculator.compute(selection(target), spec(subjectType = TargetSpec.SubjectType.LANDSCAPE)))
@@ -167,6 +184,19 @@ class SpecDeviationCalculatorTest {
     @Test
     fun emptyCandidatesReturnsNull() {
         assertNull(calculator.compute(selection(), spec()))
+    }
+
+    @Test
+    fun ambiguousSelectionNeverChoosesAnArbitraryReadyTarget() {
+        val candidates = listOf(
+            tracked(trackId = 1, xMin = 0.1f, yMin = 0.1f, xMax = 0.4f, yMax = 0.8f),
+            tracked(trackId = 2, xMin = 0.6f, yMin = 0.1f, xMax = 0.9f, yMax = 0.8f),
+        )
+        val ambiguous = TargetSelection(
+            state = TargetSelectionState.AMBIGUOUS,
+            candidates = candidates,
+        )
+        assertNull(calculator.compute(ambiguous, spec()))
     }
 
     @Test

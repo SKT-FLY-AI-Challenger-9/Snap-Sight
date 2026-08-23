@@ -3,16 +3,19 @@
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from ai.llm_fallback import resolve_target_spec
 from ai.target_spec import TargetSpec, TargetSpecSource, TargetSpecStatus
+from backend.api.guards import require_api_access
+from backend.storage.frame_buffer import validate_session_id
 from backend.utils.logger import load_logger
 
 logger = load_logger("session.log")
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_api_access)])
 
 
 class UtteranceRequest(BaseModel):
@@ -34,12 +37,17 @@ async def parse_utterance(request: UtteranceRequest) -> dict[str, Any]:
     모드로 넘어가버려서 "발화를 못 알아들었다"는 상태 자체가 사라진다. 대신 status=failed인
     스펙을 200으로 돌려줘 앱이 인식 실패 경로를 그대로 타게 한다.
     """
+    try:
+        validate_session_id(request.session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     if not request.raw_text.strip():
         logger.info(f"세션 {request.session_id}: 빈 발화 — status=failed 스펙 반환")
         return _failed_spec(request.session_id, request.raw_text).to_dict()
 
     try:
-        spec = resolve_target_spec(request.raw_text, request.session_id)
+        spec = await run_in_threadpool(resolve_target_spec, request.raw_text, request.session_id)
     except Exception as exc:  # noqa: BLE001 - 파싱 실패가 촬영 세션을 막아서는 안 된다
         logger.error(f"세션 {request.session_id}: 타겟 스펙 변환 실패 — {exc}")
         return _failed_spec(request.session_id, request.raw_text).to_dict()

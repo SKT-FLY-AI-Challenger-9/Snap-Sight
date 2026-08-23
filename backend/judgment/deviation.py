@@ -52,7 +52,7 @@ class DeviationResult(BaseModel):
     size_deviation: float | None
 
     @model_validator(mode="after")
-    def _check_deviation_consistency(self) -> "DeviationResult":
+    def _check_deviation_consistency(self) -> DeviationResult:
         fields = (self.x_deviation, self.size_deviation)
         if self.subject_detected and any(f is None for f in fields):
             raise ValueError("subject_detected가 True인 경우 편차 값은 비어 있으면 안 됩니다.")

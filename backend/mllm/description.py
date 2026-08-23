@@ -1,6 +1,10 @@
 # backend/mllm/description.py
-"""촬영 직후 대표 컷 한 장을 Haiku로 빠르게 설명한다 — 무거운 후보 비교(Opus)와 병렬로 돌아
-사용자가 결과를 기다리는 동안 먼저 "무엇이 찍혔는지"를 들려주기 위한 모듈이다 (#76)."""
+"""Description persistence plus legacy/standalone photo-label model helpers.
+
+The capture API no longer runs the Haiku description in parallel with frame
+selection. Its canonical pipeline stores the brief description produced by the
+same structured final-image understanding as detailed metadata.
+"""
 
 from __future__ import annotations
 
@@ -9,11 +13,12 @@ import json
 from pathlib import Path
 
 from anthropic import Anthropic, APIConnectionError, APIStatusError
-from pydantic import BaseModel
 from dotenv import load_dotenv
+from pydantic import BaseModel
 
 from backend.mllm.client import _downscaled_jpeg
-from backend.storage.frame_buffer import CAPTURES_DIR, load_session_frame_paths
+from backend.storage.atomic import atomic_write_text
+from backend.storage.frame_buffer import load_session_frame_paths, session_dir_for
 from backend.utils.logger import load_logger
 
 load_dotenv()
@@ -28,15 +33,21 @@ SYSTEM_PROMPT = (
     "시각장애 사용자가 방금 찍은 사진을 들려주는 역할이다. 정확히 1문장, 존댓말로 아주 짧게 설명한다. "
     "무엇이 찍혔는지(주인공이 어디에 어떤 모습으로)만 한 문장에 담는다 — 낭독했을 때 한 줄 안에 끝나야 한다. "
     "세부를 나열하지 말고 핵심만 고르되, 확실하지 않은 세부는 지어내지 않는다. "
+    "등록 이름 또는 local_* 참조 토큰은 현재 사진에서 대응 위치의 대상이 분명히 보일 때만 그대로 "
+    "사용한다. 위치가 없거나 대응이 불확실하면 쓰지 않는다. local_* 토큰의 실제 이름이나 관계를 "
+    "추측하지 않고, 관계를 알 수 없는 사람을 친구·가족이라고 부르지 않는다. "
     "문장은 반드시 '~있어요', '~이에요', '~보여요'처럼 부드러운 존댓말로 끝낸다. 반말 금지."
 )
 
 
-def trigger_description(session_id: str) -> None:
-    """세션 대표 컷의 한 줄 설명을 생성해 저장한다. 실패해도 예외를 밖으로 흘리지 않는다."""
+def trigger_description(session_id: str, known_subjects: list[dict] | None = None) -> None:
+    """세션 대표 컷의 한 줄 설명을 생성해 저장한다. 실패해도 예외를 밖으로 흘리지 않는다.
+
+    known_subjects: 앱이 셔터 순간 식별한 등록 인물·사물 [{name, kind, bbox?}] — 이름으로 부르게 한다.
+    """
     try:
         representative, _ = load_session_frame_paths(session_id)
-        text = describe_photo(representative)
+        text = describe_photo(representative, known_subjects or [])
     except Exception as exc:  # noqa: BLE001 - 설명 실패가 촬영·비교 흐름을 막아서는 안 된다
         logger.error(f"세션 {session_id}: 사진 설명 생성 실패 — {exc}")
         text = None
@@ -45,10 +56,14 @@ def trigger_description(session_id: str) -> None:
     logger.info(f"세션 {session_id}: 사진 설명 저장 완료 — {text}")
 
 
-def describe_photo(image_path: Path) -> str | None:
+def describe_photo(image_path: Path, known_subjects: list[dict] | None = None) -> str | None:
     """대표 컷 한 장을 한 문장으로 설명한다. 호출 실패 시 None."""
     client = Anthropic()
     data = base64.standard_b64encode(_downscaled_jpeg(image_path)).decode("utf-8")
+    prompt = "이 사진을 설명해줘:"
+    subjects_text = format_known_subjects(known_subjects or [])
+    if subjects_text:
+        prompt = f"사진 속 등록된 인물·사물:\n{subjects_text}\n\n이 사진을 설명해줘:"
     try:
         response = client.messages.create(
             model=MODEL_ID,
@@ -58,7 +73,7 @@ def describe_photo(image_path: Path) -> str | None:
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "이 사진을 설명해줘:"},
+                        {"type": "text", "text": prompt},
                         {
                             "type": "image",
                             "source": {"type": "base64", "media_type": "image/jpeg", "data": data},
@@ -75,18 +90,56 @@ def describe_photo(image_path: Path) -> str | None:
     return text or None
 
 
-def save_description(session_id: str, text: str | None) -> Path:
+def format_known_subjects(known_subjects: list[dict]) -> str:
+    """등록 인물·사물 목록을 프롬프트용 줄글로 — 이름(종류, 화면 속 대략 위치). 위치는 bbox 중심으로 9분할."""
+    lines = []
+    for subject in known_subjects:
+        identifier = str(subject.get("name") or subject.get("subject_ref") or "").strip()
+        if not identifier:
+            continue
+        kind = "사람" if subject.get("kind") == "person" else "사물"
+        position = describe_position(subject.get("bbox"))
+        lines.append(f"- {identifier} ({kind}{', ' + position if position else ''})")
+    return "\n".join(lines)
+
+
+def describe_position(bbox: dict | None) -> str | None:
+    """정규화 bbox(0..1) 의 중심을 '왼쪽 위'처럼 9분할 위치 말로 바꾼다. 없으면 None."""
+    if not bbox:
+        return None
+    try:
+        cx = (float(bbox["x_min"]) + float(bbox["x_max"])) / 2
+        cy = (float(bbox["y_min"]) + float(bbox["y_max"])) / 2
+    except (KeyError, TypeError, ValueError):
+        return None
+    horizontal = "왼쪽" if cx < 1 / 3 else "오른쪽" if cx > 2 / 3 else "가운데"
+    vertical = "위" if cy < 1 / 3 else "아래" if cy > 2 / 3 else ""
+    return f"화면 {horizontal}{' ' + vertical if vertical else ''}".strip()
+
+
+def save_description(
+    session_id: str,
+    text: str | None,
+    *,
+    capture_revision: int | None = None,
+    final_frame_id: str | None = None,
+) -> Path:
     """설명(실패 시 null)을 세션 디렉터리에 저장한다 — 파일 존재 자체가 '생성 시도 완료' 신호다."""
-    session_dir = CAPTURES_DIR / session_id
+    session_dir = session_dir_for(session_id)
     session_dir.mkdir(parents=True, exist_ok=True)
     path = session_dir / DESCRIPTION_FILENAME
-    path.write_text(json.dumps({"description": text}, ensure_ascii=False), encoding="utf-8")
+    payload = {
+        "description": text,
+        "capture_revision": capture_revision,
+        "final_frame_id": final_frame_id,
+    }
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False))
     return path
 
 
 def load_description(session_id: str) -> dict | None:
     """저장된 설명을 읽어 반환한다. 아직 없으면 None."""
-    path = CAPTURES_DIR / session_id / DESCRIPTION_FILENAME
+    path = session_dir_for(session_id) / DESCRIPTION_FILENAME
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))

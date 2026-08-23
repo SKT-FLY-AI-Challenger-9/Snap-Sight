@@ -2,7 +2,6 @@
 """ai.llm_fallback의 LLM 보완 로직을 mock으로 검증하는 테스트 (실제 네트워크 호출 없음)."""
 
 import httpx
-import pytest
 from anthropic import APIConnectionError, APIStatusError
 
 from ai.llm_fallback import ExtractedIntent, resolve_target_spec, resolve_with_llm

@@ -13,7 +13,7 @@ com.example.snap_sight
 │   ├── CaptureSessionManager.kt 세션 상태 머신 (아래 "세션 흐름" 참고)
 │   ├── AutoZoomController.kt    타겟 점유율 기반 자동 줌인/줌아웃 (아래 "자동 줌" 참고)
 │   ├── FrameScorer.kt           후보 프레임 온디바이스 블러 점수 (라플라시안 분산)
-│   ├── RingFrameBuffer.kt       촬영 전후 1초 후보 프레임 링 버퍼 (최대 6장)
+│   ├── RingFrameBuffer.kt       PRE 333ms/POST 200ms bounded 링 버퍼 (보관 16장·후보 6장)
 │   ├── FrameAnalysisAdapter.kt  프레임 분배 (CV 프로세서 + 링 버퍼)
 │   ├── YuvToJpeg.kt             YUV_420_888 → JPEG 변환 (stride 대응)
 │   ├── TiltSensorMonitor.kt     IMU 가속도계 기울기 (AIMING 중만 동작)
@@ -25,29 +25,51 @@ com.example.snap_sight
 │   ├── LabelMatchTargetSelector.kt ⑤ 임시 타겟 선택기 (② target_selection 포팅 전까지)
 │   └── (Detector/Tracker/Contracts 등은 ② 소유)
 ├── network/                     ⑤ 백엔드 API 클라이언트
-│   ├── FrameUploader.kt         POST /api/capture/frames (raw_text·블러 점수 포함)
-│   ├── CaptureResultClient.kt   GET /api/capture/{id}/result 폴링 (MLLM 비교 결과)
+│   ├── FrameUploader.kt         POST /api/capture/frames → 서버 capture_revision 수신
+│   ├── MetadataClient.kt        통합 understanding 폴링 (brief·detail·labels·revision·frame ID)
+│   ├── FinalFrameClient.kt      exact revision canonical JPEG 다운로드·헤더 검증
+│   ├── CaptureResultClient.kt   구버전 결과 폴링 호환용 (현재 MainActivity 흐름에서는 미사용)
+│   ├── PhotoDescriptionClient.kt 구버전 설명 폴링 호환용 (현재 MainActivity 흐름에서는 미사용)
 │   └── UtteranceClient.kt       발화 텍스트 → 백엔드 NLU 파싱 (TargetSpec)
 ├── stt/SpeechToTextRecognizer.kt 안드로이드 SpeechRecognizer 래퍼 (발화 인식)
 ├── tts/TtsPlayer.kt             로컬 TTS (백엔드 TTS 실패 시 폴백 채널)
 └── ux/                          ⑥ 접근성 UI·햅틱·사운드 (⑥ 소유)
 ```
 
-## 세션 흐름 (실기기 E2E 검증됨 · Galaxy S24, 2026-08-14)
+## 세션 흐름 (현재 구현)
 
 볼륨 버튼 짧게 = 상태별 동작, 길게(≈1초) = 세션 취소.
 
 ```
 IDLE ──볼륨──▶ LISTENING(발화 인식) ──볼륨──▶ PARSING(백엔드 NLU → TargetSpec)
-──▶ AIMING(편차 피드백·자동 줌·기울기 센서 ON) ──볼륨(셔터)──▶ CAPTURING
-──▶ 업로드(대표 컷+후보 6장+raw_text+블러 점수) ──▶ SAVED ──▶ 결과 폴링 ──▶ 음성 안내 ──▶ IDLE
+──▶ AIMING(편차 피드백·자동 줌·PRE 버퍼) ──볼륨(셔터)──▶ CAPTURING(대표 컷 저장·POST 버퍼)
+──▶ 업로드(대표 컷+후보 최대 6장+점수/회전) ──▶ SAVED(capture_revision)
+──▶ MetadataClient 통합 폴링 ──▶ 필요 시 exact revision 최종 JPEG 저장·표시 ──▶ 음성 안내 ──▶ IDLE
 ```
 
 1. PARSING은 인식 콜백 무응답 대비 8초 타임아웃 — 초과 시 스펙 없이 AIMING으로 진행
 2. 업로드 실패는 촬영 성공과 분리 (사진은 MediaStore에 이미 저장)
-3. 결과 폴링: `CaptureResultClient` — pending이면 `retry_after_seconds`(기본 2초) 간격 재시도,
-   총 45초 제한, `done`이면 개선 여부를 음성 안내 ("더 나은 순간의 사진으로 교체했어요" 등)
-4. 알려진 한계: 후보 JPEG는 회전 미적용 원본 (회전값은 파일명 `_r90` 형태) — 서버 전처리에서 보정
+3. 통합 결과 폴링: `MetadataClient` 하나가 `/metadata`의 `pending`/`done`/`failed`를 처리하고,
+   업로드 응답에서 받은 `capture_revision`과 응답의 revision·`final_frame_id`를 검증한다. 제한은 120초다.
+4. `final_frame_id == representative`면 원본을 유지한다. 후보가 canonical이면 `FinalFrameClient`가
+   `?capture_revision=...`으로 JPEG를 받고 revision·frame ID 응답 헤더까지 일치한 뒤 MediaStore에 별도 저장·표시한다.
+5. 후보 JPEG 픽셀에는 회전을 적용하지 않고 `candidate_scores.rotation_degrees`(0/90/180/270)로 전송한다.
+   백엔드가 비교·설명 전에 정방향 JPEG로 정규화한다.
+
+## 분석 부하·후보 버퍼
+
+1. CameraX 분석은 상태별로 `OFF`/`WARM`/`ACTIVE`를 사용한다.
+
+   - `OFF`: 홈·결과·설정 — ImageAnalysis use case 해제
+   - `WARM`: LISTENING·PARSING — use case만 유지하고 analyzer 분리
+   - `ACTIVE`: AIMING·CAPTURING·등록 — CV와 링 버퍼에 프레임 전달
+
+2. `ACTIVE`에서도 detector를 매 프레임 호출하지 않는다. `SEARCHING`/`LOCKED`/`LOST`와 열 상태로
+   wall-clock cadence를 조절하고, detector keyframe 사이에는 tracker `predictOnly` 결과를 propagation한다.
+3. `RingFrameBuffer`는 기본 `OFF`다. AIMING에서 PRE_CAPTURE를 333ms 간격으로, 셔터 뒤
+   POST_CAPTURE를 200ms 간격으로 샘플링하고 완료 뒤 다시 `OFF`가 된다.
+4. JPEG 인코딩은 동시에 1개만 허용하고 내부 보관은 최대 16장이다. 셔터 전후 각 1초 범위에서
+   최대 6장을 균등 추출해 업로드하므로 카메라 프레임을 상시 인코딩·전송하지 않는다.
 
 ## 편차·판정 (④ 연속 피드백)
 
@@ -84,10 +106,12 @@ IDLE ──볼륨──▶ LISTENING(발화 인식) ──볼륨──▶ PARSIN
 4. `LabelMatchTargetSelector`는 ②의 target_selection 포팅 전 임시 — 스펙 라벨 일치 필터만 수행
 
 ### ③·④ 백엔드 (봄연)
-1. 링 버퍼는 ⑤(Android 로컬) 보유 확정 — 촬영 시 `FrameUploader`가 멀티파트 전송
-2. 전송 필드: `session_id`, 대표 컷, 후보 프레임들, `raw_text`(원 발화), `candidate_scores`(블러)
-3. 결과 계약: `pending`(+retry_after_seconds) / `done`(+improved·reason) / 404 — `docs/backend-local-setup.md` 참고
-4. 카메라 제어 API: `focusAt(x, y)`, `setExposure(-1f..1f)`, `setZoomRatio(ratio)`
+1. 링 버퍼는 ⑤(Android 로컬) 보유 확정 — 촬영 시 `FrameUploader`가 필요한 프레임만 멀티파트 전송
+2. 업로드 응답의 서버 `capture_revision`이 이후 폴링·최종 프레임 다운로드의 정본이다.
+3. 현재 앱은 `/metadata` 한 곳에서 brief/detail/labels/`capture_revision`/`final_frame_id`를 폴링한다.
+   `pending`은 재시도하고 `done`·`failed`·404·revision 불일치는 종료한다.
+4. 후보 canonical JPEG는 `/api/capture/{id}/final-frame?capture_revision=...`에서 받고 응답 헤더도 검증한다.
+5. 카메라 제어 API: `focusAt(x, y)`, `setExposure(-1f..1f)`, `setZoomRatio(ratio)`
 
 ### ① STT/NLU (숩젼)
 1. 발화 인식은 현재 안드로이드 `SpeechRecognizer` 사용 (`stt/SpeechToTextRecognizer`)
@@ -117,6 +141,9 @@ cd frontend
 ./gradlew assembleDebug          # Windows: .\gradlew.bat assembleDebug
 ```
 
-1. 백엔드 주소는 BuildConfig 주입: `-PBACKEND_BASE_URL=http://127.0.0.1:8000` (기본 `http://10.0.2.2:8000`)
-2. 실기기 + WSL2 백엔드는 `adb reverse tcp:8000 tcp:8000` USB 터널 사용 — `docs/backend-local-setup.md` 참고
-3. 프레임 스트림 확인: Logcat 필터 `tag:SnapSightFrames` (S25 Ultra 실측 약 6.3fps, p50 154ms)
+1. debug 백엔드 주소: `-PBACKEND_BASE_URL=http://127.0.0.1:8000` (기본 `http://10.0.2.2:8000`)
+2. release 백엔드 주소: `-PSNAPSIGHT_RELEASE_BACKEND_BASE_URL=https://api.example.com` (HTTPS 필수)
+3. 서버 토큰을 켰다면 `-PSNAPSIGHT_API_TOKEN=...`도 함께 주입한다
+4. 실기기 + WSL2 백엔드는 `adb reverse tcp:8000 tcp:8000` USB 터널 사용 — `docs/backend-local-setup.md` 참고
+5. 프레임 스트림 확인: Logcat 필터 `tag:SnapSightFrames`; detector는 SEARCHING/LOCKED/LOST와 열 상태에 따라 주기가 바뀐다
+6. 얼굴 크롭 디버그 덤프는 기본 비활성화다. 캘리브레이션 시에만 debug 빌드에 `-PENABLE_FACE_DEBUG_DUMPS=true`를 명시한다

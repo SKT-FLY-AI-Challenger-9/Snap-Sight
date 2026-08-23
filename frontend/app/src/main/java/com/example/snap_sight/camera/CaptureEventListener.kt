@@ -15,12 +15,21 @@ interface CaptureEventListener {
     /** 셔터가 실제로 동작한 시점. ⑥이 여기서 셔터 사운드/진동을 재생하면 됨. */
     fun onShutter() {}
 
+    /** 세션을 구분할 수 있는 확장 콜백. 기존 구현은 위 콜백으로 자동 위임된다. */
+    fun onShutter(sessionId: String?) = onShutter()
+
     /**
      * 사진이 기기 저장소(MediaStore)에 저장 완료됨.
      * 이 Uri 를 대표 컷으로 백엔드 업로드(network.FrameUploader)에 넘긴다.
      */
     fun onPhotoSaved(uri: Uri)
 
+    /** 늦게 도착한 저장 콜백을 걸러내기 위한 세션 확장 콜백. */
+    fun onPhotoSaved(sessionId: String?, uri: Uri) = onPhotoSaved(uri)
+
     /** 촬영 실패. ⑥이 사용자에게 음성/진동으로 알려야 함. */
     fun onCaptureError(error: Throwable)
+
+    /** 늦게 도착한 오류 콜백을 걸러내기 위한 세션 확장 콜백. */
+    fun onCaptureError(sessionId: String?, error: Throwable) = onCaptureError(error)
 }

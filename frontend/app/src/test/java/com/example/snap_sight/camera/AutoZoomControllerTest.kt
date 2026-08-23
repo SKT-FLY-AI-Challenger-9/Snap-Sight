@@ -10,6 +10,26 @@ import org.junit.Test
 class AutoZoomControllerTest {
 
     @Test
+    fun `base zoom return can resolve a small target even when optional zoom-in is disabled`() {
+        assertTrue(AutoZoomController.canResolveSmallTarget(0.6f, deviceMax = 10f))
+        assertFalse(AutoZoomController.canResolveSmallTarget(1.0f, deviceMax = 10f))
+        assertTrue(
+            AutoZoomController.canResolveSmallTarget(
+                currentZoom = 1.0f,
+                deviceMax = 3.0f,
+                zoomInEnabled = true,
+            )
+        )
+        assertFalse(
+            AutoZoomController.canResolveSmallTarget(
+                currentZoom = 3.0f,
+                deviceMax = 3.0f,
+                zoomInEnabled = true,
+            )
+        )
+    }
+
+    @Test
     fun zoomsInTowardsTheFramingTargetButAtMostOneStep() {
         // 1.0배, 면적 0.01 → 목표 0.12 는 √12 ≈ 3.46배가 필요하지만 한 번에 1.5배까지만
         assertEquals(1.5f, AutoZoomController.nextZoom(1.0f, 0.01f, 0.12f, deviceMax = 10f)!!, 1e-4f)
