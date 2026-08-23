@@ -58,6 +58,8 @@ fun CaptureScreen(
     /** track_id → 등록 인물·사물 이름 — 해당 상자를 초록색+이름으로 구분해 그린다 */
     identities: Map<Int, String> = emptyMap(),
     showOverlays: Boolean = true,
+    /** 3×3 구도선 표시 단계 — 설정의 "격자"([SettingsUiState.gridMode]). */
+    gridMode: GridMode = GridMode.DEFAULT,
     onLensChanged: (isFront: Boolean) -> Unit = {},
     onShutterTap: (() -> Unit)? = null,
 ) {
@@ -95,6 +97,9 @@ fun CaptureScreen(
                     }
                 },
         )
+
+        // 구도선은 추적 상자보다 아래에 깔아 상자를 가리지 않게 한다.
+        GridOverlay(mode = gridMode)
 
         DetectionOverlay(objects = cvObjects, mirrored = isFrontLens, identities = identities)
 
