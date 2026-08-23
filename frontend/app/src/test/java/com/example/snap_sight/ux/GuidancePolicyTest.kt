@@ -46,7 +46,7 @@ class GuidancePolicyTest {
     fun `off-center speaks one direction word with a vibration`() {
         val policy = GuidancePolicy()
         val actions = policy.feed(result(x = -0.30f, size = 0f), now = 0)
-        assertEquals(listOf(GuidanceAction.Speak("왼쪽으로"), GuidanceAction.Vibrate), actions)
+        assertEquals(listOf(GuidanceAction.Speak(GuidanceDirection.LEFT.utterance), GuidanceAction.Vibrate), actions)
     }
 
     @Test
@@ -56,7 +56,7 @@ class GuidancePolicyTest {
         assertTrue(policy.feed(result(x = 0.30f, size = 0f), now = 500).isEmpty())
         assertTrue(policy.feed(result(x = 0.30f, size = 0f), now = 2_000).isEmpty())
         val again = policy.feed(result(x = 0.30f, size = 0f), now = GuidancePolicy.DIRECTION_REPEAT_MS)
-        assertEquals(listOf("오른쪽으로"), speech(again))
+        assertEquals(listOf(GuidanceDirection.RIGHT.utterance), speech(again))
         assertTrue(again.contains(GuidanceAction.Vibrate))
     }
 
@@ -65,26 +65,26 @@ class GuidancePolicyTest {
         val policy = GuidancePolicy()
         policy.feed(result(x = 0.30f, size = 0f), now = 0)
         assertTrue(policy.feed(result(x = 0f, size = -0.30f), now = 400).isEmpty())
-        assertEquals(listOf("가까이"), speech(policy.feed(result(x = 0f, size = -0.30f), now = GuidancePolicy.DIRECTION_MIN_GAP_MS)))
+        assertEquals(listOf(GuidanceDirection.CLOSER.utterance), speech(policy.feed(result(x = 0f, size = -0.30f), now = GuidancePolicy.DIRECTION_MIN_GAP_MS)))
     }
 
     @Test
     fun `the axis furthest past its threshold wins`() {
         // x: 0.25/0.20 = 1.25, size: +0.30/0.10 = 3.0 이지만 FARTHER("뒤로")는 안내하지 않으므로 x 가 뽑힌다
         val actions = GuidancePolicy().feed(result(x = 0.25f, size = 0.30f), now = 0)
-        assertEquals(listOf("오른쪽으로"), speech(actions))
+        assertEquals(listOf(GuidanceDirection.RIGHT.utterance), speech(actions))
         // y 가 있으면 후보에 들어간다: y -0.50/0.25 = 2.0 > x 1.25 → 위로
         val vertical = GuidancePolicy().feed(result(x = 0.25f, size = 0f, y = -0.50f), now = 0)
-        assertEquals(listOf("위로"), speech(vertical))
+        assertEquals(listOf(GuidanceDirection.UP.utterance), speech(vertical))
         val down = GuidancePolicy().feed(result(x = 0f, size = 0f, y = 0.40f), now = 0)
-        assertEquals(listOf("아래로"), speech(down))
+        assertEquals(listOf(GuidanceDirection.DOWN.utterance), speech(down))
     }
 
     @Test
     fun `vertical-only deviation is spoken instead of READY`() {
-        // x·size 는 CENTERED(계약상 isReady) 지만 위로 벗어남 → "촬영하세요" 대신 "위로"
+        // x·size 는 CENTERED(계약상 isReady) 지만 위로 벗어남 → "촬영하세요" 대신 GuidanceDirection.UP.utterance
         val policy = GuidancePolicy()
-        assertEquals(listOf("위로"), speech(policy.feed(result(x = 0f, size = 0f, y = -0.30f), now = 0)))
+        assertEquals(listOf(GuidanceDirection.UP.utterance), speech(policy.feed(result(x = 0f, size = 0f, y = -0.30f), now = 0)))
         assertTrue(policy.feed(result(x = 0f, size = 0f, y = -0.30f), now = 300).isEmpty())
     }
 
@@ -101,18 +101,18 @@ class GuidancePolicyTest {
     fun `too small is left to auto zoom while zoom has headroom`() {
         val policy = GuidancePolicy()
         val r = result(x = 0f, size = -0.30f)
-        // 줌 여유 있음 → "가까이"는 말하지 않는다 (READY 도 아님). 다만 무한 침묵 대신
+        // 줌 여유 있음 → GuidanceDirection.CLOSER.utterance는 말하지 않는다 (READY 도 아님). 다만 무한 침묵 대신
         // 4초 뒤 하트비트로 "자동으로 맞추는 중"임을 알린다 (2026-08-23 죽은 공백 방지)
         assertTrue(policy.onJudgment(GuidanceStateMapper.from(r), r, 0, zoomHandlesDistance = true).isEmpty())
         assertEquals(
             listOf(GuidancePolicy.AUTO_ZOOM_HEARTBEAT),
             speech(policy.onJudgment(GuidanceStateMapper.from(r), r, 5_000, zoomHandlesDistance = true)),
         )
-        // 줌 한계 → 그때 "가까이"
-        assertEquals(listOf("가까이"), speech(policy.onJudgment(GuidanceStateMapper.from(r), r, 6_000, zoomHandlesDistance = false)))
+        // 줌 한계 → 그때 GuidanceDirection.CLOSER.utterance
+        assertEquals(listOf(GuidanceDirection.CLOSER.utterance), speech(policy.onJudgment(GuidanceStateMapper.from(r), r, 6_000, zoomHandlesDistance = false)))
         // 다른 축이 벗어나 있으면 그 축은 여전히 말한다
         val r2 = result(x = -0.30f, size = -0.30f)
-        assertEquals(listOf("왼쪽으로"), speech(GuidancePolicy().onJudgment(GuidanceStateMapper.from(r2), r2, 0, zoomHandlesDistance = true)))
+        assertEquals(listOf(GuidanceDirection.LEFT.utterance), speech(GuidancePolicy().onJudgment(GuidanceStateMapper.from(r2), r2, 0, zoomHandlesDistance = true)))
         // 너무 큰 것(FARTHER)은 "뒤로"를 말하지 않고, READY 도 막지 않는다 (2026-08-23) — 안정화 대기만
         val r3 = result(x = 0f, size = 0.30f)
         assertTrue(GuidancePolicy().onJudgment(GuidanceStateMapper.from(r3), r3, 0, zoomHandlesDistance = true).isEmpty())
@@ -126,7 +126,7 @@ class GuidancePolicyTest {
         // 0.25 는 진입 임계(0.20)는 넘지만 이탈 임계(0.30)는 안 넘음 → 여전히 READY(침묵)
         assertTrue(policy.feed(result(x = 0.25f, size = 0f), now = 600).isEmpty())
         // 0.35 → 이탈 → 방향 안내
-        assertEquals(listOf("오른쪽으로"), speech(policy.feed(result(x = 0.35f, size = 0f), now = 2_000)))
+        assertEquals(listOf(GuidanceDirection.RIGHT.utterance), speech(policy.feed(result(x = 0.35f, size = 0f), now = 2_000)))
     }
 
     // ---- READY ----
@@ -251,7 +251,7 @@ class GuidancePolicyTest {
         assertTrue(policy.feed(lostResult, now = GuidancePolicy.LOST_DEBOUNCE_MS - 1).isEmpty())
         // 다시 찾으면 에피소드 종료 — 아무 것도 안 나갔다
         val back = policy.feed(result(0.3f, 0f), now = GuidancePolicy.LOST_DEBOUNCE_MS + 100)
-        assertEquals(listOf("오른쪽으로"), speech(back))
+        assertEquals(listOf(GuidanceDirection.RIGHT.utterance), speech(back))
     }
 
     @Test
@@ -351,7 +351,7 @@ class GuidancePolicyTest {
     @Test
     fun `heartbeat waits for both state persistence and speech silence`() {
         val policy = GuidancePolicy()
-        policy.feed(result(x = 0.3f, size = 0f), now = 0) // "오른쪽으로"
+        policy.feed(result(x = 0.3f, size = 0f), now = 0) // GuidanceDirection.RIGHT.utterance
         val cropped = result(
             x = 0f, size = 0f,
             visibility = FrameVisibility(

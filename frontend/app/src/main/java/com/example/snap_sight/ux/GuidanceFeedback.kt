@@ -3,6 +3,8 @@ package com.example.snap_sight.ux
 import android.content.Context
 import android.media.AudioManager
 import android.media.MediaActionSound
+import android.media.MediaPlayer
+import android.media.PlaybackParams
 import android.media.ToneGenerator
 import android.os.Build
 import android.os.Handler
@@ -69,6 +71,14 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     private var soundVolume = 1f
     @Volatile
     private var pendingSpeechRate = 1f
+
+    /**
+     * 프리캐싱 음원 보이스의 assets 디렉터리 (예: "tts/aria"). null 이면 내장 TTS 만 쓴다.
+     * [SpeechCatalog]에 있는 확정 문장은 이 디렉터리의 mp3 로 재생해 내비게이션처럼 즉시 나온다.
+     * 카탈로그에 없는 동적 문장(서버 사진 설명 등)은 보이스와 무관하게 내장 TTS 폴백.
+     */
+    @Volatile
+    private var voiceAssetDir: String? = null
 
     @Volatile
     private var ttsInitFailed = false
@@ -160,6 +170,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         soundVolume = settings.soundVolume.coerceIn(0f, 1f)
         pendingSpeechRate = GuidanceFeedbackSettingsMapper.speechRate(settings)
         if (ttsReady) tts.setSpeechRate(pendingSpeechRate)
+        voiceAssetDir = VoicePreset.fromKey(settings.voicePreset).assetDir
         rebuildToneGenerator()
     }
 
@@ -180,7 +191,10 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         val hasQueuedTargetGuidance = utterancePriorities.values.any {
             it == SpeechPriority.ADJUSTMENT || it == SpeechPriority.READY
         }
-        if (hasQueuedTargetGuidance) runCatching { tts.stop() }
+        if (hasQueuedTargetGuidance) {
+            runCatching { tts.stop() }
+            stopPrecached()
+        }
     }
 
     override fun onDeviation(result: DeviationResult) {
@@ -297,19 +311,89 @@ class GuidanceFeedback(context: Context) : DeviationListener {
             // 신원·상태 알림이 진행 중인 이동/READY/촬영 안내를 자르거나 뒤늦게 재생되지 않게 버린다.
             return
         }
+        val flush = active == null || priority.level >= active.level
         val id = "announce_${utteranceCounter.incrementAndGet()}"
         if (onDone != null) utteranceCallbacks[id] = onDone
         utterancePriorities[id] = priority
-        val queueMode = if (active == null || priority.level >= active.level) {
-            TextToSpeech.QUEUE_FLUSH
-        } else {
-            TextToSpeech.QUEUE_ADD
-        }
+
+        // 프리캐싱 음원 — 확정 문장 + 보이스 프리셋 + FLUSH 상황에서만 쓴다.
+        // (진행 중인 높은 우선순위 발화 뒤에 이어 붙이는 드문 경우는 내장 TTS 큐가 처리)
+        val assetId = voiceAssetDir?.let { SpeechCatalog.assetIdFor(text) }
+        if (flush && assetId != null && playPrecached(assetId, id, priority)) return
+
+        val queueMode = if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+        if (flush) stopPrecached() // 진행 중인 음원 재생도 새 발화에 밀려난다 (스테일 음성 방지)
         val result = tts.speak(text, queueMode, null, id)
         if (result == TextToSpeech.ERROR) {
             utterancePriorities.remove(id)
             utteranceCallbacks.remove(id)?.let { transitionHandler.post(it) }
         }
+    }
+
+    // ---- 프리캐싱 음원 재생 (SKT A.X TTS 합성분, assets/tts/{voice}/{id}.mp3) ----
+
+    private val assetPlayerLock = Any()
+    private var assetPlayer: MediaPlayer? = null
+    @Volatile private var assetUtteranceId: String? = null
+
+    /** 확정 문장 음원을 즉시 재생한다. 성공 시 true, 실패하면 false(호출부가 TTS 폴백). */
+    private fun playPrecached(assetId: String, utteranceId: String, priority: SpeechPriority): Boolean {
+        val dir = voiceAssetDir ?: return false
+        synchronized(assetPlayerLock) {
+            stopPrecachedLocked()
+            runCatching { tts.stop() } // TTS 가 말하는 중이었다면 함께 끊는다 (FLUSH 의미 유지)
+            val player = MediaPlayer()
+            return runCatching {
+                appContext.assets.openFd("$dir/$assetId.mp3").use { fd ->
+                    player.setDataSource(fd.fileDescriptor, fd.startOffset, fd.length)
+                }
+                player.setOnCompletionListener { completeAsset(utteranceId) }
+                player.setOnErrorListener { _, _, _ -> completeAsset(utteranceId); true }
+                player.prepare()
+                // 재생 배속(0.8/1.0/1.5) — 합성은 1.0배 한 벌이고 재생 시점에 조절한다
+                player.playbackParams = PlaybackParams().setSpeed(pendingSpeechRate)
+                if (!player.isPlaying) player.start()
+                assetPlayer = player
+                assetUtteranceId = utteranceId
+                activeUtteranceId = utteranceId
+                activeSpeechPriority = priority
+                true
+            }.getOrElse {
+                Log.w(TAG, "프리캐싱 음원 재생 실패($assetId) — TTS 폴백", it)
+                runCatching { player.release() }
+                false
+            }
+        }
+    }
+
+    /** 진행 중인 프리캐싱 재생을 끊는다 — 완료 콜백은 반드시 호출된다. */
+    private fun stopPrecached() = synchronized(assetPlayerLock) { stopPrecachedLocked() }
+
+    private fun stopPrecachedLocked() {
+        val player = assetPlayer ?: return
+        val id = assetUtteranceId
+        assetPlayer = null
+        assetUtteranceId = null
+        runCatching { player.stop() }
+        runCatching { player.release() }
+        if (id != null) completeAsset(id)
+    }
+
+    private fun completeAsset(utteranceId: String) {
+        synchronized(assetPlayerLock) {
+            if (assetUtteranceId == utteranceId) {
+                assetPlayer?.let { runCatching { it.release() } }
+                assetPlayer = null
+                assetUtteranceId = null
+            }
+        }
+        utterancePriorities.remove(utteranceId)
+        if (activeUtteranceId == utteranceId) {
+            activeUtteranceId = null
+            activeSpeechPriority = null
+        }
+        val callback = utteranceCallbacks.remove(utteranceId) ?: return
+        transitionHandler.postDelayed(callback, TTS_ECHO_GUARD_MS)
     }
 
     private fun speak(text: String, priority: SpeechPriority) = announce(text, null, priority)
@@ -341,10 +425,11 @@ class GuidanceFeedback(context: Context) : DeviationListener {
             .also { toneGenerator = it }
     }
 
-    /** Activity onDestroy 등에서 호출 — TTS/톤 리소스 해제. */
+    /** Activity onDestroy 등에서 호출 — TTS/톤/음원 리소스 해제. */
     fun release() {
         tts.stop()
         tts.shutdown()
+        stopPrecached()
         toneGenerator?.release()
         toneGenerator = null
         runCatching { shutterSound.release() }
