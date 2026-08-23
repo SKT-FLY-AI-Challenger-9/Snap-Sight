@@ -17,18 +17,18 @@ SYSTEM_PROMPT = """당신은 시각장애인·저시력 사용자를 위한 카�
 ## 판단 기준 (이 두 가지 외에는 절대 사용하지 마십시오)
 
 1. 명시적 의도 기준 — 사용자가 실제로 말한 발화(raw_text) 또는 명시적으로 구조화된 요구사항(structured_requirements)에 문자 그대로 담긴 내용만 기준으로 삼습니다. 사용자가 말하지 않은 표정·자세·구도는 절대로 요구사항으로 가정하지 마십시오. (예: "웃는 얼굴로 찍어줘"라고 명시하지 않았다면 미소 여부는 판단 기준이 아닙니다.)
-2. 범용 결함 기준 — 눈감음, 피사체가 프레임 밖으로 심하게 잘리거나 가려짐(심각한 가림/잘림). 이 두 가지는 취향과 무관한 객관적 결함이며, 1번 기준으로 우열이 가려지지 않을 때(동점일 때)의 동점자 판정(tie-breaker)으로만 사용합니다.
+2. 범용 결함 기준 — 눈감음, 피사체가 프레임 밖으로 심하게 잘리거나 가려짐(심각한 가림/잘림), 온디바이스 blur_score로 확인된 심한 흔들림. 이 결함들은 취향과 무관하며, 1번 기준으로 우열이 가려지지 않을 때(동점일 때)의 동점자 판정(tie-breaker)으로만 사용합니다.
 
 ## 절대 판단하지 마십시오 (범위 밖)
 
-- 블러(흔들림), 노출, 기울기·구도의 "품질" — 이미 OS 네이티브 카메라가 처리했다고 가정하고 절대 재평가하지 마십시오.
+- 이미지 외관만 보고 블러를 주관적으로 재평가하는 것, 노출, 기울기·구도의 "품질". 블러는 제공된 온디바이스 blur_score만 객관적 참고값으로 사용하십시오.
 - 위 두 기준에 근거하지 않은 일반적인 미적 선호("더 예쁘다", "더 감성적이다" 등)
 
 ## 판정 절차 (반드시 이 순서로 사고하십시오)
 
 1단계: raw_text와 structured_requirements에서 "명시적으로 언급된" 요구사항만 추출합니다. 언급되지 않은 것은 요구사항이 아닙니다.
 2단계: 대표 컷과 각 후보 프레임을 1단계에서 추출한 요구사항에 대해서만 비교합니다.
-3단계: 2단계에서 모든 프레임이 동점이면(요구사항을 동일하게 만족하거나, 추출된 요구사항이 아예 없으면), 범용 결함 기준(눈감음, 심각한 가림/잘림)으로 동점을 깹니다.
+3단계: 2단계에서 모든 프레임이 동점이면(요구사항을 동일하게 만족하거나, 추출된 요구사항이 아예 없으면), 범용 결함 기준(눈감음, 심각한 가림/잘림, 제공된 blur_score)으로 동점을 깹니다.
 4단계: 3단계를 거치고도 판단이 애매하면 무조건 "개선 없음"(대표 컷 유지)으로 보수적으로 결론 내립니다. 대표 컷을 교체하는 쪽으로 편향되지 마십시오.
 
 ## 출력 형식
@@ -63,11 +63,14 @@ _USER_PROMPT_TEMPLATE = """## 이번 촬영 정보
 - 구조화된 요구사항(structured_requirements):
 {requirements_block}
 
-## 온디바이스 사전 검사 참고 정보 (0.0=눈을 뜬 것으로 추정, 1.0=눈을 감은 것으로 추정)
+## 온디바이스 사전 검사 참고 정보
+
+- 눈감음 의심도: 0.0=눈을 뜬 것으로 추정, 1.0=눈을 감은 것으로 추정
+- 블러 의심도: 0.0=선명, 1.0=심한 흔들림
 
 {scores_block}
 
-주의: 이 정보는 판정 절차 **3단계(범용 결함 기준으로 동점을 깰 때)에서만** 참고하십시오. 1·2단계(명시적 요구사항 비교)에서는 이 수치를 근거로 쓰지 마십시오. 위 수치에 블러·노출·기울기 관련 값이 섞여 있더라도, 시스템 프롬프트의 "절대 판단하지 마십시오" 규정은 그대로 유지됩니다 — 블러 등은 절대 재평가하지 마십시오.
+주의: 이 정보는 판정 절차 **3단계(범용 결함 기준으로 동점을 깰 때)에서만** 참고하십시오. 1·2단계(명시적 요구사항 비교)에서는 이 수치를 근거로 쓰지 마십시오. rotation_degrees는 서버가 이미 픽셀에 적용했으므로 판단 기준이 아닙니다.
 
 ## 첨부된 이미지
 
@@ -104,23 +107,30 @@ def build_comparison_prompt(
 
 
 def _format_candidate_scores(candidate_scores: list[dict] | None) -> str:
-    """후보별 온디바이스 점수 중 눈감음 관련 값만 골라 참고자료 텍스트로 만든다.
-
-    합의된 스케일(가정, ②/⑤와 확정 필요): 0.0=눈을 뜬 것으로 추정, 1.0=눈을 감은 것으로 추정.
-    """
+    """Render validated eye/blur defect signals without rotation metadata."""
     if not candidate_scores:
         return "(온디바이스 사전 점수 없음)"
     lines = []
     for index, scores in enumerate(candidate_scores, start=1):
         eyes_closed_score = _validate_eyes_closed_score(scores.get("eyes_closed_score"))
-        if eyes_closed_score is None:
+        blur_score = _validate_unit_score(scores.get("blur_score"))
+        values = []
+        if eyes_closed_score is not None:
+            values.append(f"눈감음 의심도 {eyes_closed_score}")
+        if blur_score is not None:
+            values.append(f"블러 의심도 {blur_score}")
+        if not values:
             continue
-        lines.append(f"- candidate_{index}: 눈감음 의심도 {eyes_closed_score}")
+        lines.append(f"- candidate_{index}: {', '.join(values)}")
     return "\n".join(lines) if lines else "(온디바이스 사전 점수 없음)"
 
 
 def _validate_eyes_closed_score(value: object) -> float | None:
     """0.0~1.0 범위의 숫자만 유효한 눈감음 점수로 인정하고, 그 외(누락·잘못된 타입·범위 밖)는 무시한다."""
+    return _validate_unit_score(value)
+
+
+def _validate_unit_score(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     if not 0.0 <= value <= 1.0:
@@ -136,7 +146,7 @@ class FrameComparisonResult(BaseModel):
     reason: str
 
     @model_validator(mode="after")
-    def _check_selected_frame_consistency(self) -> "FrameComparisonResult":
+    def _check_selected_frame_consistency(self) -> FrameComparisonResult:
         if self.improved and self.selected_frame is None:
             raise ValueError("improved=True인 경우 selected_frame은 None일 수 없습니다.")
         if not self.improved and self.selected_frame is not None:

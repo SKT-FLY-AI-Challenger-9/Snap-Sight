@@ -12,16 +12,20 @@ class MetadataClientTest {
     fun parsesDoneWithFullPayload() {
         val decision = MetadataClient.parseDecision(
             """
-            {"status":"done","taxonomy_version":1,
+            {"status":"done","taxonomy_version":1,"capture_revision":4,
+             "final_frame_id":"representative","brief_description":"케이크가 있어요.",
              "long_description":"따뜻한 조명 아래 케이크가 있어요.",
              "labels":["food","birthday"],"custom_labels":["제주도 여행"],"people_count":2}
             """.trimIndent()
         ) as MetadataClient.Decision.Done
         assertEquals("따뜻한 조명 아래 케이크가 있어요.", decision.metadata.longDescription)
+        assertEquals("케이크가 있어요.", decision.metadata.briefDescription)
         assertEquals(listOf("food", "birthday"), decision.metadata.labels)
         assertEquals(listOf("제주도 여행"), decision.metadata.customLabels)
         assertEquals(2, decision.metadata.peopleCount)
         assertEquals(1, decision.metadata.taxonomyVersion)
+        assertEquals(4L, decision.metadata.captureRevision)
+        assertEquals("representative", decision.metadata.finalFrameId)
     }
 
     @Test
@@ -41,5 +45,21 @@ class MetadataClientTest {
             """{"status":"pending","retry_after_seconds":3}"""
         ) as MetadataClient.Decision.Pending
         assertEquals(3_000L, decision.retryAfterMs)
+    }
+
+    @Test
+    fun failedStatusIsTerminal() {
+        val decision = MetadataClient.parseDecision("""{"status":"failed"}""")
+
+        assertTrue(decision is MetadataClient.Decision.Failed)
+    }
+
+    @Test
+    fun `unknown status is terminal instead of pending`() {
+        assertTrue(
+            MetadataClient.parseDecision("""{"status":"queued"}""")
+                is MetadataClient.Decision.Failed
+        )
+        assertTrue(MetadataClient.parseDecision("{}") is MetadataClient.Decision.Failed)
     }
 }

@@ -11,10 +11,14 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import com.example.snap_sight.cv.DeviationListener
 import com.example.snap_sight.cv.DeviationResult
+import com.example.snap_sight.cv.ReadinessVerdict
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * [DeviationListener] 구현체 — 판정 결과(⑥ [GuidanceState])를 음성·진동·톤으로 렌더링한다.
@@ -26,18 +30,17 @@ import java.util.Locale
  * 세션 이벤트 안내([announceSessionStart] 등)는 즉시성이 중요해 백엔드 TTS 를 거치지 않고
  * 내장 TTS 로 바로 말한다.
  *
- * **알려진 제약(landscape) — 인터페이스 blocker, correctness 문제**:
- * [DeviationListener.onDeviation]은 [DeviationResult]만 받고 `subjectType`을 받지 않는다.
- * `SpecDeviationCalculator`는 landscape 세션에서도 `subjectDetected=false`를 반환하므로,
- * 이 클래스는 **landscape(피사체 의도 없음)와 실제 LOST(놓침)를 구분하지 못한다** — LOST 디바운스·
- * 경고음 전환으로 빈도는 크게 줄었지만 landscape 세션에서 경고음/안내가 잘못 나갈 수 있다.
- * 해결하려면 `DeviationListener`에 subjectType을 함께 전달하도록 인터페이스 변경이 필요하다
- * (이슈 #45 참고, 범위 제외 항목).
+ * 풍경처럼 bbox 조준 대상이 없는 모드는 MainActivity에서 이 진입점을 호출하지 않고 별도 장면
+ * 안내를 사용한다. 따라서 `subjectDetected=false`인 실제 타겟 세션만 LOST 정책으로 들어온다.
  *
  * 스레딩: [onDeviation]은 CV 분석 스레드에서 호출된다. `TextToSpeech`/`Vibrator`/`ToneGenerator`는
  * 자체적으로 스레드 안전하게 큐잉되므로 별도 스레드 전환 없이 직접 호출한다.
  */
 class GuidanceFeedback(context: Context) : DeviationListener {
+
+    enum class SpeechPriority(val level: Int) {
+        AMBIENT(0), STATUS(1), ADJUSTMENT(2), READY(3), CAPTURE(4),
+    }
 
     private val appContext = context.applicationContext
     private val policy = GuidancePolicy()
@@ -67,13 +70,66 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     @Volatile
     private var pendingSpeechRate = 1f
 
+    @Volatile
+    private var ttsInitFailed = false
+
+    // TTS 엔진 초기화(비동기, 보통 수백 ms)가 끝나기 전에 들어온 안내 — 예전엔 조용히 버려져서
+    // 앱 첫 진입 환영 멘트가 안 나왔다 (2026-08-22). 마지막 1건만 보관했다가 초기화되면 말한다.
+    private val initLock = Any()
+    private data class PendingSpeech(
+        val text: String,
+        val onDone: (() -> Unit)?,
+        val priority: SpeechPriority,
+    )
+    private var pendingWhileInit: PendingSpeech? = null
+
     private val tts: TextToSpeech = TextToSpeech(appContext) { status ->
-        ttsReady = status == TextToSpeech.SUCCESS
-        if (ttsReady) {
+        val ready = status == TextToSpeech.SUCCESS
+        if (ready) {
             tts.language = Locale.KOREAN
             tts.setSpeechRate(pendingSpeechRate)
+            tts.setOnUtteranceProgressListener(utteranceListener)
         } else {
             Log.w(TAG, "TTS 초기화 실패 — 음성 안내가 비활성화됩니다")
+            ttsInitFailed = true
+        }
+        ttsReady = ready
+        val pending = synchronized(initLock) { pendingWhileInit.also { pendingWhileInit = null } }
+        if (pending != null) {
+            if (ready) announce(pending.text, pending.onDone, pending.priority)
+            else pending.onDone?.let { done -> transitionHandler.post { done() } }
+        }
+    }
+
+    // announce(text, onDone) 의 완료 콜백 — utteranceId 로 매칭한다. 끝나든(onDone)
+    // 다른 발화에 밀려 끊기든(onStop) 오류가 나든 반드시 한 번 호출해 호출부가
+    // 다음 단계로 진행할 수 있게 한다 (게이트가 영영 안 열리는 상황 방지).
+    private val utteranceCallbacks = ConcurrentHashMap<String, () -> Unit>()
+    private val utterancePriorities = ConcurrentHashMap<String, SpeechPriority>()
+    private val utteranceCounter = AtomicLong()
+    @Volatile private var activeUtteranceId: String? = null
+    @Volatile private var activeSpeechPriority: SpeechPriority? = null
+
+    private val utteranceListener = object : UtteranceProgressListener() {
+        override fun onStart(utteranceId: String?) {
+            activeUtteranceId = utteranceId
+            activeSpeechPriority = utteranceId?.let(utterancePriorities::get)
+        }
+        override fun onDone(utteranceId: String?) = complete(utteranceId)
+        @Deprecated("Deprecated in Java")
+        override fun onError(utteranceId: String?) = complete(utteranceId)
+        override fun onError(utteranceId: String?, errorCode: Int) = complete(utteranceId)
+        override fun onStop(utteranceId: String?, interrupted: Boolean) = complete(utteranceId)
+
+        private fun complete(utteranceId: String?) {
+            if (utteranceId == null) return
+            utterancePriorities.remove(utteranceId)
+            if (activeUtteranceId == utteranceId) {
+                activeUtteranceId = null
+                activeSpeechPriority = null
+            }
+            val callback = utteranceCallbacks.remove(utteranceId) ?: return
+            transitionHandler.postDelayed(callback, TTS_ECHO_GUARD_MS)
         }
     }
 
@@ -108,23 +164,56 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     }
 
     /** 새 촬영 세션(AIMING 진입) — 이전 세션의 "이미 말했음" 상태를 지운다. */
-    fun resetSession() = policy.reset()
+    fun resetSession() {
+        policy.reset()
+        // A target/session generation change invalidates queued movement and READY speech.
+        // Keeping it alive would let guidance for the previous target continue after the
+        // new intent has already become visible in the UI.
+        synchronized(initLock) {
+            val pending = pendingWhileInit
+            if (pending?.priority == SpeechPriority.ADJUSTMENT ||
+                pending?.priority == SpeechPriority.READY
+            ) {
+                pendingWhileInit = null
+            }
+        }
+        val hasQueuedTargetGuidance = utterancePriorities.values.any {
+            it == SpeechPriority.ADJUSTMENT || it == SpeechPriority.READY
+        }
+        if (hasQueuedTargetGuidance) runCatching { tts.stop() }
+    }
 
     override fun onDeviation(result: DeviationResult) {
+        processDeviation(result, System.currentTimeMillis())
+    }
+
+    /**
+     * 음성·햅틱 액션을 렌더링하고, **그 액션을 만든 동일 evaluator 호출**의 readiness를 반환한다.
+     * MainActivity는 별도 evaluator를 돌리지 말고 이 반환값으로 안내 UI/셔터 게이트를 갱신한다.
+     */
+    fun processDeviation(
+        result: DeviationResult,
+        nowMs: Long = System.currentTimeMillis(),
+    ): ReadinessVerdict {
         val state = GuidanceStateMapper.from(result)
         val zoomHandles = zoomHandlesDistance?.invoke() == true
-        val actions = policy.onJudgment(
-            state, result, System.currentTimeMillis(),
+        val decision = policy.processJudgment(
+            state, result, nowMs,
             zoomHandlesDistance = zoomHandles,
             readyBlockedReason = readyGate?.invoke(),
         )
-        for (action in actions) {
+        for (action in decision.actions) {
             when (action) {
-                is GuidanceAction.Speak -> speak(action.text)
+                is GuidanceAction.Speak -> speak(
+                    action.text,
+                    if (action.text == GuidancePolicy.READY_UTTERANCE) SpeechPriority.READY
+                    else SpeechPriority.ADJUSTMENT,
+                )
                 GuidanceAction.Vibrate -> vibrateShort()
                 GuidanceAction.WarningTone -> playWarningTone()
             }
         }
+        return decision.verdict
     }
 
     // ---- 세션 이벤트 안내 (MainActivity 가 호출) ----
@@ -146,6 +235,28 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     /** 홈 복귀 — 하강 2음 + 짧은 진동. */
     fun playScreenExit() = playTransitionTone(rising = false)
 
+    // ---- 등록 스캔 구간 알림 (2026-08-22) — 스캔이 "지금 시작/지금 끝"임을 말 없이 알린다 ----
+
+    /** 스캔 시작 — 단음 비프 + 진동. 이 소리 뒤부터 프레임이 수집된다. */
+    fun playScanStart() {
+        vibrateShort()
+        val generator = toneGenerator ?: rebuildToneGenerator() ?: return
+        runCatching { generator.startTone(SCAN_START_TONE, SCAN_TONE_MS) }
+    }
+
+    /** 스캔 중간 — 아주 짧은 틱 (진동 없음). 긴 스캔에서 "절반 지났다"는 진행감만 준다. */
+    fun playScanTick() {
+        val generator = toneGenerator ?: rebuildToneGenerator() ?: return
+        runCatching { generator.startTone(SCAN_START_TONE, SCAN_TICK_MS) }
+    }
+
+    /** 스캔 종료 — 확인음(ACK) + 진동. 이 소리 뒤에 결과 안내가 이어진다. */
+    fun playScanEnd() {
+        vibrateShort()
+        val generator = toneGenerator ?: rebuildToneGenerator() ?: return
+        runCatching { generator.startTone(SCAN_END_TONE, SCAN_TONE_MS) }
+    }
+
     private fun playTransitionTone(rising: Boolean) {
         vibrateShort()
         val generator = toneGenerator ?: rebuildToneGenerator() ?: return
@@ -161,13 +272,47 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     /**
      * 임의 안내 문구를 내장 TTS로 즉시 재생한다 (세션 시작/완료/실패 안내, 백엔드 TTS 폴백).
      * 설정된 음성 속도([applySettings])를 그대로 따른다.
+     *
+     * [onDone]을 주면 발화가 끝난 뒤(짧은 잔향 여유 포함) 메인 스레드에서 1회 호출된다.
+     * 안내 음성이 마이크로 들어가 발화로 인식되는 것을 막기 위한 순서 조율용
+     * (실사용 피드백 2026-08-22 — "요청에 '말해주세요'가 들어간다").
+     * TTS를 못 쓰는 상태여도 onDone은 반드시 호출된다.
      */
-    fun announce(text: String) = speak(text)
-
-    private fun speak(text: String) {
-        if (!ttsReady) return
-        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+    fun announce(
+        text: String,
+        onDone: (() -> Unit)? = null,
+        priority: SpeechPriority = SpeechPriority.STATUS,
+    ) {
+        if (!ttsReady) {
+            if (!ttsInitFailed) {
+                // 초기화 중 — 보관했다가 준비되면 말한다 (나중 것이 먼저 것을 대체)
+                synchronized(initLock) { pendingWhileInit = PendingSpeech(text, onDone, priority) }
+            } else {
+                onDone?.let { done -> transitionHandler.post { done() } }
+            }
+            return
+        }
+        val active = activeSpeechPriority
+        if (active != null && active.level > priority.level && onDone == null) {
+            // 신원·상태 알림이 진행 중인 이동/READY/촬영 안내를 자르거나 뒤늦게 재생되지 않게 버린다.
+            return
+        }
+        val id = "announce_${utteranceCounter.incrementAndGet()}"
+        if (onDone != null) utteranceCallbacks[id] = onDone
+        utterancePriorities[id] = priority
+        val queueMode = if (active == null || priority.level >= active.level) {
+            TextToSpeech.QUEUE_FLUSH
+        } else {
+            TextToSpeech.QUEUE_ADD
+        }
+        val result = tts.speak(text, queueMode, null, id)
+        if (result == TextToSpeech.ERROR) {
+            utterancePriorities.remove(id)
+            utteranceCallbacks.remove(id)?.let { transitionHandler.post(it) }
+        }
     }
+
+    private fun speak(text: String, priority: SpeechPriority) = announce(text, null, priority)
 
     private fun vibrateShort() {
         // null = 진동 강도 0(무음 설정) — 아예 울리지 않는다
@@ -216,6 +361,13 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         const val NAV_TONE_HIGH = ToneGenerator.TONE_DTMF_9
         const val NAV_TONE_MS = 90
         const val NAV_TONE_GAP_MS = 110L
+        /** 발화 완료 콜백을 이만큼 늦게 호출 — 스피커 잔향이 마이크에 잡히는 것을 줄인다. */
+        const val TTS_ECHO_GUARD_MS = 250L
+        // 등록 스캔 시작/종료 — 전환 earcon(DTMF)·LOST 경고(BEEP2)와 겹치지 않는 음색
+        const val SCAN_START_TONE = ToneGenerator.TONE_PROP_BEEP
+        const val SCAN_END_TONE = ToneGenerator.TONE_PROP_ACK
+        const val SCAN_TONE_MS = 150
+        const val SCAN_TICK_MS = 50
     }
 }
 

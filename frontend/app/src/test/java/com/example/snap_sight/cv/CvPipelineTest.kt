@@ -11,14 +11,17 @@ class CvPipelineTest {
     private class FakeDetector(private val frames: List<List<Detection>>) : Detector {
         var loadCount = 0
         var closeCount = 0
+        var detectCount = 0
         private var index = 0
 
         override fun load() {
             loadCount++
         }
 
-        override fun detect(frame: CvFrame): List<Detection> =
-            frames.getOrElse(index++) { emptyList() }
+        override fun detect(frame: CvFrame): List<Detection> {
+            detectCount++
+            return frames.getOrElse(index++) { emptyList() }
+        }
 
         override fun close() {
             closeCount++
@@ -50,7 +53,7 @@ class CvPipelineTest {
     )
 
     @Test
-    fun `output threshold hides low confidence tracks but keeps their ids alive`() {
+    fun `low confidence association keeps the public box as predicted`() {
         val detector = FakeDetector(
             listOf(
                 listOf(detection("person", 0.9f, 0)),
@@ -61,10 +64,41 @@ class CvPipelineTest {
         val pipeline = CvPipeline(detector, ByteTrackLiteTracker())
         pipeline.load()
 
-        assertEquals(1, pipeline.process(blankFrame()).objects.single().trackId)
-        // 0.15 는 공개 threshold(0.25) 미만이라 결과에서 빠지지만 track 은 유지된다.
-        assertTrue(pipeline.process(blankFrame()).isEmpty)
-        assertEquals(1, pipeline.process(blankFrame()).objects.single().trackId)
+        val first = pipeline.process(blankFrame()).objects.single()
+        val rescued = pipeline.process(blankFrame()).objects.single()
+        val recovered = pipeline.process(blankFrame()).objects.single()
+
+        assertEquals(first.trackId, rescued.trackId)
+        assertTrue(rescued.predicted)
+        assertEquals(first.confidence, rescued.confidence, 1e-6f)
+        assertEquals(first.label, rescued.label)
+        assertEquals(first.trackId, recovered.trackId)
+        assertFalse(recovered.predicted)
+    }
+
+    @Test
+    fun `prediction after low confidence rescue keeps the reliable public confidence`() {
+        val detector = FakeDetector(
+            listOf(
+                listOf(detection("person", 0.9f, 0)),
+                listOf(detection("person", 0.15f, 0)),
+            )
+        )
+        val pipeline = CvPipeline(
+            detector,
+            ByteTrackLiteTracker(ByteTrackLiteConfig(coastSeconds = 1.0)),
+        )
+        pipeline.load()
+
+        val first = pipeline.process(blankFrame(), timestampS = 0.0).objects.single()
+        val rescued = pipeline.process(blankFrame(), timestampS = 0.1).objects.single()
+        val propagated = pipeline.predictOnly(timestampS = 0.2).objects.single()
+
+        assertTrue(rescued.predicted)
+        assertTrue(propagated.predicted)
+        assertEquals(first.trackId, propagated.trackId)
+        assertEquals(first.confidence, propagated.confidence, 1e-6f)
+        assertEquals(100L, propagated.observationAgeMs)
     }
 
     @Test
@@ -87,6 +121,22 @@ class CvPipelineTest {
         pipeline.process(blankFrame())
         pipeline.reset()
         assertEquals(1, pipeline.process(blankFrame()).objects.single().trackId)
+    }
+
+    @Test
+    fun `predict only propagates tracks without invoking detector`() {
+        val detector = FakeDetector(listOf(listOf(detection("person", 0.9f, 0))))
+        val pipeline = CvPipeline(
+            detector,
+            ByteTrackLiteTracker(ByteTrackLiteConfig(coastSeconds = 1.0)),
+        )
+        pipeline.load()
+        pipeline.process(blankFrame(), timestampS = 0.0)
+
+        val prediction = pipeline.predictOnly(timestampS = 0.1).objects.single()
+        assertEquals(1, detector.detectCount)
+        assertTrue(prediction.predicted)
+        assertEquals(100L, prediction.observationAgeMs)
     }
 
     @Test

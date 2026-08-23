@@ -37,17 +37,25 @@ object FaceMatcher {
         embedding: FloatArray,
         gallery: Map<String, List<FloatArray>>,
         config: FaceMatchConfig = FaceMatchConfig(),
-    ): String? {
-        if (gallery.isEmpty()) return null
-        val scores = gallery.mapNotNull { (name, vectors) ->
-            val score = personScore(embedding, vectors, config.topK) ?: return@mapNotNull null
+    ): String? = decide(rank(embedding, gallery, config.topK), config)
+
+    /** 인물별 점수를 높은 순으로 — 디버그 로그/덤프에서 "왜 판정이 안 났는지" 보려고 분리했다. */
+    fun rank(
+        embedding: FloatArray,
+        gallery: Map<String, List<FloatArray>>,
+        topK: Int,
+    ): List<Pair<String, Float>> =
+        gallery.mapNotNull { (name, vectors) ->
+            val score = personScore(embedding, vectors, topK) ?: return@mapNotNull null
             name to score
         }.sortedByDescending { it.second }
-        if (scores.isEmpty()) return null
 
-        val (bestName, bestScore) = scores.first()
+    /** [rank] 결과에 임계값·마진 규칙을 적용한다. 미달이면 null(침묵). */
+    fun decide(ranking: List<Pair<String, Float>>, config: FaceMatchConfig): String? {
+        if (ranking.isEmpty()) return null
+        val (bestName, bestScore) = ranking.first()
         if (bestScore < config.similarityThreshold) return null
-        val runnerUp = scores.getOrNull(1)?.second
+        val runnerUp = ranking.getOrNull(1)?.second
         if (runnerUp != null && bestScore - runnerUp < config.margin) return null
         return bestName
     }

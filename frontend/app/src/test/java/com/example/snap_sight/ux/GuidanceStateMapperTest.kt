@@ -1,6 +1,7 @@
 package com.example.snap_sight.ux
 
 import com.example.snap_sight.cv.DeviationResult
+import com.example.snap_sight.cv.ObservationFreshness
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -15,7 +16,7 @@ import org.junit.Test
 class GuidanceStateMapperTest {
 
     private fun result(x: Float, size: Float) =
-        DeviationResult(subjectDetected = true, xDeviation = x, sizeDeviation = size)
+        DeviationResult(subjectDetected = true, xDeviation = x, sizeDeviation = size, yDeviation = 0f)
 
     // --- 미탐지 ---
 
@@ -34,18 +35,23 @@ class GuidanceStateMapperTest {
 
     @Test
     fun verticalIsNullWhenNoYDeviation() {
-        assertNull(GuidanceStateMapper.from(result(x = 0f, size = 0f)).vertical)
+        val state = GuidanceStateMapper.from(
+            DeviationResult(subjectDetected = true, xDeviation = 0f, sizeDeviation = 0f)
+        )
+        assertNull(state.vertical)
+        assertFalse(state.isReady)
     }
 
     @Test
-    fun verticalMapsUpDownCenteredAndDoesNotAffectReady() {
+    fun verticalMapsUpDownCenteredAndAlwaysAffectsReady() {
         fun withY(y: Float) = GuidanceStateMapper.from(
             DeviationResult(subjectDetected = true, xDeviation = 0f, sizeDeviation = 0f, yDeviation = y)
         )
         assertEquals(VerticalAlignment.UP, withY(-0.30f).vertical)
         assertEquals(VerticalAlignment.DOWN, withY(0.30f).vertical)
         assertEquals(VerticalAlignment.CENTERED, withY(0.10f).vertical)
-        assertTrue(withY(-0.30f).isReady) // 수직은 READY 판정에 포함되지 않는다
+        assertFalse(withY(-0.30f).isReady)
+        assertTrue(withY(0.10f).isReady)
     }
 
     // --- 수평 축 경계값 ---
@@ -111,7 +117,7 @@ class GuidanceStateMapperTest {
     // --- isReady 조합 ---
 
     @Test
-    fun readyOnlyWhenBothAxesCentered() {
+    fun readyOnlyWhenAllAxesCentered() {
         val ready = GuidanceStateMapper.from(result(x = 0f, size = 0f))
         assertTrue(ready.isReady)
 
@@ -129,5 +135,21 @@ class GuidanceStateMapperTest {
     fun detectedIsTrueWheneverSubjectDetected() {
         val state = GuidanceStateMapper.from(result(x = 0.3f, size = 0.3f))
         assertTrue(state.detected)
+    }
+
+    @Test
+    fun predictedObservationCanLookCenteredButIsNeverReady() {
+        val state = GuidanceStateMapper.from(
+            DeviationResult(
+                subjectDetected = true,
+                xDeviation = 0f,
+                sizeDeviation = 0f,
+                yDeviation = 0f,
+                observationFreshness = ObservationFreshness.PREDICTED,
+                observationAgeMs = 100L,
+            )
+        )
+        assertEquals(HorizontalAlignment.CENTERED, state.horizontal)
+        assertFalse(state.isReady)
     }
 }

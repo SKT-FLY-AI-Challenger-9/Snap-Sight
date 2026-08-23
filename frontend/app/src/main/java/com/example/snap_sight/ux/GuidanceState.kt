@@ -11,10 +11,11 @@ data class GuidanceState(
     val horizontal: HorizontalAlignment?,
     val distance: DistanceAlignment?,
     /**
-     * 수직 정렬 — additive. CV 계약의 dy 반영이 미확정이라 READY 판정([isReady])에는 넣지 않고
-     * 방향 음성 안내("위/아래")에만 쓴다. dy 가 없으면 null.
+     * 수직 정렬. dy가 없으면 null이며, 이 경우 안전하게 READY가 아니다.
      */
     val vertical: VerticalAlignment? = null,
+    /** y·visibility·freshness까지 반영한 canonical single-frame 후보 판정. */
+    val canonicalReadyCandidate: Boolean = false,
 ) {
     init {
         if (detected) {
@@ -25,12 +26,15 @@ data class GuidanceState(
             require(horizontal == null && distance == null && vertical == null) {
                 "detected=false인 경우 horizontal/distance/vertical은 모두 null이어야 합니다."
             }
+            require(!canonicalReadyCandidate) {
+                "detected=false인 경우 canonicalReadyCandidate는 false여야 합니다."
+            }
         }
     }
 
-    /** 탐지됨 + 수평·거리 모두 CENTERED — 촬영 가능 상태. (수직은 판정에 포함하지 않는다) */
+    /** 수평·수직·거리뿐 아니라 visibility/freshness까지 통과한 단일-frame 후보 상태. */
     val isReady: Boolean
-        get() = detected && horizontal == HorizontalAlignment.CENTERED && distance == DistanceAlignment.CENTERED
+        get() = canonicalReadyCandidate
 }
 
 enum class HorizontalAlignment { LEFT, RIGHT, CENTERED }

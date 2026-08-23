@@ -1,6 +1,8 @@
 package com.example.snap_sight.ux
 
 import com.example.snap_sight.cv.DeviationResult
+import com.example.snap_sight.cv.ObservationFreshness
+import com.example.snap_sight.cv.ReadinessBlocker
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -12,8 +14,20 @@ import org.junit.Test
  */
 class GuidancePolicyTest {
 
-    private fun result(x: Float, size: Float, y: Float? = null) =
-        DeviationResult(subjectDetected = true, xDeviation = x, sizeDeviation = size, yDeviation = y)
+    private fun result(
+        x: Float,
+        size: Float,
+        y: Float? = 0f,
+        freshness: ObservationFreshness = ObservationFreshness.FRESH,
+        ageMs: Long = 0L,
+    ) = DeviationResult(
+        subjectDetected = true,
+        xDeviation = x,
+        sizeDeviation = size,
+        yDeviation = y,
+        observationFreshness = freshness,
+        observationAgeMs = ageMs,
+    )
 
     private val lostResult = DeviationResult(subjectDetected = false, xDeviation = null, sizeDeviation = null)
 
@@ -72,8 +86,8 @@ class GuidancePolicyTest {
     }
 
     @Test
-    fun `vertical is not part of READY but is not spoken when only slightly off`() {
-        // x·size CENTERED, y within tolerance → READY (수직은 READY 판정 제외)
+    fun `vertical within tolerance participates in READY`() {
+        // x·size·y 모두 허용 범위 → READY
         val policy = GuidancePolicy()
         policy.feed(result(x = 0f, size = 0f, y = 0.10f), now = 0)
         val actions = policy.feed(result(x = 0f, size = 0f, y = 0.10f), now = GuidancePolicy.READY_DEBOUNCE_MS)
@@ -117,6 +131,94 @@ class GuidancePolicyTest {
         assertEquals(listOf(GuidancePolicy.READY_UTTERANCE), speech(policy.feed(result(0f, 0f), now = 300)))
         assertTrue(policy.feed(result(0f, 0f), now = 600).isEmpty())
         assertTrue(policy.feed(result(0f, 0f), now = 10_000).isEmpty())
+    }
+
+    @Test
+    fun `predicted frames block the shutter without resetting a stable ready episode`() {
+        val policy = GuidancePolicy()
+        policy.feed(result(0f, 0f), now = 0L)
+        assertEquals(
+            listOf(GuidancePolicy.READY_UTTERANCE),
+            speech(policy.feed(result(0f, 0f), now = 300L)),
+        )
+        assertTrue(policy.feed(
+            result(
+                0f,
+                0f,
+                freshness = ObservationFreshness.PREDICTED,
+                ageMs = 100L,
+            ),
+            now = 400L,
+        ).isEmpty())
+        // 다음 fresh keyframe에 READY는 복원되지만 같은 에피소드 음성은 반복하지 않는다.
+        assertTrue(policy.feed(result(0f, 0f), now = 600L).isEmpty())
+    }
+
+    @Test
+    fun `uncertain observation never asks the user to move`() {
+        val predicted = result(
+            x = 0.8f,
+            size = 0f,
+            freshness = ObservationFreshness.PREDICTED,
+            ageMs = 100L,
+        )
+        assertTrue(GuidancePolicy().feed(predicted, now = 2_000L).isEmpty())
+
+        val stale = result(x = -0.8f, size = 0f, ageMs = 1_000L)
+        assertTrue(GuidancePolicy().feed(stale, now = 2_000L).isEmpty())
+    }
+
+    @Test
+    fun `hard uncertain exit starts a new ready speech episode after restabilization`() {
+        val policy = GuidancePolicy()
+        policy.feed(result(0f, 0f), now = 0L)
+        assertEquals(
+            listOf(GuidancePolicy.READY_UTTERANCE),
+            speech(policy.feed(result(0f, 0f), now = GuidancePolicy.READY_DEBOUNCE_MS)),
+        )
+
+        val hardExitAt = GuidancePolicy.READY_RESPEAK_MS + 500L
+        assertTrue(
+            policy.feed(
+                result(
+                    x = 0.8f,
+                    size = 0f,
+                    freshness = ObservationFreshness.PREDICTED,
+                    ageMs = 100L,
+                ),
+                now = hardExitAt,
+            ).isEmpty(),
+        )
+        assertTrue(policy.feed(result(0f, 0f), now = hardExitAt + 100L).isEmpty())
+        assertEquals(
+            listOf(GuidancePolicy.READY_UTTERANCE),
+            speech(
+                policy.feed(
+                    result(0f, 0f),
+                    now = hardExitAt + 100L + GuidancePolicy.READY_DEBOUNCE_MS,
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `process judgment returns the exact canonical verdict used for actions`() {
+        val policy = GuidancePolicy()
+        val first = policy.processJudgment(
+            GuidanceStateMapper.from(result(0f, 0f)),
+            result(0f, 0f),
+            nowMs = 0L,
+        )
+        assertTrue(ReadinessBlocker.UNSTABLE in first.verdict.blockers)
+        assertTrue(first.actions.isEmpty())
+
+        val stable = policy.processJudgment(
+            GuidanceStateMapper.from(result(0f, 0f)),
+            result(0f, 0f),
+            nowMs = GuidancePolicy.READY_DEBOUNCE_MS,
+        )
+        assertTrue(stable.verdict.ready)
+        assertEquals(listOf(GuidancePolicy.READY_UTTERANCE), speech(stable.actions))
     }
 
     @Test

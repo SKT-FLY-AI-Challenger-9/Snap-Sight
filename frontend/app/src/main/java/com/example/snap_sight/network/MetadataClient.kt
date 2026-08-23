@@ -8,7 +8,6 @@ import android.util.Log
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 /**
  * 상세 메타데이터 폴링 클라이언트.
@@ -20,69 +19,89 @@ import java.util.concurrent.TimeUnit
  */
 class MetadataClient(
     private val baseUrl: String? = null, // null = 요청 시점에 BackendConfig.baseUrl 사용
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
-        .build(),
+    private val client: OkHttpClient = SnapSightHttp.client(connectSeconds = 5, readSeconds = 10),
 ) {
 
     /** done 응답의 내용. 폐쇄형 계약 검증(사전 대조)은 서버가 이미 마쳤다. */
     data class Metadata(
+        val briefDescription: String?,
         val longDescription: String?,
         val labels: List<String>,
         val customLabels: List<String>,
         val peopleCount: Int?,
         val taxonomyVersion: Int?,
+        val captureRevision: Long,
+        val finalFrameId: String,
     )
 
     interface Callback {
         /** 생성 완료. 메인 스레드에서 호출된다. */
         fun onDone(metadata: Metadata)
+        fun onDone(sessionId: String, metadata: Metadata) = onDone(metadata)
 
         /** 404·타임아웃 등으로 폴링을 접음. 검색 인덱스만 비는 것이므로 사용자에게 안내하지 않는다. */
         fun onGaveUp(reason: String)
+        fun onGaveUp(sessionId: String, reason: String) = onGaveUp(reason)
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val poller = SessionPoller<Metadata>(
+        mainHandler = mainHandler,
+        threadName = "SnapSight-MetadataPoll",
+        totalTimeoutMs = TOTAL_TIMEOUT_MS,
+        initialBackoffMs = DEFAULT_RETRY_MS,
+        maxBackoffMs = MAX_RETRY_MS,
+    )
 
-    fun pollMetadata(sessionId: String, callback: Callback) {
-        Thread({
-            val deadline = System.currentTimeMillis() + TOTAL_TIMEOUT_MS
-            while (System.currentTimeMillis() < deadline) {
-                val decision = try {
-                    fetchDecision(sessionId)
-                } catch (t: Throwable) {
-                    Log.w(TAG, "메타데이터 조회 실패, 재시도 [$sessionId]: ${t.message}")
-                    Decision.Pending(DEFAULT_RETRY_MS)
-                }
-                when (decision) {
-                    is Decision.Done -> {
-                        mainHandler.post { callback.onDone(decision.metadata) }
-                        return@Thread
-                    }
-                    is Decision.NotFound -> {
-                        mainHandler.post { callback.onGaveUp("세션 없음(404) — 재시도 안 함") }
-                        return@Thread
-                    }
-                    is Decision.Pending -> Thread.sleep(decision.retryAfterMs)
-                }
+    /** 기존 호출 호환. 새 코드는 revision 검증 overload를 사용한다. */
+    fun pollMetadata(sessionId: String, callback: Callback): NetworkRequestHandle =
+        pollMetadata(sessionId, expectedRevision = null, callback = callback)
+
+    fun pollMetadata(
+        sessionId: String,
+        expectedRevision: Long?,
+        callback: Callback,
+    ): NetworkRequestHandle = poller.poll(
+        sessionId = sessionId,
+        fetch = { handle ->
+            when (val decision = fetchDecision(sessionId, handle)) {
+                is Decision.Done -> terminalIdentityError(
+                    decision.metadata.captureRevision,
+                    decision.metadata.finalFrameId,
+                    expectedRevision,
+                )?.let { PollOutcome.GaveUp(it) } ?: PollOutcome.Done(decision.metadata)
+                is Decision.Failed -> PollOutcome.GaveUp(decision.reason)
+                is Decision.NotFound -> PollOutcome.GaveUp("세션 없음(404) — 재시도 안 함")
+                is Decision.Pending -> PollOutcome.Pending(decision.retryAfterMs)
             }
-            mainHandler.post { callback.onGaveUp("타임아웃(${TOTAL_TIMEOUT_MS / 1000}초)") }
-        }, "SnapSight-MetadataPoll").start()
-    }
+        },
+        onTransientError = { error ->
+            Log.w(TAG, "메타데이터 조회 실패, 백오프 후 재시도 [$sessionId]: ${error.message}")
+        },
+        onDone = { callback.onDone(sessionId, it) },
+        onGaveUp = { callback.onGaveUp(sessionId, it) },
+    )
 
-    private fun fetchDecision(sessionId: String): Decision {
+    fun cancel(sessionId: String) = poller.cancel(sessionId)
+
+    fun cancelAll() = poller.cancelAll()
+
+    private fun fetchDecision(sessionId: String, handle: NetworkRequestHandle): Decision {
         val request = Request.Builder()
             .url("${baseUrl ?: BackendConfig.baseUrl}/api/capture/$sessionId/metadata")
             .get()
             .build()
-        client.newCall(request).execute().use { response ->
-            if (response.code == 404) return Decision.NotFound
+        return client.executeCancellable(handle, request) { response ->
             val body = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                throw IllegalStateException("HTTP ${response.code} — ${body.take(200)}")
+            when {
+                response.isSuccessful -> parseDecision(body)
+                response.code == 404 -> Decision.NotFound
+                isRetryablePollHttpCode(response.code) -> throw RetryablePollHttpException(
+                    statusCode = response.code,
+                    serverMinimumMs = retryAfterMillis(response.header("Retry-After")),
+                )
+                else -> Decision.Failed("HTTP ${response.code} — ${body.take(200)}")
             }
-            return parseDecision(body)
         }
     }
 
@@ -90,6 +109,7 @@ class MetadataClient(
     internal sealed class Decision {
         data class Done(val metadata: Metadata) : Decision()
         data class Pending(val retryAfterMs: Long) : Decision()
+        data class Failed(val reason: String) : Decision()
         object NotFound : Decision()
     }
 
@@ -99,12 +119,25 @@ class MetadataClient(
         // 상위 모델의 상세 설명 생성 — 즉시 설명(45초)보다 여유 있게 잡는다
         internal const val TOTAL_TIMEOUT_MS = 120_000L
         internal const val DEFAULT_RETRY_MS = 3_000L
+        internal const val MAX_RETRY_MS = 30_000L
 
         internal fun parseDecision(json: String): Decision {
             val obj = JSONObject(json)
-            if (obj.optString("status") != "done") {
+            val status = obj.optString("status")
+            if (status == "failed") {
+                return Decision.Failed(
+                    obj.optString("reason").takeIf { it.isNotBlank() }
+                        ?: "capture pipeline failed"
+                )
+            }
+            if (status in PENDING_POLL_STATUSES) {
                 val seconds = obj.optDouble("retry_after_seconds", DEFAULT_RETRY_MS / 1000.0)
                 return Decision.Pending(retryAfterMs = (seconds * 1000).toLong().coerceAtLeast(500L))
+            }
+            if (status != "done") {
+                return Decision.Failed(
+                    "unknown metadata status: ${status.ifBlank { "missing" }}"
+                )
             }
             fun stringList(key: String): List<String> =
                 obj.optJSONArray(key)?.let { array ->
@@ -112,6 +145,8 @@ class MetadataClient(
                 } ?: emptyList()
             return Decision.Done(
                 Metadata(
+                    briefDescription = if (obj.isNull("brief_description")) null
+                    else obj.optString("brief_description").takeIf { it.isNotBlank() },
                     // isNull 선확인 — org.json 은 JSON null 을 optString 에서 "null" 문자열로 돌려준다
                     longDescription = if (obj.isNull("long_description")) null
                     else obj.optString("long_description").takeIf { it.isNotBlank() },
@@ -120,6 +155,8 @@ class MetadataClient(
                     peopleCount = if (obj.isNull("people_count")) null else obj.optInt("people_count"),
                     taxonomyVersion = if (obj.isNull("taxonomy_version")) null
                     else obj.optInt("taxonomy_version"),
+                    captureRevision = obj.optLong("capture_revision", -1L),
+                    finalFrameId = obj.optString("final_frame_id"),
                 )
             )
         }

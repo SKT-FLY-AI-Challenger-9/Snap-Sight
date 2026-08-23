@@ -9,23 +9,81 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.example.snap_sight.stt.SpeechToTextRecognizer
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.util.UUID
 
 /** 촬영 세션 상태. docs/screen-design.md 의 S3 상태 정의와 1:1 대응한다. */
 enum class SessionState(val description: String) {
-    IDLE("볼륨 버튼을 눌러 시작"),
-    LISTENING("무엇을 찍을까요? 말한 뒤 볼륨 버튼"),
+    // 화면 상태 카드·세 번 탭 상태 낭독에 쓰이는 문구 — 탭 문법(#84) 기준 (볼륨 버튼은 제거됨)
+    IDLE("화면을 두 번 탭해 시작"),
+    LISTENING("무엇을 찍을까요? 말한 뒤 두 번 탭"),
     PARSING("음성을 확인하고 있어요…"),
-    AIMING("조준 중 — 볼륨 버튼으로 촬영"),
+    AIMING("조준 중 — 두 번 탭으로 촬영"),
     CAPTURING("촬영 중…"),
     SAVED("저장 완료"),
-    ERROR("오류가 발생했어요. 볼륨 버튼으로 처음으로"),
+    ERROR("오류가 발생했어요. 두 번 탭하면 처음으로"),
 }
+
+/** 대표 컷과 후보가 동일 세션에서 모두 모인 뒤에만 외부로 전달되는 불변 묶음. */
+data class CaptureBundle(
+    val sessionId: String,
+    val representative: Uri,
+    val candidates: List<RingFrameBuffer.Frame>,
+)
+
+internal data class CaptureSessionToken(val sessionId: String, val generation: Long)
+
+internal data class AssembledCapture<R, C>(val representative: R, val candidates: C)
+
+/** 순서가 다른 두 비동기 결과를 토큰이 일치할 때만 정확히 한 번 조립한다. */
+internal class CaptureBundleAssembler<R, C> {
+    private var token: CaptureSessionToken? = null
+    private var representative: R? = null
+    private var candidates: C? = null
+    private var emitted = false
+
+    @Synchronized
+    fun begin(next: CaptureSessionToken) {
+        token = next
+        representative = null
+        candidates = null
+        emitted = false
+    }
+
+    @Synchronized
+    fun cancel() {
+        token = null
+        representative = null
+        candidates = null
+        emitted = false
+    }
+
+    @Synchronized
+    fun putRepresentative(expected: CaptureSessionToken, value: R): AssembledCapture<R, C>? {
+        if (token != expected || emitted) return null
+        representative = value
+        return assembleIfReady()
+    }
+
+    @Synchronized
+    fun putCandidates(expected: CaptureSessionToken, value: C): AssembledCapture<R, C>? {
+        if (token != expected || emitted) return null
+        candidates = value
+        return assembleIfReady()
+    }
+
+    private fun assembleIfReady(): AssembledCapture<R, C>? {
+        val readyRepresentative = representative ?: return null
+        val readyCandidates = candidates ?: return null
+        emitted = true
+        return AssembledCapture(readyRepresentative, readyCandidates)
+    }
+}
+
+internal fun newCaptureSessionId(): String = UUID.randomUUID().toString()
 
 /**
  * README 파이프라인의 트리거 흐름을 구현하는 세션 상태 머신.
@@ -70,9 +128,28 @@ class CaptureSessionManager(
 
         /** 셔터 전후 1초 후보 프레임 수집 완료. ④ 업로드 연결 지점. */
         fun onCandidatesCollected(sessionId: String, candidates: List<RingFrameBuffer.Frame>) {}
+
+        /**
+         * 세션별 대표 컷·후보가 모두 준비된 단일 전달 지점. 기존 구현 호환을 위해 기본 구현은
+         * 두 레거시 콜백을 연달아 호출한다. 새 wiring은 이 메서드를 직접 override하는 편이 안전하다.
+         */
+        fun onCaptureBundleReady(bundle: CaptureBundle) {
+            onPhotoCaptured(bundle.sessionId, bundle.representative)
+            onCandidatesCollected(bundle.sessionId, bundle.candidates)
+        }
     }
 
     var listener: Listener? = null
+
+    /**
+     * LISTENING 진입 안내 TTS와 인식 시작의 순서 조율 훅 (실사용 피드백 2026-08-22).
+     * 안내와 인식이 동시에 시작되면 앱 자신의 안내 음성("말씀해 주세요")이 마이크로 들어가
+     * 발화로 인식된다. 이 훅이 설정돼 있으면 인식 시작을 안내가 끝난 뒤로 미룬다.
+     *
+     * 구현부(MainActivity)는 `(isRetry, onDone)`을 받아 안내를 재생하고, 끝나면 [onDone]을
+     * 메인 스레드에서 정확히 1회 호출해야 한다. null 이면 안내 없이 즉시 인식을 시작한다.
+     */
+    var listeningPrompt: ((isRetry: Boolean, onDone: () -> Unit) -> Unit)? = null
 
     var state: SessionState = SessionState.IDLE
         private set
@@ -85,6 +162,15 @@ class CaptureSessionManager(
 
     // PARSING 무한대기 방지 타임아웃 (finishListening 참고). 콜백 도착·취소 시 해제된다.
     private var parsingTimeout: Runnable? = null
+
+    // 이번 LISTENING 턴에서 인식기가 실제로 시작됐는지 — 안내 TTS 재생 중(게이트 대기)에
+    // 발화 종료가 눌리면 stop() 할 인식기가 없어 PARSING 타임아웃까지 기다리게 되므로 구분한다.
+    private var recognizerStarted = false
+
+    private var generation = 0L
+    private var activeToken: CaptureSessionToken? = null
+    private val bundleAssembler =
+        CaptureBundleAssembler<Uri, List<RingFrameBuffer.Frame>>()
 
     init {
         cameraController.captureEventListener = this
@@ -106,15 +192,22 @@ class CaptureSessionManager(
 
     /** 볼륨 버튼 길게 누름 = 세션 취소. */
     fun cancel() {
-        if (state == SessionState.IDLE) return
         if (state == SessionState.LISTENING || state == SessionState.PARSING) speechRecognizer.cancel()
-        ringBuffer.flush()
+        invalidateActiveSession()
+        cameraController.cancelPendingCapture()
+        ringBuffer.disable()
         mainHandler.removeCallbacksAndMessages(null)
-        moveTo(SessionState.IDLE)
+        clearParsingTimeout()
+        recognizerStarted = false
+        if (state != SessionState.IDLE) moveTo(SessionState.IDLE)
     }
 
     private fun startSession() {
-        sessionId = "s_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        // wall-clock 초 단위 ID는 연속 촬영에서 충돌할 수 있으므로 UUID를 사용한다.
+        invalidateActiveSession()
+        sessionId = newCaptureSessionId()
+        val token = CaptureSessionToken(sessionId, generation)
+        activeToken = token
 
         val hasMic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
                 PackageManager.PERMISSION_GRANTED
@@ -149,31 +242,59 @@ class CaptureSessionManager(
      * 끝난 뒤 실행될 코드가 아예 없어 이 문제가 구조적으로 발생하지 않는다.
      */
     private fun beginListening(isRetry: Boolean) {
+        val token = activeToken ?: return
         moveTo(SessionState.LISTENING)
+        recognizerStarted = false
+        val prompt = listeningPrompt
+        if (prompt == null) {
+            startRecognizer(isRetry, token)
+            return
+        }
+        // 안내 TTS가 끝난 뒤에 인식 시작 — 안내가 마이크로 들어가는 것을 막는다.
+        // 안내 재생 중 사용자가 취소했거나 새 세션이 시작됐으면 인식을 시작하지 않는다.
+        prompt(isRetry) {
+            if (state == SessionState.LISTENING && isActive(token)) {
+                startRecognizer(isRetry, token)
+            }
+        }
+    }
+
+    private fun startRecognizer(isRetry: Boolean, token: CaptureSessionToken) {
+        if (!isActive(token)) return
+        recognizerStarted = true
         speechRecognizer.start(object : SpeechToTextRecognizer.Listener {
             override fun onRecognized(text: String) {
+                if (!isActive(token)) return
                 clearParsingTimeout()
                 moveTo(SessionState.AIMING)
-                listener?.onUtteranceRecognized(sessionId, text)
+                listener?.onUtteranceRecognized(token.sessionId, text)
             }
 
             override fun onError(message: String) {
+                if (!isActive(token)) return
                 clearParsingTimeout()
                 if (!isRetry) {
                     Log.w(TAG, "발화 인식 실패, 1회 재시도: $message")
-                    listener?.onRecognitionRetry(sessionId)
+                    listener?.onRecognitionRetry(token.sessionId)
                     beginListening(isRetry = true)
                     return
                 }
                 Log.w(TAG, "재시도도 발화 인식 실패: $message")
                 // 인식 실패해도 타겟 스펙 없는 일반 촬영 모드로 계속 진행
                 moveTo(SessionState.AIMING)
-                listener?.onUtteranceRecognized(sessionId, null)
+                listener?.onUtteranceRecognized(token.sessionId, null)
             }
         })
     }
 
     private fun finishListening() {
+        val token = activeToken ?: return
+        if (!recognizerStarted) {
+            // 안내가 끝나기 전에 발화 종료를 눌렀다 — 들은 발화가 없으므로
+            // 마이크 없는 세션과 동일하게 스펙 없는 일반 촬영 모드로 바로 진행한다
+            moveTo(SessionState.AIMING)
+            return
+        }
         moveTo(SessionState.PARSING)
         speechRecognizer.stop()
 
@@ -181,13 +302,12 @@ class CaptureSessionManager(
         // (갤럭시 S24 실기기에서 관측 — 이슈 #42 실측). 타임아웃 없이는 PARSING에 갇혀
         // 시각장애인 사용자가 멈춘 화면을 영문도 모른 채 기다리게 되므로,
         // 일정 시간 응답이 없으면 인식 실패로 간주하고 일반 촬영 모드로 진행한다.
-        val timeoutSessionId = sessionId
         parsingTimeout = Runnable {
-            if (state != SessionState.PARSING || sessionId != timeoutSessionId) return@Runnable
-            Log.w(TAG, "발화 인식 응답 없음(${PARSING_TIMEOUT_MS}ms) — 실패로 간주하고 진행 [$timeoutSessionId]")
+            if (state != SessionState.PARSING || !isActive(token)) return@Runnable
+            Log.w(TAG, "발화 인식 응답 없음(${PARSING_TIMEOUT_MS}ms) — 실패로 간주하고 진행 [${token.sessionId}]")
             speechRecognizer.cancel()
             moveTo(SessionState.AIMING)
-            listener?.onUtteranceRecognized(timeoutSessionId, null)
+            listener?.onUtteranceRecognized(token.sessionId, null)
         }.also { mainHandler.postDelayed(it, PARSING_TIMEOUT_MS) }
     }
 
@@ -197,13 +317,24 @@ class CaptureSessionManager(
     }
 
     private fun shutter() {
+        val token = activeToken ?: return
+        bundleAssembler.begin(token)
         moveTo(SessionState.CAPTURING)
-        val shutterSessionId = sessionId
-        ringBuffer.requestCandidates(System.currentTimeMillis()) { candidates ->
-            Log.i(TAG, "후보 프레임 ${candidates.size}장 수집 [$shutterSessionId]")
-            listener?.onCandidatesCollected(shutterSessionId, candidates)
+        val accepted = ringBuffer.requestCandidates(SystemClock.elapsedRealtime()) { candidates ->
+            if (!isActive(token) || state !in setOf(SessionState.CAPTURING, SessionState.SAVED)) {
+                Log.i(TAG, "취소된 세션의 후보 콜백 무시 [${token.sessionId}]")
+                return@requestCandidates
+            }
+            Log.i(TAG, "후보 프레임 ${candidates.size}장 수집 [${token.sessionId}]")
+            bundleAssembler.putCandidates(token, candidates.toList())?.let {
+                completeBundle(token, it)
+            }
         }
-        cameraController.takePhoto(shutterSessionId)
+        if (!accepted) {
+            handleCaptureError(token, IllegalStateException("후보 프레임 요청이 이미 진행 중임"))
+            return
+        }
+        cameraController.takePhoto(token.sessionId)
     }
 
     // ---- CaptureEventListener (CameraController 가 메인 스레드에서 호출) ----
@@ -213,22 +344,96 @@ class CaptureSessionManager(
     }
 
     override fun onPhotoSaved(uri: Uri) {
-        listener?.onPhotoCaptured(sessionId, uri)
-        moveTo(SessionState.SAVED)
-        mainHandler.postDelayed({ if (state == SessionState.SAVED) moveTo(SessionState.IDLE) }, 2000)
+        val token = activeToken ?: return
+        handlePhotoSaved(token, uri)
+    }
+
+    override fun onPhotoSaved(sessionId: String?, uri: Uri) {
+        val token = activeToken ?: return
+        if (sessionId != token.sessionId) {
+            Log.i(TAG, "다른/취소된 세션의 사진 저장 콜백 무시 [$sessionId]")
+            return
+        }
+        handlePhotoSaved(token, uri)
+    }
+
+    private fun handlePhotoSaved(token: CaptureSessionToken, uri: Uri) {
+        if (!isActive(token) || state != SessionState.CAPTURING) return
+        bundleAssembler.putRepresentative(token, uri)?.let { completeBundle(token, it) }
     }
 
     override fun onCaptureError(error: Throwable) {
-        Log.e(TAG, "촬영 실패", error)
+        val token = activeToken ?: return
+        handleCaptureError(token, error)
+    }
+
+    override fun onCaptureError(sessionId: String?, error: Throwable) {
+        val token = activeToken ?: return
+        if (sessionId != token.sessionId) {
+            Log.i(TAG, "다른/취소된 세션의 촬영 오류 콜백 무시 [$sessionId]")
+            return
+        }
+        handleCaptureError(token, error)
+    }
+
+    private fun handleCaptureError(token: CaptureSessionToken, error: Throwable) {
+        if (!isActive(token)) return
+        Log.e(TAG, "촬영 실패 [${token.sessionId}]", error)
+        invalidateActiveSession()
+        cameraController.cancelPendingCapture()
+        ringBuffer.disable()
         moveTo(SessionState.ERROR)
+    }
+
+    private fun completeBundle(
+        token: CaptureSessionToken,
+        assembled: AssembledCapture<Uri, List<RingFrameBuffer.Frame>>,
+    ) {
+        if (!isActive(token)) return
+        val bundle = CaptureBundle(
+            sessionId = token.sessionId,
+            representative = assembled.representative,
+            candidates = assembled.candidates.toList(),
+        )
+        bundleAssembler.cancel()
+        // SAVED는 MediaStore와 post-window 후보가 모두 준비됐다는 뜻이다. 이 시점까지
+        // CAPTURING을 유지해야 상태 기반 camera analysis OFF가 후보 수집을 중간에 끊지 않는다.
+        moveTo(SessionState.SAVED)
+        if (!isActive(token)) return
+        listener?.onCaptureBundleReady(bundle)
+        mainHandler.postDelayed({
+            if (state == SessionState.SAVED && isActive(token)) {
+                invalidateActiveSession()
+                moveTo(SessionState.IDLE)
+            }
+        }, SAVED_DISPLAY_MS)
     }
 
     private fun moveTo(next: SessionState) {
         if (state == next) return
         state = next
-        if (next == SessionState.AIMING) tiltMonitor.start() else tiltMonitor.stop()
+        when (next) {
+            SessionState.AIMING -> {
+                ringBuffer.startPreCapture()
+                // listener가 연결되지 않은 기본 구성에서는 start()가 false이며 센서를 등록하지 않는다.
+                tiltMonitor.start()
+            }
+            SessionState.CAPTURING, SessionState.SAVED -> tiltMonitor.stop()
+            else -> {
+                tiltMonitor.stop()
+                ringBuffer.disable()
+            }
+        }
         Log.i(TAG, "세션 상태: $next")
         listener?.onStateChanged(next)
+    }
+
+    private fun isActive(token: CaptureSessionToken): Boolean = activeToken == token
+
+    private fun invalidateActiveSession() {
+        generation++
+        activeToken = null
+        bundleAssembler.cancel()
     }
 
     private companion object {
@@ -237,5 +442,6 @@ class CaptureSessionManager(
         // 발화 종료 후 인식 결과를 기다리는 최대 시간. 정상 인식은 1~3초 내 도착하고,
         // 이 시간을 넘기면 기기 인식 서비스가 응답하지 않는 상태로 본다 (실측: S24 무한대기 관측).
         const val PARSING_TIMEOUT_MS = 8_000L
+        const val SAVED_DISPLAY_MS = 2_000L
     }
 }

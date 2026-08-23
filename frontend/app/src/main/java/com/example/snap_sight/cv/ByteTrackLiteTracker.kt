@@ -32,6 +32,18 @@ data class ByteTrackLiteConfig(
      */
     val lostTrackBufferSeconds: Double? = null,
     /**
+     * 미검출 track 을 예측 위치로 계속 출력(coasting)하는 최대 시간(초). 마지막 관측 후 이 시간
+     * 안이면 `predicted=true` 인 [TrackedObject] 로 내보내, 한 프레임 놓쳤다고 피사체가 하류에서
+     * 증발하지 않게 한다 (2026-08-22 놓침 대책). 0 이면 기존처럼 관측 프레임만 출력한다.
+     */
+    val coastSeconds: Double = 0.0,
+    /**
+     * 저신뢰 2단계 매칭을 허용하는 "최근 관측" 기준(초). 기본 0 은 기존 규칙(직전 프레임에 관측된
+     * track 만). 추론 주기를 낮추면 한 번만 놓쳐도 자격을 잃어 구제가 거의 안 되므로, 마지막 관측
+     * 후 이 시간 안이면 자격을 유지한다.
+     */
+    val lowConfidenceRescueSeconds: Double = 0.0,
+    /**
      * 매칭 시 track 예측 bbox 를 마지막 관측 후 경과 시간에 비례해 확장하는 비율(초당,
      * 변 길이 대비). 놓친 시간이 길수록 위치 불확실성이 커지는 것을 반영한다 (buffered IoU).
      * 0.0 = 확장 없음 (기존 동작과 동일).
@@ -57,6 +69,10 @@ data class ByteTrackLiteConfig(
             "minimumMatchingConfidence cannot exceed trackActivationThreshold"
         }
         require(lostTrackBuffer >= 0) { "lostTrackBuffer must be non-negative" }
+        require(coastSeconds.isFinite() && coastSeconds >= 0.0) { "coastSeconds must be non-negative" }
+        require(lowConfidenceRescueSeconds.isFinite() && lowConfidenceRescueSeconds >= 0.0) {
+            "lowConfidenceRescueSeconds must be non-negative"
+        }
         require(labelSwitchMargin.isFinite() && labelSwitchMargin >= 1.0) {
             "labelSwitchMargin must be finite and at least 1"
         }
@@ -112,9 +128,14 @@ class ByteTrackLiteTracker(
         val (firstMatches, unmatchedTracks, unmatchedHigh) =
             associate(activeTracks, highConfidence, config.firstMatchIouThreshold, frameTime)
 
-        // 저신뢰 단계는 "직전 프레임에 관측된" track 에만 허용한다.
-        // 저신뢰 오탐이 이미 잃어버린 track 을 되살리거나 버퍼를 무한 연장하면 안 되므로.
-        val lowConfidenceEligible = unmatchedTracks.filter { it.missedFrames == 0 }
+        // 저신뢰 단계는 "최근에 관측된" track 에만 허용한다 — 저신뢰 오탐이 이미 잃어버린 track 을
+        // 되살리거나 버퍼를 무한 연장하면 안 되므로. 기본은 직전 프레임 관측(missedFrames==0),
+        // lowConfidenceRescueSeconds 가 설정돼 있으면 그 시간 안의 관측까지 자격을 준다.
+        val lowConfidenceEligible = unmatchedTracks.filter {
+            it.missedFrames == 0 ||
+                (config.lowConfidenceRescueSeconds > 0.0 &&
+                    frameTime - it.lastObservedTime <= config.lowConfidenceRescueSeconds)
+        }
         val (secondMatches, _, _) =
             associate(lowConfidenceEligible, lowConfidence, config.secondMatchIouThreshold, frameTime)
 
@@ -137,6 +158,17 @@ class ByteTrackLiteTracker(
             observed.add(track.asObserved(detection))
         }
 
+        // Coasting: 이번 프레임에 못 본 track 도 잠깐은 예측 위치로 이어서 내보낸다.
+        // 새로 만든 track 은 방금 관측됐으므로 대상이 아니고, 이미 관측으로 나간 track 도 제외.
+        if (config.coastSeconds > 0.0) {
+            for (track in activeTracks) {
+                if (track.trackId in matchedTrackIds) continue
+                if (frameTime - track.lastObservedTime <= config.coastSeconds) {
+                    observed.add(track.asPredicted(frameTime))
+                }
+            }
+        }
+
         // 만료: 시간 기준 옵션이 켜져 있으면 프레임 수 대신 마지막 관측 후 경과 시간으로 판정 (기능 1-D)
         val bufferSeconds = config.lostTrackBufferSeconds
         val expired = if (bufferSeconds != null) {
@@ -152,6 +184,34 @@ class ByteTrackLiteTracker(
         return observed
     }
 
+    /**
+     * detector keyframe 사이의 경량 propagation. detector miss가 아니므로 [Track.missedFrames]와
+     * 저신뢰 rescue 자격은 바꾸지 않고, 등속도·카메라 모션만 적용한다.
+     */
+    override fun predictOnly(timestampS: Double?, motionHint: MotionHint?): List<TrackedObject> {
+        val frameTime = validatedTime(timestampS)
+        val elapsedTime = if (frameIndex > 0) frameTime - currentTime else 1.0
+        frameIndex++
+        currentTime = frameTime
+        if (timestampS != null) lastExternalTimestamp = timestampS
+
+        val activeTracks = tracks.values.sortedBy { it.trackId }
+        for (track in activeTracks) track.predict(elapsedTime)
+        if (motionHint != null && (motionHint.dx != 0f || motionHint.dy != 0f)) {
+            for (track in activeTracks) track.applyMotion(motionHint)
+        }
+
+        expireByElapsedTime(frameTime)
+        if (config.coastSeconds <= 0.0) return emptyList()
+        return activeTracks
+            .asSequence()
+            .filter { tracks.containsKey(it.trackId) }
+            .filter { frameTime - it.lastObservedTime <= config.coastSeconds }
+            .map { it.asPredicted(frameTime) }
+            .sortedBy { it.trackId }
+            .toList()
+    }
+
     override fun reset() {
         tracks.clear()
         nextTrackId = 1
@@ -159,6 +219,14 @@ class ByteTrackLiteTracker(
         currentTime = 0.0
         lastExternalTimestamp = null
         usesExternalTimestamps = null
+    }
+
+    private fun expireByElapsedTime(frameTime: Double) {
+        val bufferSeconds = config.lostTrackBufferSeconds ?: return
+        val expiredIds = tracks.values
+            .filter { frameTime - it.lastObservedTime > bufferSeconds }
+            .map { it.trackId }
+        for (trackId in expiredIds) tracks.remove(trackId)
     }
 
     private fun validatedTime(timestampS: Double?): Double {
@@ -298,6 +366,8 @@ private class Track(
     var missedFrames = 0
     var age = 1
     var hits = 1
+    /** 마지막 관측의 confidence — coasting 출력([asPredicted])에 그대로 싣는다. */
+    var lastConfidence = 0f
 
     val bbox: BoundingBox get() = stateToBbox(state)
 
@@ -338,6 +408,7 @@ private class Track(
         state = observedState
         lastObservation = observedState.copyOf()
         lastObservedTime = frameTime
+        lastConfidence = detection.confidence
         missedFrames = 0
         hits++
         if (classId == null && detection.classId != null) classId = detection.classId
@@ -375,6 +446,19 @@ private class Track(
         classId = detection.classId,
     )
 
+    /** 이번 프레임 미검출 — 예측 상태(속도 + 카메라 이동 보정 반영)를 coasting 객체로 내보낸다. */
+    fun asPredicted(frameTime: Double): TrackedObject = TrackedObject(
+        trackId = trackId,
+        label = label,
+        confidence = lastConfidence,
+        bbox = bbox,
+        classId = classId,
+        predicted = true,
+        observationAgeMs = kotlin.math.round(
+            (frameTime - lastObservedTime).coerceAtLeast(0.0) * 1_000.0
+        ).toLong(),
+    )
+
     companion object {
         fun create(trackId: Int, detection: Detection, frameTime: Double): Track {
             val state = bboxToState(detection.bbox)
@@ -387,6 +471,7 @@ private class Track(
                 label = detection.label,
                 classId = detection.classId,
             ).also {
+                it.lastConfidence = detection.confidence
                 it.labelVotes[detection.label] = maxOf(detection.confidence.toDouble(), 1e-6)
             }
         }

@@ -1,6 +1,6 @@
 // 이 파일: 세션 배율 관리.
 //  - 세션 시작(AIMING): 0.6배 광각으로 넓게 보며 피사체를 찾는다
-//  - 피사체가 잡혀 수평이 안정되면(기준 충족): 정상 1.0배로 돌아온다 — 촬영은 항상 1.0 이상
+//  - 피사체가 잡혀 구도가 안정되면(기준 충족): 정상 1.0배로 돌아온다 — 촬영은 항상 1.0 이상
 //  - 촬영이 끝나면(SAVED/IDLE): 다시 0.6배
 // 면적 기반 자동 "줌인"(멀리 있는 피사체를 프레이밍 목표 크기로 당기기)은 구현은 남겨두되
 // **비활성화**돼 있다([ZOOM_IN_ENABLED]) — 2026-08-19 피드백: bbox 면적만으로는 깊이 판단이 부정확해
@@ -27,7 +27,7 @@ class AutoZoomController(private val cameraController: CameraController) {
      *
      * @param areaRatio  피사체 면적 / 프레임 면적
      * @param targetArea 프레이밍별 목표 면적비 (`DeviationJudgment.TARGET_AREA_RATIO`, READY 판정과 같은 값)
-     * @param aligned    수평 편차가 허용치 안인지. **수평이 잡힌 채 [ALIGN_FRAMES] 프레임 연속**이어야 줌인한다 —
+     * @param aligned    x/y/visibility가 허용치 안인지. **구도가 [ALIGN_FRAMES] 관측 프레임 연속**이어야 줌인한다 —
      *                   피사체가 프레임을 들락거리는 동안 배율이 널뛰지 않게.
      * @param hold       true 면 줌을 건드리지 않는다 (READY 유지 중)
      */
@@ -36,7 +36,7 @@ class AutoZoomController(private val cameraController: CameraController) {
         alignedStreak = if (aligned) alignedStreak + 1 else 0
         if (alignedStreak < ALIGN_FRAMES) return
         val current = cameraController.zoomRatio
-        // 광각(0.6)은 "찾기용"이다. 피사체가 잡혀 수평이 안정되면(기준 충족) 기본 배율 1.0 으로 돌아온다 —
+        // 광각(0.6)은 "찾기용"이다. 피사체가 잡혀 구도가 안정되면(기준 충족) 기본 배율 1.0 으로 돌아온다 —
         // 사진은 항상 정상 배율 이상으로 찍혀야 하고, READY 판정도 그 배율에서 해야 의미가 있다.
         if (current < BASE_ZOOM - ZOOM_EPS) {
             lastZoomAtMs = System.currentTimeMillis()
@@ -74,6 +74,17 @@ class AutoZoomController(private val cameraController: CameraController) {
         get() = ZOOM_IN_ENABLED &&
             cameraController.zoomRatio < effectiveMaxZoom(cameraController.maxZoomRatio) - ZOOM_EPS
 
+    /**
+     * True while zoom control can still resolve a too-small target without asking the user
+     * to move. This includes the always-enabled 0.6x -> 1.0x base-zoom return even when
+     * optional area-based zoom-in is disabled.
+     */
+    val canResolveSmallTarget: Boolean
+        get() = canResolveSmallTarget(
+            currentZoom = cameraController.zoomRatio,
+            deviceMax = cameraController.maxZoomRatio,
+        )
+
     // 세션 시작·종료 시 호출 — 넓게(가능하면 0.6배) 돌아가 피사체를 찾기 쉽게 한다. 기기 최소 배율로 클램프된다.
     fun reset() {
         lastZoomAtMs = 0L
@@ -100,7 +111,7 @@ class AutoZoomController(private val cameraController: CameraController) {
         const val MAX_STEP = 1.5f
         /** 목표 − 이 값보다 작을 때만 줌인한다 — READY 의 size 허용 오차와 같은 값. */
         const val TRIGGER_MARGIN = 0.10f
-        /** 줌인 전 수평 정렬이 유지돼야 하는 연속 분석 프레임 수. */
+        /** 줌인 전 구도 정렬이 유지돼야 하는 연속 실제 관측 프레임 수. */
         const val ALIGN_FRAMES = 5
         /** 광각에서 1.0배 복귀까지 허용하는 연속 타겟 미탐지 프레임 수 (약 2초 @ 3fps). */
         const val NO_TARGET_FRAMES = 6
@@ -111,6 +122,13 @@ class AutoZoomController(private val cameraController: CameraController) {
         private const val ZOOM_EPS = 0.05f
 
         internal fun effectiveMaxZoom(deviceMax: Float): Float = minOf(MAX_ZOOM, deviceMax)
+
+        internal fun canResolveSmallTarget(
+            currentZoom: Float,
+            deviceMax: Float,
+            zoomInEnabled: Boolean = ZOOM_IN_ENABLED,
+        ): Boolean = currentZoom < BASE_ZOOM - ZOOM_EPS ||
+            (zoomInEnabled && currentZoom < effectiveMaxZoom(deviceMax) - ZOOM_EPS)
 
         /** 이 면적이면 줌인 대상인지 (너무 큰 경우는 대상이 아니다 — 줌아웃 없음). */
         internal fun needsZoomIn(areaRatio: Float, targetArea: Float): Boolean =

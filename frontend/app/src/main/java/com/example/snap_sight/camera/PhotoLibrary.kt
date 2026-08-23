@@ -31,6 +31,7 @@ object PhotoLibrary {
 
     private const val TAG = "PhotoLibrary"
     private const val MAX_PHOTOS = 30
+    private const val MAX_SCAN_ROWS = MAX_PHOTOS * 4
     private val THUMBNAIL_SIZE = Size(256, 256)
 
     /**
@@ -41,7 +42,8 @@ object PhotoLibrary {
         context: Context,
         describe: (sessionId: String) -> String? = { null },
     ): List<GalleryPhoto> {
-        val photos = mutableListOf<GalleryPhoto>()
+        data class MediaRow(val id: Long, val displayName: String?, val addedAtMs: Long)
+        val rows = mutableListOf<MediaRow>()
         val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         val projection = arrayOf(
             MediaStore.Images.Media._ID,
@@ -49,7 +51,11 @@ object PhotoLibrary {
             MediaStore.Images.Media.DATE_ADDED,
         )
         // RELATIVE_PATH는 API 29+ 전용이라 파일명 접두사로 거른다 — 저장 규칙(SnapSight_*)과 한 쌍.
-        val selection = "${MediaStore.Images.Media.DISPLAY_NAME} LIKE ?"
+        val selection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            "${MediaStore.Images.Media.DISPLAY_NAME} LIKE ? AND ${MediaStore.Images.Media.IS_PENDING}=0"
+        } else {
+            "${MediaStore.Images.Media.DISPLAY_NAME} LIKE ?"
+        }
         val selectionArgs = arrayOf("SnapSight_%")
 
         try {
@@ -60,13 +66,22 @@ object PhotoLibrary {
                 val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
                 val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
                 val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
-                while (cursor.moveToNext() && photos.size < MAX_PHOTOS) {
-                    val id = cursor.getLong(idCol)
-                    val addedAt = Date(cursor.getLong(dateCol) * 1000L)
-                    val uri = ContentUris.withAppendedId(collection, id)
-                    val sessionId = sessionIdFromDisplayName(cursor.getString(nameCol))
-                    photos.add(
-                        GalleryPhoto(
+                while (cursor.moveToNext() && rows.size < MAX_SCAN_ROWS) {
+                    rows += MediaRow(
+                        id = cursor.getLong(idCol),
+                        displayName = cursor.getString(nameCol),
+                        addedAtMs = cursor.getLong(dateCol) * 1000L,
+                    )
+                }
+            }
+            return preferredPhotoIndices(rows.map { it.displayName })
+                .take(MAX_PHOTOS)
+                .map { rowIndex ->
+                    val row = rows[rowIndex]
+                    val addedAt = Date(row.addedAtMs)
+                    val uri = ContentUris.withAppendedId(collection, row.id)
+                    val sessionId = sessionIdFromDisplayName(row.displayName)
+                    GalleryPhoto(
                             uri = uri,
                             thumbnail = loadThumbnail(context, uri),
                             title = titleFormat.format(addedAt) + " 촬영",
@@ -74,14 +89,12 @@ object PhotoLibrary {
                             description = sessionId?.let(describe) ?: "설명을 준비 중이에요",
                             sessionId = sessionId,
                             takenAtMs = addedAt.time,
-                        )
                     )
                 }
-            }
         } catch (t: Throwable) {
             Log.w(TAG, "사진 목록 조회 실패", t)
         }
-        return photos
+        return emptyList()
     }
 
     private fun loadThumbnail(context: Context, uri: Uri): Bitmap? = try {
@@ -96,12 +109,47 @@ object PhotoLibrary {
         null
     }
 
-    /** "SnapSight_s_20260819_145301.jpg" → "s_20260819_145301". 세션 ID가 안 심긴 옛 사진은 null. */
+    /** 원본과 `..._selected.jpg` 모두 같은 session ID로 해석한다. */
     internal fun sessionIdFromDisplayName(displayName: String?): String? {
-        val stem = displayName?.removePrefix("SnapSight_")?.substringBeforeLast('.') ?: return null
-        return stem.takeIf { it.startsWith("s_") }
+        val raw = displayName ?: return null
+        if (!raw.startsWith("SnapSight_")) return null
+        val stem = raw.removePrefix("SnapSight_").substringBeforeLast('.')
+        val candidate = stem.removeSuffix(SELECTED_SUFFIX)
+        // UUID는 현재 계약, s_*는 이미 저장된 옛 사진 호환.
+        return candidate.takeIf { UUID_SESSION.matches(it) || it.startsWith("s_") }
+    }
+
+    internal fun isSelectedDisplayName(displayName: String?): Boolean {
+        val stem = displayName?.removePrefix("SnapSight_")?.substringBeforeLast('.') ?: return false
+        return stem.endsWith(SELECTED_SUFFIX) && sessionIdFromDisplayName(displayName) != null
+    }
+
+    /** 최신순 이름 목록에서 세션당 한 장만 남기되 selected가 있으면 원본보다 우선한다. */
+    internal fun preferredPhotoIndices(displayNames: List<String?>): List<Int> {
+        val result = mutableListOf<Int>()
+        val resultPositionBySession = mutableMapOf<String, Int>()
+        displayNames.forEachIndexed { index, name ->
+            val session = sessionIdFromDisplayName(name)
+            if (session == null) {
+                result += index
+                return@forEachIndexed
+            }
+            val existingPosition = resultPositionBySession[session]
+            if (existingPosition == null) {
+                resultPositionBySession[session] = result.size
+                result += index
+            } else {
+                val existingIndex = result[existingPosition]
+                if (!isSelectedDisplayName(displayNames[existingIndex]) && isSelectedDisplayName(name)) {
+                    result[existingPosition] = index
+                }
+            }
+        }
+        return result
     }
 
     private val titleFormat = SimpleDateFormat("M월 d일 H시 m분", Locale.KOREAN)
     private val dateFormat = SimpleDateFormat("M월 d일", Locale.KOREAN)
+    private const val SELECTED_SUFFIX = "_selected"
+    private val UUID_SESSION = Regex("[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}")
 }

@@ -98,8 +98,15 @@ object PhotoSearchEngine {
         else -> "${resultCount}장을 찾았어요"
     }
 
-    /** 목록 훑어 읽기의 한 항목 — 날짜 + 짧은 설명 (없으면 자리표시). */
-    data class RollCallItem(val dateText: String, val description: String?)
+    /**
+     * 목록 훑어 읽기의 한 항목 — 날짜 + 짧은 설명 (없으면 자리표시).
+     * @param people 등록 인물·사물 이름 (온디바이스 태그). 있으면 "유재석 나온" 을 설명 앞에 붙인다.
+     */
+    data class RollCallItem(
+        val dateText: String,
+        val description: String?,
+        val people: List<String> = emptyList(),
+    )
 
     /**
      * "지금 목록에 어떤 사진들이 있는지"를 낭독할 문구 (기능 3-C — 좁힌 결과 확인).
@@ -109,7 +116,8 @@ object PhotoSearchEngine {
     fun rollCall(items: List<RollCallItem>, maxItems: Int = ROLL_CALL_MAX_ITEMS): String {
         if (items.isEmpty()) return "지금 목록에 사진이 없어요"
         val lines = items.take(maxItems).mapIndexed { index, item ->
-            "${index + 1}번, ${item.dateText}, ${briefDescription(item.description)}"
+            val who = if (item.people.isNotEmpty()) "${item.people.joinToString(", ")} 나온, " else ""
+            "${index + 1}번, ${item.dateText}, $who${briefDescription(item.description)}"
         }
         val remainder = items.size - maxItems
         val tail = if (remainder > 0) ". 이 밖에 ${remainder}장이 더 있어요" else ""

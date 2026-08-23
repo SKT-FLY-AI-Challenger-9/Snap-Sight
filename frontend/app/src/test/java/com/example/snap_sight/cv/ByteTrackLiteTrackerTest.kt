@@ -22,6 +22,83 @@ class ByteTrackLiteTrackerTest {
     ) = Detection(label, confidence, BoundingBox(xMin, yMin, xMax, yMax), classId)
 
     @Test
+    fun `a briefly missed track coasts as predicted then expires`() {
+        val tracker = ByteTrackLiteTracker(ByteTrackLiteConfig(coastSeconds = 0.7, lostTrackBufferSeconds = 2.0))
+        val box = detection(xMin = 0.1f, yMin = 0.1f, xMax = 0.3f, yMax = 0.5f)
+
+        val seen = tracker.update(listOf(box), timestampS = 0.0, motionHint = null).single()
+        assertEquals(false, seen.predicted)
+
+        // 0.2초 뒤 검출이 비어도 같은 ID 가 예측 상자로 이어진다 (confidence 는 마지막 관측값)
+        val coasted = tracker.update(emptyList(), timestampS = 0.2, motionHint = null).single()
+        assertEquals(seen.trackId, coasted.trackId)
+        assertEquals(true, coasted.predicted)
+        assertEquals(seen.confidence, coasted.confidence)
+
+        // coastSeconds 를 넘기면 출력에서 빠진다 (track 자체는 버퍼 동안 살아 있어 재획득 가능)
+        assertTrue(tracker.update(emptyList(), timestampS = 1.0, motionHint = null).isEmpty())
+        val reacquired = tracker.update(listOf(box), timestampS = 1.2, motionHint = null).single()
+        assertEquals(seen.trackId, reacquired.trackId)
+        assertEquals(false, reacquired.predicted)
+    }
+
+    @Test
+    fun `coasting is off by default so only observed objects are emitted`() {
+        val tracker = ByteTrackLiteTracker()
+        tracker.update(listOf(detection(xMin = 0.1f, yMin = 0.1f, xMax = 0.3f, yMax = 0.5f)))
+        assertTrue(tracker.update(emptyList()).isEmpty())
+    }
+
+    @Test
+    fun `predict only advances a track without counting a detector miss`() {
+        val tracker = ByteTrackLiteTracker(
+            ByteTrackLiteConfig(coastSeconds = 1.0, lostTrackBufferSeconds = 2.0)
+        )
+        val box = detection(xMin = 0.1f, yMin = 0.1f, xMax = 0.3f, yMax = 0.5f)
+        tracker.update(listOf(box), timestampS = 0.0)
+
+        val firstPrediction = tracker.predictOnly(timestampS = 0.1).single()
+        val secondPrediction = tracker.predictOnly(timestampS = 0.2).single()
+        assertTrue(firstPrediction.predicted)
+        assertEquals(100L, firstPrediction.observationAgeMs)
+        assertEquals(200L, secondPrediction.observationAgeMs)
+
+        // predict-only 호출은 missedFrames를 늘리지 않으므로 기본 저신뢰 rescue 자격이 남는다.
+        val rescued = tracker.update(
+            listOf(box.copy(confidence = 0.15f)),
+            timestampS = 0.3,
+        ).single()
+        assertEquals(1, rescued.trackId)
+        assertEquals(false, rescued.predicted)
+    }
+
+    @Test
+    fun `predict only applies camera motion to the propagated box`() {
+        val tracker = ByteTrackLiteTracker(ByteTrackLiteConfig(coastSeconds = 1.0))
+        tracker.update(
+            listOf(detection(xMin = 0.1f, yMin = 0.2f, xMax = 0.3f, yMax = 0.6f)),
+            timestampS = 0.0,
+        )
+        val predicted = tracker.predictOnly(
+            timestampS = 0.1,
+            motionHint = MotionHint(dx = 0.2f, dy = -0.1f),
+        ).single()
+        assertEquals(0.3f, predicted.bbox.xMin, 1e-5f)
+        assertEquals(0.1f, predicted.bbox.yMin, 1e-5f)
+    }
+
+    @Test
+    fun `predict only expires a track by elapsed lost buffer time`() {
+        val tracker = ByteTrackLiteTracker(
+            ByteTrackLiteConfig(coastSeconds = 1.0, lostTrackBufferSeconds = 0.5)
+        )
+        val box = detection(xMin = 0.1f, yMin = 0.1f, xMax = 0.3f, yMax = 0.5f)
+        tracker.update(listOf(box), timestampS = 0.0)
+        assertTrue(tracker.predictOnly(timestampS = 0.6).isEmpty())
+        assertEquals(2, tracker.update(listOf(box), timestampS = 0.7).single().trackId)
+    }
+
+    @Test
     fun `the same object keeps its track id across frames`() {
         val tracker = ByteTrackLiteTracker()
 

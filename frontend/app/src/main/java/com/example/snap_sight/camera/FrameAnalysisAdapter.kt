@@ -3,6 +3,7 @@
 // 프레임 메모리를 다 쓴 뒤 돌려주는(닫는) 책임도 여기서 진다.
 package com.example.snap_sight.camera
 
+import android.os.SystemClock
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import com.example.snap_sight.cv.FrameProcessor
@@ -32,6 +33,17 @@ internal class FrameAnalysisAdapter : ImageAnalysis.Analyzer {
     @Volatile
     private var sink: FrameSink? = null
 
+    /**
+     * CameraX use case를 다시 묶지 않고도 전달을 즉시 멈추는 빠른 게이트.
+     * false일 때도 전달받은 [ImageProxy]는 즉시 닫아 CameraX 파이프라인을 막지 않는다.
+     */
+    @Volatile
+    private var enabled = true
+
+    fun setEnabled(value: Boolean) {
+        enabled = value
+    }
+
     fun setProcessor(next: FrameProcessor?) {
         synchronized(processorLock) {
             val prev = processor
@@ -48,9 +60,12 @@ internal class FrameAnalysisAdapter : ImageAnalysis.Analyzer {
 
     override fun analyze(image: ImageProxy) {
         image.use { proxy ->
+            if (!enabled) return@use
             val rotation = proxy.imageInfo.rotationDegrees
-            sink?.onFrame(proxy, rotation, System.currentTimeMillis())
+            val timestampMs = SystemClock.elapsedRealtime()
+            // 조준 판정이 시간 민감하므로 CV를 먼저 수행하고, 저주기 JPEG 후보 저장은 뒤에 둔다.
             synchronized(processorLock) { processor?.onFrame(proxy, rotation) }
+            sink?.onFrame(proxy, rotation, timestampMs)
         }
     }
 }

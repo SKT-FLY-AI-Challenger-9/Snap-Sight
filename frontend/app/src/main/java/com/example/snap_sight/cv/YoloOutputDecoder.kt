@@ -74,10 +74,14 @@ class YoloOutputDecoder(
         private set
 
     /**
-     * end-to-end head 는 이미 중복을 제거하고 나온다. 여기서 NMS 를 또 돌리면
-     * 겹쳐 선 같은 클래스 객체(예: 나란한 사람 둘)를 정당한 검출인데도 지운다.
+     * export 출력 형태만으로 NMS 적용 여부를 추론하지 않는다.
+     *
+     * 배포 export 는 `nms=false` 이면서도 `[1, N, 6]`(END_TO_END) 형태를 내며, 실제 모델에서도
+     * 같은 물체의 동일 class 박스가 tracker 활성 임계값 위로 중복 출력된다. 따라서 호출자가
+     * [applyNms]를 켰다면 layout 과 무관하게 class-wise NMS 를 적용한다. 이미 NMS 된 별도 모델을
+     * 연결할 때만 명시적으로 `applyNms=false`를 사용한다.
      */
-    private val suppressDuplicates = applyNms && layout != YoloOutputLayout.END_TO_END
+    private val suppressDuplicates = applyNms
 
     /**
      * @param values `[anchorCount x channelCount]` 를 평탄화한 dequantize 완료 출력

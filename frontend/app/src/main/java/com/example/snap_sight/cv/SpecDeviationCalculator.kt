@@ -81,7 +81,7 @@ class SpecDeviationCalculator(
     private var heldFrames = 0
 
     /** 새 촬영 세션 — 이전 세션의 타겟 기억과 지표를 지운다 (track_id 재시작). */
-    fun reset() {
+    override fun reset() {
         synchronized(stateLock) {
             stickyTrackId = null
             lastTarget = null
@@ -104,16 +104,29 @@ class SpecDeviationCalculator(
         if (spec?.subjectType == TargetSpec.SubjectType.LANDSCAPE) return null
         val now = clock()
         synchronized(stateLock) {
-            val target = pickTarget(selection.candidates, now) ?: return holdOrLost(now)
+            // SEARCHING/AMBIGUOUS/UNRESOLVED 상태에서 임의 후보를 골라 READY를 만들지 않는다.
+            val eligibleCandidates = when (selection.state) {
+                TargetSelectionState.SELECTED, TargetSelectionState.DISABLED -> selection.candidates
+                else -> emptyList()
+            }
+            val target = pickTarget(eligibleCandidates, now) ?: return holdOrLost(now)
             inLostEpisode = false
             stickyTrackId = target.trackId
+            val hadRememberedTarget = lastTarget != null
             lastTarget = target
-            lastTargetAtMs = now
+            if (target.freshness == ObservationFreshness.FRESH) {
+                lastTargetAtMs = now
+            } else if (!hadRememberedTarget) {
+                lastTargetAtMs = now - target.observationAgeMs
+            }
             val deviation = FramingDeviation(
                 trackId = target.trackId,
                 offsetX = ((target.bbox.centerX - 0.5f) * 2f).coerceIn(-1f, 1f),
                 offsetY = ((target.bbox.centerY - 0.5f) * 2f).coerceIn(-1f, 1f),
                 areaRatio = target.bbox.area.coerceIn(0f, 1f),
+                observationFreshness = target.freshness,
+                observationAgeMs = target.observationAgeMs,
+                frameVisibility = FrameVisibility.from(target.bbox),
             )
             lastDeviation = deviation
             return deviation
@@ -179,7 +192,11 @@ class SpecDeviationCalculator(
         val previous = lastDeviation
         if (previous != null && lastTarget != null && now - lastTargetAtMs <= lockConfig.holdMs) {
             heldFrames++
-            return previous.copy(held = true)
+            return previous.copy(
+                held = true,
+                observationFreshness = ObservationFreshness.HELD,
+                observationAgeMs = (now - lastTargetAtMs).coerceAtLeast(0L),
+            )
         }
         if (previous != null && !inLostEpisode) {
             inLostEpisode = true
@@ -196,7 +213,7 @@ class SpecDeviationCalculator(
  * 이식이며, 이 파일이 런타임 정본이다 (실시간 판정은 온디바이스 — Notion 파이프라인 ④).
  *
  * 부호 규약 (계약 문서와 동일):
- *  - [DeviationResult.xDeviation] = center_x − 0.5 (−0.5..+0.5). 음수 = 타겟이 왼쪽, 양수 = 오른쪽
+ *  - [DeviationResult.xDeviation] = center_x − goal.anchorX. 음수 = 타겟이 왼쪽, 양수 = 오른쪽
  *  - [DeviationResult.sizeDeviation] = area_ratio − 프레이밍별 목표비. 음수 = 너무 멂, 양수 = 너무 가까움
  */
 object DeviationJudgment {
@@ -205,15 +222,10 @@ object DeviationJudgment {
      * 프레이밍별 목표 면적비 — 실측 검증 전 1차 추정치.
      * `docs/deviation-interface.md` 의 값과 반드시 일치시킨다 (테스트로 고정).
      */
-    val TARGET_AREA_RATIO: Map<TargetSpec.Framing, Float> = mapOf(
-        TargetSpec.Framing.CLOSEUP to 0.30f,
-        TargetSpec.Framing.FULL_BODY to 0.12f,
-        TargetSpec.Framing.WIDE to 0.04f,
-    )
+    val TARGET_AREA_RATIO: Map<TargetSpec.Framing, Float> = TargetSpec.Framing.entries
+        .associateWith { CompositionProfile.DEFAULT.goalFor(it).targetAreaRatio }
 
-    // READY(촬영 가능) 후보 판정 임계값 — 이슈 #42 실기기 편차 분포로 1차 캘리브레이션(0.15/0.10)된 뒤,
-    // 2026-08-19 실사용 피드백("기준이 너무 빡세 위치 조정을 계속 해야 함")으로 x 를 0.20 으로 완화.
-    // 정본은 ⑥의 docs/ux/guidance-state-schema.md (CENTERED 허용 오차)이며 그 값에 맞춘다.
+    // Legacy UI/API 호환 상수. 실제 정본은 CompositionProfile.DEFAULT의 framing별 FramingGoal이다.
     const val READY_MAX_ABS_X_DEVIATION = 0.20f
     const val READY_MAX_ABS_SIZE_DEVIATION = 0.10f
 
@@ -222,42 +234,62 @@ object DeviationJudgment {
      *                  (타겟 유실과 landscape 의도 모두 포함 — LOST 후보)
      * @param framing   의도 프레이밍. 의도 없는 세션은 기본값 FULL_BODY 로 판정
      */
-    fun judge(deviation: FramingDeviation?, framing: TargetSpec.Framing): DeviationResult {
+    fun judge(
+        deviation: FramingDeviation?,
+        framing: TargetSpec.Framing,
+        profile: CompositionProfile = CompositionProfile.DEFAULT,
+    ): DeviationResult {
+        val goal = profile.goalFor(framing)
         if (deviation == null) {
-            return DeviationResult(subjectDetected = false, xDeviation = null, sizeDeviation = null)
+            return DeviationResult(
+                subjectDetected = false,
+                xDeviation = null,
+                sizeDeviation = null,
+                framing = framing,
+                goal = goal,
+            )
         }
+        val centerX = deviation.offsetX / 2f + 0.5f
+        val centerY = deviation.offsetY / 2f + 0.5f
         return DeviationResult(
             subjectDetected = true,
-            // FramingDeviation.offsetX 는 -1..1 스케일 → 계약(center_x − 0.5)의 -0.5..0.5 로 환산
-            xDeviation = deviation.offsetX / 2f,
-            sizeDeviation = deviation.areaRatio - TARGET_AREA_RATIO.getValue(framing),
-            // 수직 편차(dy)는 계약상 "반영 여부 미확정"이라 additive 로만 싣는다 — 같은 -0.5..0.5 스케일.
-            // READY 판정에는 쓰지 않고 ⑥ 방향 음성("위/아래")에만 쓴다.
-            yDeviation = deviation.offsetY / 2f,
+            xDeviation = centerX - goal.anchorX,
+            sizeDeviation = deviation.areaRatio - goal.targetAreaRatio,
+            yDeviation = centerY - goal.anchorY,
+            framing = framing,
+            goal = goal,
+            areaRatio = deviation.areaRatio,
+            frameVisibility = deviation.frameVisibility,
+            observationFreshness = deviation.observationFreshness,
+            observationAgeMs = deviation.observationAgeMs,
         )
     }
 
-    /** 두 편차가 모두 임계값 안 = READY 후보. 최종 READY 판정·자동 셔터는 후속 이슈. */
-    fun isReadyCandidate(result: DeviationResult): Boolean {
-        val x = result.xDeviation ?: return false
-        val size = result.sizeDeviation ?: return false
-        return kotlin.math.abs(x) <= READY_MAX_ABS_X_DEVIATION &&
-            kotlin.math.abs(size) <= READY_MAX_ABS_SIZE_DEVIATION
-    }
+    /** 시간 안정화 전의 canonical READY 후보. y/freshness/visibility를 생략하지 않는다. */
+    fun isReadyCandidate(
+        result: DeviationResult,
+        profile: CompositionProfile = CompositionProfile.DEFAULT,
+    ): Boolean = CompositionReadiness.candidateVerdict(result, profile).candidateReady
 }
 
 /**
  * 판정 편차 결과. [subjectDetected] 가 false 면 두 편차는 반드시 null,
  * true 면 반드시 채워져 있다 — 계약 위반은 생성 시점에 막는다.
  *
- * [yDeviation] 은 additive(선택) 필드다: 수직 편차 반영이 계약상 미확정이라 READY 판정에는
- * 쓰지 않으며, ⑥이 "위/아래" 방향 안내에만 쓴다. 없으면 null.
+ * [yDeviation] 은 additive 호환 필드지만 canonical READY에서는 필수다. 값이 없으면 안전하게
+ * 수직 상태를 확인할 수 없으므로 READY가 아니다.
  */
 data class DeviationResult(
     val subjectDetected: Boolean,
     val xDeviation: Float?,
     val sizeDeviation: Float?,
     val yDeviation: Float? = null,
+    val framing: TargetSpec.Framing = TargetSpec.Framing.FULL_BODY,
+    val goal: FramingGoal? = null,
+    val areaRatio: Float? = null,
+    val frameVisibility: FrameVisibility? = null,
+    val observationFreshness: ObservationFreshness = ObservationFreshness.FRESH,
+    val observationAgeMs: Long = 0L,
 ) {
     init {
         if (subjectDetected) {
@@ -268,6 +300,10 @@ data class DeviationResult(
             require(xDeviation == null && sizeDeviation == null && yDeviation == null) {
                 "subjectDetected=false 인 경우 편차 값은 모두 비어 있어야 합니다."
             }
+        }
+        require(observationAgeMs >= 0L) { "observationAgeMs must be non-negative" }
+        require(areaRatio == null || (areaRatio.isFinite() && areaRatio in 0f..1f)) {
+            "areaRatio must be null or in [0, 1]"
         }
     }
 }

@@ -15,7 +15,8 @@ object BackendConfig {
 
     /** 앱 시작 시 저장된 재정의 값을 복원한다 — 없으면 빌드 주입값 그대로. */
     fun load(prefs: SharedPreferences) {
-        baseUrl = prefs.getString(KEY_BASE_URL, null)?.takeIf { it.isNotBlank() }
+        // debug에서 저장한 평문 LAN 주소가 release 설치에 남아 있어도 복원하지 않는다.
+        baseUrl = prefs.getString(KEY_BASE_URL, null)?.let(::normalize)
             ?: BuildConfig.BACKEND_BASE_URL
     }
 
@@ -30,17 +31,26 @@ object BackendConfig {
         return baseUrl
     }
 
-    /** 스킴 없으면 http:// 를 붙이고 끝 슬래시를 제거한다. 빈 문자열이면 null. */
-    fun normalize(rawInput: String): String? {
+    /** debug는 스킴이 없으면 http, release는 https를 붙인다. release의 명시적 http는 거부한다. */
+    fun normalize(rawInput: String): String? =
+        normalize(rawInput, allowCleartext = BuildConfig.ALLOW_CLEARTEXT_BACKEND)
+
+    internal fun normalize(rawInput: String, allowCleartext: Boolean): String? {
         val trimmed = rawInput.trim().trimEnd('/')
         if (trimmed.isEmpty()) return null
-        return if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) trimmed
-        else "http://$trimmed"
+        return when {
+            trimmed.startsWith("https://", ignoreCase = true) -> trimmed
+            trimmed.startsWith("http://", ignoreCase = true) ->
+                trimmed.takeIf { allowCleartext }
+            "://" in trimmed -> null
+            allowCleartext -> "http://$trimmed"
+            else -> "https://$trimmed"
+        }
     }
 
     /** 설정 화면 입력칸에 보여줄 저장된 재정의 값 — 재정의가 없으면 빈 문자열. */
     fun storedOverride(prefs: SharedPreferences): String =
-        prefs.getString(KEY_BASE_URL, "").orEmpty()
+        prefs.getString(KEY_BASE_URL, "").orEmpty().let(::normalize).orEmpty()
 
     private const val KEY_BASE_URL = "backend_base_url"
 }

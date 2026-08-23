@@ -29,7 +29,13 @@ class TiltSensorMonitor(context: Context) : SensorEventListener {
         fun onTiltChanged(rollDegrees: Float, pitchDegrees: Float)
     }
 
+    @Volatile
     var listener: Listener? = null
+        set(value) {
+            field = value
+            // 소비자가 사라졌는데 센서만 계속 샘플링하는 상태를 허용하지 않는다.
+            if (value == null) stop()
+        }
 
     @Volatile
     var rollDegrees: Float = 0f
@@ -46,16 +52,20 @@ class TiltSensorMonitor(context: Context) : SensorEventListener {
 
     private val gravity = FloatArray(3)
     private var initialized = false
+    @Volatile
     private var running = false
 
     /** 조준 루프(AIMING) 진입 시 호출. 센서가 없으면 false. */
     fun start(): Boolean {
+        // tilt 값을 소비하지 않는 구성에서는 센서 등록 비용이 0이어야 한다.
+        if (listener == null) return false
         val sensor = accelerometer ?: return false
         if (running) return true
         running = true
         initialized = false
-        sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI)
-        return true
+        val registered = sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI)
+        if (!registered) running = false
+        return registered
     }
 
     /** 조준 루프 이탈 시 호출. */
@@ -66,6 +76,7 @@ class TiltSensorMonitor(context: Context) : SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent) {
+        if (!running) return
         // 저역 통과: gravity = α·gravity + (1-α)·측정값
         if (!initialized) {
             event.values.copyInto(gravity, endIndex = 3)
