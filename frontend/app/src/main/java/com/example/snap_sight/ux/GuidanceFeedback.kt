@@ -16,6 +16,8 @@ import android.util.Log
 import com.example.snap_sight.cv.DeviationListener
 import com.example.snap_sight.cv.DeviationResult
 import com.example.snap_sight.cv.ReadinessVerdict
+import com.example.snap_sight.voice.VoiceAssetIndex
+import com.example.snap_sight.voice.VoiceAssetPlayer
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -34,7 +36,8 @@ import java.util.concurrent.atomic.AtomicLong
  * 안내를 사용한다. 따라서 `subjectDetected=false`인 실제 타겟 세션만 LOST 정책으로 들어온다.
  *
  * 스레딩: [onDeviation]은 CV 분석 스레드에서 호출된다. `TextToSpeech`/`Vibrator`/`ToneGenerator`는
- * 자체적으로 스레드 안전하게 큐잉되므로 별도 스레드 전환 없이 직접 호출한다.
+ * 자체적으로 스레드 안전하게 큐잉되므로 별도 스레드 전환 없이 직접 호출한다. 다만
+ * [VoiceAssetPlayer]의 `MediaPlayer`는 그렇지 않아 메인 스레드로 넘겨서 쓴다.
  */
 class GuidanceFeedback(context: Context) : DeviationListener {
 
@@ -72,6 +75,29 @@ class GuidanceFeedback(context: Context) : DeviationListener {
 
     @Volatile
     private var ttsInitFailed = false
+
+    /**
+     * 미리 구워둔 안내 음원(assets/voice). 문장이 여기 있으면 시스템 TTS 대신 이걸 재생한다 —
+     * 오프라인에서도 안내가 나오고, 목소리가 기기별로 달라지지 않는다.
+     * 음원이 없으면 빈 색인이 되어 전부 기존 경로로 흐른다.
+     */
+    @Volatile
+    private var voiceAssets: VoiceAssetIndex = VoiceAssetIndex.load(context)
+    private val voicePlayer = VoiceAssetPlayer(context)
+
+    /**
+     * 안내 목소리 프리셋을 바꾼다 — 해당 프리셋의 프리캐싱 음원 세트로 전환한다
+     * ("최종 기획 정리" 안내 목소리 프리셋 3종).
+     *
+     * 설정에 프리셋 항목이 생기면 `applySettings`에서 이 메서드를 부르면 된다. 지금은
+     * 설정 스키마에 프리셋 필드가 없어 기본 프리셋으로 시작한다.
+     * 프리셋 음원이 없으면 빈 색인이 되어 시스템 TTS로 흐르므로 안내가 끊기지는 않는다.
+     */
+    fun useVoicePreset(presetId: String) {
+        if (voiceAssets.presetId == presetId) return
+        voiceAssets = VoiceAssetIndex.load(appContext, presetId)
+        stopCachedVoice()
+    }
 
     // TTS 엔진 초기화(비동기, 보통 수백 ms)가 끝나기 전에 들어온 안내 — 예전엔 조용히 버려져서
     // 앱 첫 진입 환영 멘트가 안 나왔다 (2026-08-22). 마지막 1건만 보관했다가 초기화되면 말한다.
@@ -121,16 +147,22 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         override fun onError(utteranceId: String?, errorCode: Int) = complete(utteranceId)
         override fun onStop(utteranceId: String?, interrupted: Boolean) = complete(utteranceId)
 
-        private fun complete(utteranceId: String?) {
-            if (utteranceId == null) return
-            utterancePriorities.remove(utteranceId)
-            if (activeUtteranceId == utteranceId) {
-                activeUtteranceId = null
-                activeSpeechPriority = null
-            }
-            val callback = utteranceCallbacks.remove(utteranceId) ?: return
-            transitionHandler.postDelayed(callback, TTS_ECHO_GUARD_MS)
+        private fun complete(utteranceId: String?) = completeUtterance(utteranceId)
+    }
+
+    /**
+     * 발화 한 건의 수명을 끝낸다. 시스템 TTS 리스너와 캐시 음원 재생기가 함께 쓴다 —
+     * 어느 경로로 말했든 완료 콜백 계약(끝나든 끊기든 반드시 한 번)은 같아야 한다.
+     */
+    private fun completeUtterance(utteranceId: String?) {
+        if (utteranceId == null) return
+        utterancePriorities.remove(utteranceId)
+        if (activeUtteranceId == utteranceId) {
+            activeUtteranceId = null
+            activeSpeechPriority = null
         }
+        val callback = utteranceCallbacks.remove(utteranceId) ?: return
+        transitionHandler.postDelayed(callback, TTS_ECHO_GUARD_MS)
     }
 
     private val vibrator: Vibrator =
@@ -160,6 +192,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         soundVolume = settings.soundVolume.coerceIn(0f, 1f)
         pendingSpeechRate = GuidanceFeedbackSettingsMapper.speechRate(settings)
         if (ttsReady) tts.setSpeechRate(pendingSpeechRate)
+        useVoicePreset(settings.voicePreset)
         rebuildToneGenerator()
     }
 
@@ -180,7 +213,10 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         val hasQueuedTargetGuidance = utterancePriorities.values.any {
             it == SpeechPriority.ADJUSTMENT || it == SpeechPriority.READY
         }
-        if (hasQueuedTargetGuidance) runCatching { tts.stop() }
+        if (hasQueuedTargetGuidance) {
+            runCatching { tts.stop() }
+            stopCachedVoice()
+        }
     }
 
     override fun onDeviation(result: DeviationResult) {
@@ -300,16 +336,56 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         val id = "announce_${utteranceCounter.incrementAndGet()}"
         if (onDone != null) utteranceCallbacks[id] = onDone
         utterancePriorities[id] = priority
-        val queueMode = if (active == null || priority.level >= active.level) {
-            TextToSpeech.QUEUE_FLUSH
-        } else {
-            TextToSpeech.QUEUE_ADD
+        val interrupts = active == null || priority.level >= active.level
+        val queueMode = if (interrupts) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+
+        // 캐시 음원은 앞의 발화를 끊고 바로 재생하는 경우에만 쓴다. 뒤에 붙여야 하는
+        // (QUEUE_ADD) 경우는 시스템 TTS 의 큐가 필요하므로 그대로 넘긴다 — 캐시 재생기는
+        // 한 번에 하나만 재생하므로 큐를 흉내 내면 앞 안내를 잘라먹는다.
+        val assetPath = if (interrupts) voiceAssets.assetPathFor(text) else null
+        if (assetPath != null) {
+            playCachedVoice(assetPath, text, id)
+            return
         }
-        val result = tts.speak(text, queueMode, null, id)
+
+        stopCachedVoice()
+        speakWithSystemTts(text, queueMode, id)
+    }
+
+    private fun speakWithSystemTts(text: String, queueMode: Int, utteranceId: String) {
+        val result = tts.speak(text, queueMode, null, utteranceId)
         if (result == TextToSpeech.ERROR) {
-            utterancePriorities.remove(id)
-            utteranceCallbacks.remove(id)?.let { transitionHandler.post(it) }
+            utterancePriorities.remove(utteranceId)
+            utteranceCallbacks.remove(utteranceId)?.let { transitionHandler.post(it) }
         }
+    }
+
+    /**
+     * 미리 구워둔 음원으로 말한다.
+     *
+     * `MediaPlayer`는 [TextToSpeech]와 달리 스레드 안전하지 않은데 [announce]는 CV 분석
+     * 스레드에서도 불린다. 그래서 실제 재생은 메인 스레드로 넘긴다. 음원을 열지 못하면
+     * (파일 손상·기기 코덱 문제) 같은 자리에서 시스템 TTS 로 되돌린다 — 안내가 통째로
+     * 사라지는 것이 최악이다.
+     */
+    private fun playCachedVoice(assetPath: String, text: String, utteranceId: String) {
+        tts.stop()
+        activeUtteranceId = utteranceId
+        activeSpeechPriority = utterancePriorities[utteranceId]
+        transitionHandler.post {
+            val started = voicePlayer.play(assetPath, pendingSpeechRate) {
+                completeUtterance(utteranceId)
+            }
+            if (!started) {
+                Log.w(TAG, "캐시 음원 재생 실패 — 시스템 TTS 로 대체합니다: $assetPath")
+                speakWithSystemTts(text, TextToSpeech.QUEUE_FLUSH, utteranceId)
+            }
+        }
+    }
+
+    /** 캐시 음원 재생을 메인 스레드에서 멈춘다 (완료 콜백은 중단으로 1회 호출된다). */
+    private fun stopCachedVoice() {
+        transitionHandler.post { voicePlayer.stop() }
     }
 
     private fun speak(text: String, priority: SpeechPriority) = announce(text, null, priority)
@@ -343,6 +419,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
 
     /** Activity onDestroy 등에서 호출 — TTS/톤 리소스 해제. */
     fun release() {
+        voicePlayer.release()
         tts.stop()
         tts.shutdown()
         toneGenerator?.release()
