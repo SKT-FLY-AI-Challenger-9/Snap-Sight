@@ -55,6 +55,20 @@ class ContractsTest {
     }
 
     @Test
+    fun `internal prediction metadata never changes the public objects json schema`() {
+        val json = TrackedObject(
+            trackId = 1,
+            label = "person",
+            confidence = 0.9f,
+            bbox = BoundingBox(0.1f, 0.1f, 0.9f, 0.9f),
+            predicted = true,
+            observationAgeMs = 100L,
+        ).toJson()
+        assertTrue("predicted must stay an in-process field", !json.contains("predicted"))
+        assertTrue("observation age must stay an in-process field", !json.contains("observationAge"))
+    }
+
+    @Test
     fun `clipped drops boxes without area and clamps the rest`() {
         assertNull(BoundingBox.clipped(0.5f, 0.5f, 0.5f, 0.9f))
         assertNull(BoundingBox.clipped(Float.NaN, 0f, 1f, 1f))

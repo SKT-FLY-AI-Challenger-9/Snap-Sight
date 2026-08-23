@@ -114,7 +114,9 @@ def _run_single_model(model: ModelCandidate, items: list[tuple[str, Path]]) -> C
             if model.provider == "anthropic"
             else _call_openai_compatible(model, items)
         )
-    except Exception as exc:
+    # This benchmark must record one provider failure and continue with the
+    # remaining models, including unexpected third-party SDK exceptions.
+    except Exception as exc:  # noqa: BLE001
         latency = time.monotonic() - start
         logger.error(f"{model.name} 호출 실패: {exc}")
         return ComparisonRun(model.name, latency, "", False, error=str(exc))

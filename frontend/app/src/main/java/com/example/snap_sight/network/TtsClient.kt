@@ -8,7 +8,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 /**
  * ① 재질문·에러 안내 등에 쓰이는 TTS 요청 클라이언트.
@@ -19,11 +18,11 @@ import java.util.concurrent.TimeUnit
  */
 class TtsClient(
     private val baseUrl: String? = null, // null = 요청 시점에 BackendConfig.baseUrl 사용
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .writeTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
-        .build(),
+    private val client: OkHttpClient = SnapSightHttp.client(
+        connectSeconds = 5,
+        writeSeconds = 10,
+        readSeconds = 10,
+    ),
 ) {
 
     interface Callback {

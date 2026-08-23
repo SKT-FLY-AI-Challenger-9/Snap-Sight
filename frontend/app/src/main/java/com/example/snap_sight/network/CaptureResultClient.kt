@@ -9,7 +9,6 @@ import android.util.Log
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 /**
  * ⑧ MLLM 비교 결과 폴링 클라이언트.
@@ -25,72 +24,104 @@ import java.util.concurrent.TimeUnit
  */
 class CaptureResultClient(
     private val baseUrl: String? = null, // null = 요청 시점에 BackendConfig.baseUrl 사용
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
-        .build(),
+    private val client: OkHttpClient = SnapSightHttp.client(connectSeconds = 5, readSeconds = 10),
 ) {
 
-    class ComparisonResult(val improved: Boolean, val reason: String?)
+    class ComparisonResult(
+        val improved: Boolean,
+        val reason: String?,
+        val captureRevision: Long,
+        val finalFrameId: String,
+    )
 
     interface Callback {
         /** 비교 완료. 메인 스레드에서 호출된다. */
         fun onDone(result: ComparisonResult)
+        fun onDone(sessionId: String, result: ComparisonResult) = onDone(result)
 
         /** 404·타임아웃 등으로 폴링을 접음. 촬영 흐름에 영향 없어야 하므로 안내는 하지 않는 것을 권장. */
         fun onGaveUp(reason: String)
+        fun onGaveUp(sessionId: String, reason: String) = onGaveUp(reason)
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val poller = SessionPoller<ComparisonResult>(
+        mainHandler = mainHandler,
+        threadName = "SnapSight-ResultPoll",
+        totalTimeoutMs = TOTAL_TIMEOUT_MS,
+        initialBackoffMs = DEFAULT_RETRY_MS,
+        maxBackoffMs = MAX_RETRY_MS,
+    )
 
-    fun pollResult(sessionId: String, callback: Callback) {
-        Thread({
-            val deadline = System.currentTimeMillis() + TOTAL_TIMEOUT_MS
-            while (System.currentTimeMillis() < deadline) {
-                val decision = try {
-                    fetchDecision(sessionId)
-                } catch (t: Throwable) {
-                    // 일시적 네트워크 오류는 타임아웃까지 재시도
-                    Log.w(TAG, "결과 조회 실패, 재시도 [$sessionId]: ${t.message}")
-                    Decision.Pending(DEFAULT_RETRY_MS)
-                }
-                when (decision) {
-                    is Decision.Done -> {
-                        mainHandler.post {
-                            callback.onDone(ComparisonResult(decision.improved, decision.reason))
-                        }
-                        return@Thread
-                    }
-                    is Decision.NotFound -> {
-                        mainHandler.post { callback.onGaveUp("세션 없음(404) — 재시도 안 함") }
-                        return@Thread
-                    }
-                    is Decision.Pending -> Thread.sleep(decision.retryAfterMs)
-                }
+    /** 기존 호출 호환. 새 코드는 revision 검증 overload를 사용한다. */
+    fun pollResult(sessionId: String, callback: Callback): NetworkRequestHandle =
+        pollResult(sessionId, expectedRevision = null, callback = callback)
+
+    fun pollResult(
+        sessionId: String,
+        expectedRevision: Long?,
+        callback: Callback,
+    ): NetworkRequestHandle = poller.poll(
+        sessionId = sessionId,
+        fetch = { handle ->
+            when (val decision = fetchDecision(sessionId, handle)) {
+                is Decision.Done -> terminalIdentityError(
+                    decision.captureRevision,
+                    decision.finalFrameId,
+                    expectedRevision,
+                )?.let { PollOutcome.GaveUp(it) } ?: PollOutcome.Done(
+                        ComparisonResult(
+                            improved = decision.improved,
+                            reason = decision.reason,
+                            captureRevision = decision.captureRevision,
+                            finalFrameId = decision.finalFrameId,
+                        )
+                    )
+                is Decision.Failed -> PollOutcome.GaveUp(decision.reason)
+                is Decision.NotFound -> PollOutcome.GaveUp("세션 없음(404) — 재시도 안 함")
+                is Decision.Pending -> PollOutcome.Pending(decision.retryAfterMs)
             }
-            mainHandler.post { callback.onGaveUp("타임아웃(${TOTAL_TIMEOUT_MS / 1000}초)") }
-        }, "SnapSight-ResultPoll").start()
-    }
+        },
+        onTransientError = { error ->
+            Log.w(TAG, "결과 조회 실패, 백오프 후 재시도 [$sessionId]: ${error.message}")
+        },
+        onDone = { callback.onDone(sessionId, it) },
+        onGaveUp = { callback.onGaveUp(sessionId, it) },
+    )
 
-    private fun fetchDecision(sessionId: String): Decision {
+    fun cancel(sessionId: String) = poller.cancel(sessionId)
+
+    fun cancelAll() = poller.cancelAll()
+
+    private fun fetchDecision(sessionId: String, handle: NetworkRequestHandle): Decision {
         val request = Request.Builder()
             .url("${baseUrl ?: BackendConfig.baseUrl}/api/capture/$sessionId/result")
             .get()
             .build()
-        client.newCall(request).execute().use { response ->
-            if (response.code == 404) return Decision.NotFound
+        return client.executeCancellable(handle, request) { response ->
             val body = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                throw IllegalStateException("HTTP ${response.code} — ${body.take(200)}")
+            when {
+                response.isSuccessful -> parseDecision(body)
+                response.code == 404 -> Decision.NotFound
+                isRetryablePollHttpCode(response.code) -> throw RetryablePollHttpException(
+                    statusCode = response.code,
+                    serverMinimumMs = retryAfterMillis(response.header("Retry-After")),
+                )
+                else -> Decision.Failed("HTTP ${response.code} — ${body.take(200)}")
             }
-            return parseDecision(body)
         }
     }
 
     /** 폴링 판정 (순수 로직, JVM 테스트 대상). */
     internal sealed class Decision {
-        data class Done(val improved: Boolean, val reason: String?) : Decision()
+        data class Done(
+            val improved: Boolean,
+            val reason: String?,
+            val captureRevision: Long,
+            val finalFrameId: String,
+        ) : Decision()
         data class Pending(val retryAfterMs: Long) : Decision()
+        data class Failed(val reason: String) : Decision()
         object NotFound : Decision()
     }
 
@@ -100,17 +131,29 @@ class CaptureResultClient(
         // LLM 폴백 세션 실측 ~12초(#37) + 여유. 계약상 30초 미만으로 잡으면 안 된다.
         internal const val TOTAL_TIMEOUT_MS = 45_000L
         internal const val DEFAULT_RETRY_MS = 2_000L
+        internal const val MAX_RETRY_MS = 8_000L
 
         internal fun parseDecision(json: String): Decision {
             val obj = JSONObject(json)
-            return if (obj.optString("status") == "done") {
-                Decision.Done(
+            val status = obj.optString("status")
+            return when (status) {
+                "done" -> Decision.Done(
                     improved = obj.optBoolean("improved", false),
                     reason = obj.optString("reason").takeIf { it.isNotBlank() },
+                    captureRevision = obj.optLong("capture_revision", -1L),
+                    finalFrameId = obj.optString("final_frame_id"),
                 )
-            } else {
-                val seconds = obj.optDouble("retry_after_seconds", DEFAULT_RETRY_MS / 1000.0)
-                Decision.Pending(retryAfterMs = (seconds * 1000).toLong().coerceAtLeast(500L))
+                "failed" -> Decision.Failed(
+                    obj.optString("reason").takeIf { it.isNotBlank() }
+                        ?: "capture pipeline failed"
+                )
+                in PENDING_POLL_STATUSES -> {
+                    val seconds = obj.optDouble("retry_after_seconds", DEFAULT_RETRY_MS / 1000.0)
+                    Decision.Pending(retryAfterMs = (seconds * 1000).toLong().coerceAtLeast(500L))
+                }
+                else -> Decision.Failed(
+                    "unknown capture result status: ${status.ifBlank { "missing" }}"
+                )
             }
         }
     }

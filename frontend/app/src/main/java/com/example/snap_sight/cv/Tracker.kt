@@ -3,9 +3,8 @@ package com.example.snap_sight.cv
 /**
  * 다중 객체 tracker 계약. `ai/on_device_cv/trackers/base.py` 대응.
  *
- * 구현체는 프레임마다 [update] 로 검출을 받아 스트림 내내 유지되는 `track_id` 를 붙인다.
- * 검출이 누락된 프레임의 "예측만 된" track 은 반환하지 않는다 —
- * confidence 의미가 불명확해서 공개 계약에 넣을 수 없기 때문.
+ * detector keyframe에서는 [update], 그 사이 카메라 프레임에서는 [predictOnly]를 호출해
+ * 스트림 내내 유지되는 `track_id`와 예측 bbox를 얻는다.
  */
 interface Tracker {
 
@@ -22,6 +21,16 @@ interface Tracker {
         timestampS: Double? = null,
         motionHint: MotionHint? = null,
     ): List<TrackedObject>
+
+    /**
+     * detector를 실행하지 않은 프레임에서 기존 track만 시간·모션 힌트로 전진시킨다.
+     * 새 track을 만들거나 detector miss로 세지 않는다. 구현하지 않은 tracker의 안전한 기본값은
+     * 빈 결과이며, 시간 기반 propagation을 지원하는 구현은 override한다.
+     */
+    fun predictOnly(
+        timestampS: Double? = null,
+        motionHint: MotionHint? = null,
+    ): List<TrackedObject> = emptyList()
 
     /** 새 카메라/영상 세션 시작 시 호출. track 상태와 ID 카운터를 초기화한다. */
     fun reset()

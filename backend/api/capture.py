@@ -1,103 +1,185 @@
-# backend/api/capture.py
-"""Android(⑤)가 촬영 시점에 로컬 버퍼에서 전송하는 대표 컷·후보 프레임을 받아 저장하고,
-저장 완료 후 MLLM 후보 비교를 비동기로 트리거하는 API 라우터."""
+"""Capture upload and polling API for the Android client."""
+
+from __future__ import annotations
 
 import json
-import threading
+import math
+import re
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+)
+from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
-from backend.config import RESULT_POLL_INTERVAL_SECONDS
-from backend.mllm.description import label_photo_bytes, load_description, trigger_description
-from backend.mllm.metadata import load_metadata, trigger_metadata
-from backend.mllm.orchestration import trigger_comparison
+from backend.api.guards import require_api_access
+from backend.config import (
+    RESULT_POLL_INTERVAL_SECONDS,
+    load_capture_cleanup_batch_size,
+    load_capture_ttl_seconds,
+    load_max_candidate_frames,
+    load_max_capture_file_bytes,
+    load_max_capture_total_bytes,
+)
+from backend.mllm.description import label_photo_bytes, load_description
+from backend.mllm.metadata import load_metadata
+from backend.mllm.orchestration import trigger_capture_pipeline
+from backend.storage.capture_state import (
+    CaptureState,
+    begin_capture_revision,
+    cleanup_expired_capture_sessions,
+    load_capture_state,
+    read_capture_snapshot,
+    run_if_current_revision,
+)
 from backend.storage.comparison_result import load_comparison_result
 from backend.storage.frame_buffer import (
+    load_session_frame_paths,
     save_candidate_frame,
     save_representative_frame,
     session_exists,
+    validate_session_id,
 )
+from backend.storage.image_normalization import InvalidCaptureImage, normalize_uploaded_jpeg
 from backend.utils.logger import load_logger
 
 logger = load_logger("capture.log")
+router = APIRouter(dependencies=[Depends(require_api_access)])
 
-router = APIRouter()
+_READ_CHUNK_BYTES = 1024 * 1024
+_JPEG_CONTENT_TYPES = {"image/jpeg", "image/jpg", "application/octet-stream"}
+_OPAQUE_SUBJECT_REF = re.compile(r"local_[A-Za-z0-9_-]{1,74}\Z")
 
 
 class CaptureFramesResponse(BaseModel):
-    """POST /api/capture/frames 응답 스키마."""
-
     session_id: str
     received_candidate_count: int
     status: str
+    capture_revision: int
+    final_frame_id: str | None = None
 
 
 class CaptureResultResponse(BaseModel):
-    """GET /api/capture/{session_id}/result 응답 스키마."""
-
     status: str
     improved: bool | None
     reason: str | None
-    # pending일 때만 값이 있다. 앱이 재조회 간격을 하드코딩하지 않도록 서버가 알려준다.
     retry_after_seconds: int | None = None
+    capture_revision: int | None = None
+    final_frame_id: str | None = None
 
 
 @router.post("/api/capture/frames", response_model=CaptureFramesResponse)
 async def receive_capture_frames(
     background_tasks: BackgroundTasks,
     session_id: str = Form(...),
-    # 발화 없는 세션(마이크 미허용·인식 실패)은 빈 문자열이 정상 케이스다.
-    # FastAPI(python-multipart)는 빈 폼 값을 "누락"으로 처리하므로 필수로 두면
-    # 해당 세션의 업로드가 전부 422 로 거부된다 — 기본값으로 완화한다.
     raw_text: str = Form(default=""),
     representative_frame: UploadFile = File(...),
     candidate_frames: list[UploadFile] = File(default_factory=list),
     candidate_scores: str = Form(default="[]"),
-    # 검색용 메타데이터(기능 3-B) 재료 — 없어도 정상 (구버전 앱, 커스텀 라벨 없음 등)
     custom_labels: str = Form(default="[]"),
     detected_objects: str = Form(default="[]"),
+    known_subjects: str = Form(default="[]"),
 ) -> CaptureFramesResponse:
-    """대표 컷 1장과 후보 프레임 목록을 저장하고, 후보가 있으면 MLLM 비교를 비동기로 트리거한다."""
-    # 파일을 디스크에 쓰기 전에 검증한다 — 저장 후 422로 실패하면 재시도 때 잔여 파일이 남는다.
+    """Validate a complete upload, commit one revision, then enqueue its pipeline."""
+    _validate_session_or_422(session_id)
+    if len(candidate_frames) > load_max_candidate_frames():
+        raise HTTPException(status_code=413, detail="too many candidate frames")
+
     scores = _parse_candidate_scores(candidate_scores, len(candidate_frames))
     parsed_custom_labels = _parse_string_list(custom_labels, "custom_labels")
     parsed_detected_objects = _parse_string_list(detected_objects, "detected_objects")
+    parsed_known_subjects = _parse_known_subjects(known_subjects)
 
-    representative_bytes = await representative_frame.read()
-    save_representative_frame(session_id, representative_frame.filename, representative_bytes)
+    # Buffer and validate every file before clearing the previous revision.
+    max_file = load_max_capture_file_bytes()
+    max_total = load_max_capture_total_bytes()
+    total = 0
+    representative_bytes = await _read_jpeg_upload(
+        representative_frame, max_file_bytes=max_file, remaining_total_bytes=max_total
+    )
+    total += len(representative_bytes)
+    try:
+        normalized_representative = await run_in_threadpool(
+            normalize_uploaded_jpeg, representative_bytes, 0
+        )
+    except InvalidCaptureImage as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
+    if len(normalized_representative) > max_file:
+        raise HTTPException(status_code=413, detail="normalized capture image is too large")
+    total += len(normalized_representative) - len(representative_bytes)
+    representative_bytes = normalized_representative
+    candidate_bytes: list[bytes] = []
+    for candidate in candidate_frames:
+        content = await _read_jpeg_upload(
+            candidate,
+            max_file_bytes=max_file,
+            remaining_total_bytes=max_total - total,
+        )
+        total += len(content)
+        candidate_bytes.append(content)
 
-    for index, candidate in enumerate(candidate_frames):
-        candidate_bytes = await candidate.read()
-        save_candidate_frame(session_id, index, candidate.filename, candidate_bytes)
+    normalized_candidates: list[bytes] = []
+    for index, content in enumerate(candidate_bytes):
+        rotation_degrees = _candidate_rotation_degrees(scores, index)
+        try:
+            normalized = await run_in_threadpool(
+                normalize_uploaded_jpeg, content, rotation_degrees
+            )
+        except InvalidCaptureImage as exc:
+            raise HTTPException(status_code=415, detail=str(exc)) from exc
+        if len(normalized) > max_file or total - len(content) + len(normalized) > max_total:
+            raise HTTPException(status_code=413, detail="normalized capture upload is too large")
+        total += len(normalized) - len(content)
+        normalized_candidates.append(normalized)
 
-    logger.info(f"세션 {session_id}: 대표 컷 1장, 후보 프레임 {len(candidate_frames)}장 저장 완료")
+    ttl_seconds = load_capture_ttl_seconds()
+    if ttl_seconds > 0:
+        await run_in_threadpool(
+            cleanup_expired_capture_sessions,
+            ttl_seconds,
+            max_removals=load_capture_cleanup_batch_size(),
+        )
 
-    # 한 줄 사진 설명(Haiku)은 별도 스레드로 — BackgroundTasks는 순차 실행이라 비교와 병렬이 안 된다 (#76)
-    threading.Thread(target=trigger_description, args=(session_id,), daemon=True).start()
+    def _initialize_revision() -> None:
+        # Client filenames are intentionally ignored: all accepted content is
+        # JPEG and receives a server-owned deterministic path.
+        save_representative_frame(session_id, "representative.jpg", representative_bytes)
+        for index, content in enumerate(normalized_candidates):
+            save_candidate_frame(session_id, index, "candidate.jpg", content)
 
-    # 검색용 상세 메타데이터(기능 3-B)도 별도 스레드 — 느려도 되므로 즉시 설명·비교와 병렬로 돈다
-    threading.Thread(
-        target=trigger_metadata,
-        args=(session_id, raw_text, parsed_custom_labels, parsed_detected_objects),
-        daemon=True,
-    ).start()
-
-    if candidate_frames:
-        background_tasks.add_task(trigger_comparison, session_id, raw_text, scores)
-    else:
-        logger.info(f"세션 {session_id}: 후보 프레임 없음 — MLLM 비교 스킵")
-
+    state = await run_in_threadpool(begin_capture_revision, session_id, _initialize_revision)
+    background_tasks.add_task(
+        trigger_capture_pipeline,
+        session_id,
+        state.capture_revision,
+        raw_text,
+        scores,
+        parsed_custom_labels,
+        parsed_detected_objects,
+        parsed_known_subjects,
+    )
+    logger.info(
+        f"Session {session_id} revision {state.capture_revision}: saved representative and "
+        f"{len(candidate_frames)} candidates"
+    )
     return CaptureFramesResponse(
         session_id=session_id,
         received_candidate_count=len(candidate_frames),
         status="saved",
+        capture_revision=state.capture_revision,
+        final_frame_id=None,
     )
 
 
 class PhotoLabelResponse(BaseModel):
-    """POST /api/photos/describe 응답 스키마 — 사진첩 카드용 대분류·라벨·설명."""
-
     category: str | None
     label: str | None
     description: str | None
@@ -105,12 +187,18 @@ class PhotoLabelResponse(BaseModel):
 
 @router.post("/api/photos/describe", response_model=PhotoLabelResponse)
 async def describe_photo_upload(photo: UploadFile = File(...)) -> PhotoLabelResponse:
-    """사진 한 장을 받아 사진첩 카드용 라벨('장소·피사체')과 설명을 생성한다 (#78 라벨링).
-
-    동기 호출이다 — 앱 사진첩 로더가 카드별로 순차 요청·캐시하므로 폴링 규약이 필요 없다.
-    생성 실패는 null 필드로 반환한다 (앱은 자리표시 유지)."""
-    image_bytes = await photo.read()
-    result = label_photo_bytes(image_bytes)
+    image_bytes = await _read_jpeg_upload(
+        photo,
+        max_file_bytes=load_max_capture_file_bytes(),
+        remaining_total_bytes=load_max_capture_total_bytes(),
+    )
+    try:
+        image_bytes = await run_in_threadpool(normalize_uploaded_jpeg, image_bytes, 0)
+    except InvalidCaptureImage as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
+    if len(image_bytes) > load_max_capture_file_bytes():
+        raise HTTPException(status_code=413, detail="normalized photo is too large")
+    result = await run_in_threadpool(label_photo_bytes, image_bytes)
     return PhotoLabelResponse(
         category=result.category if result else None,
         label=result.label if result else None,
@@ -119,124 +207,318 @@ async def describe_photo_upload(photo: UploadFile = File(...)) -> PhotoLabelResp
 
 
 class CaptureDescriptionResponse(BaseModel):
-    """GET /api/capture/{session_id}/description 응답 스키마."""
-
     status: str
     description: str | None
     retry_after_seconds: int | None = None
+    capture_revision: int | None = None
+    final_frame_id: str | None = None
 
 
 @router.get("/api/capture/{session_id}/description", response_model=CaptureDescriptionResponse)
 async def get_capture_description(session_id: str) -> CaptureDescriptionResponse:
-    """대표 컷 한 줄 설명을 조회한다. 규약은 result와 동일 — 미존재 세션 404, 생성 중 pending."""
-    payload = load_description(session_id)
+    state, payload = _read_snapshot_or_422(session_id, lambda: load_description(session_id))
     if payload is not None:
         return CaptureDescriptionResponse(
-            status="done", description=payload.get("description"), retry_after_seconds=None
+            status="done",
+            description=payload.get("description"),
+            capture_revision=payload.get("capture_revision") or _revision(state),
+            final_frame_id=payload.get("final_frame_id") or _final_frame(state),
         )
-
-    if not session_exists(session_id):
-        raise HTTPException(status_code=404, detail=f"세션 '{session_id}'을 찾을 수 없습니다")
-
+    _raise_if_missing(session_id)
     return CaptureDescriptionResponse(
-        status="pending", description=None, retry_after_seconds=1
+        status=_pending_or_failed(state),
+        description=None,
+        retry_after_seconds=None if state and state.status == "failed" else 1,
+        capture_revision=_revision(state),
+        final_frame_id=_final_frame(state),
     )
 
 
 class CaptureMetadataResponse(BaseModel):
-    """GET /api/capture/{session_id}/metadata 응답 스키마 (기능 3-B).
-
-    앱은 done 수신 후 로컬 사진 인덱스에 저장해 오프라인 검색·상세 낭독에 쓴다.
-    """
-
     status: str
     taxonomy_version: int | None = None
+    brief_description: str | None = None
     long_description: str | None = None
-    labels: list[str] = []
-    custom_labels: list[str] = []
+    labels: list[str] = Field(default_factory=list)
+    custom_labels: list[str] = Field(default_factory=list)
     people_count: int | None = None
     retry_after_seconds: int | None = None
+    capture_revision: int | None = None
+    final_frame_id: str | None = None
 
 
 @router.get("/api/capture/{session_id}/metadata", response_model=CaptureMetadataResponse)
 async def get_capture_metadata(session_id: str) -> CaptureMetadataResponse:
-    """검색용 상세 메타데이터를 조회한다. 규약은 description/result 와 동일 — 미존재 404, 생성 중 pending."""
-    payload = load_metadata(session_id)
+    state, payload = _read_snapshot_or_422(session_id, lambda: load_metadata(session_id))
     if payload is not None:
         return CaptureMetadataResponse(
             status="done",
             taxonomy_version=payload.get("taxonomy_version"),
+            brief_description=payload.get("brief_description"),
             long_description=payload.get("long_description"),
             labels=payload.get("labels") or [],
             custom_labels=payload.get("custom_labels") or [],
             people_count=payload.get("people_count"),
+            capture_revision=payload.get("capture_revision") or _revision(state),
+            final_frame_id=payload.get("final_frame_id") or _final_frame(state),
         )
-
-    if not session_exists(session_id):
-        raise HTTPException(status_code=404, detail=f"세션 '{session_id}'을 찾을 수 없습니다")
-
-    # 상세 메타데이터는 상위 모델이라 즉시 설명보다 오래 걸린다 — 여유 있는 재조회 간격
-    return CaptureMetadataResponse(status="pending", retry_after_seconds=3)
+    _raise_if_missing(session_id)
+    return CaptureMetadataResponse(
+        status=_pending_or_failed(state),
+        retry_after_seconds=None if state and state.status == "failed" else 3,
+        capture_revision=_revision(state),
+        final_frame_id=_final_frame(state),
+    )
 
 
 @router.get("/api/capture/{session_id}/result", response_model=CaptureResultResponse)
 async def get_capture_result(session_id: str) -> CaptureResultResponse:
-    """세션의 MLLM 비교 결과를 조회한다.
-
-    업로드된 적 없는 세션은 404로 끊는다 — pending으로 답하면 앱이 오타난 세션 ID를
-    영원히 폴링하게 된다. 업로드는 됐으나 비교가 안 끝난 경우만 pending이다.
-    """
-    result = load_comparison_result(session_id)
+    state, result = _read_snapshot_or_422(
+        session_id, lambda: load_comparison_result(session_id)
+    )
     if result is not None:
         return CaptureResultResponse(
             status="done",
             improved=result.improved,
             reason=result.reason,
-            retry_after_seconds=None,
+            capture_revision=_revision(state),
+            final_frame_id=_final_frame(state),
         )
-
-    if not session_exists(session_id):
-        raise HTTPException(status_code=404, detail=f"세션 '{session_id}'을 찾을 수 없습니다")
-
+    _raise_if_missing(session_id)
     return CaptureResultResponse(
-        status="pending",
+        status=_pending_or_failed(state),
         improved=None,
-        reason=None,
-        retry_after_seconds=RESULT_POLL_INTERVAL_SECONDS,
+        reason="capture pipeline failed" if state and state.status == "failed" else None,
+        retry_after_seconds=(
+            None if state and state.status == "failed" else RESULT_POLL_INTERVAL_SECONDS
+        ),
+        capture_revision=_revision(state),
+        final_frame_id=_final_frame(state),
     )
 
 
-def _parse_string_list(raw: str, field_name: str) -> list[str]:
-    """JSON 문자열 배열 폼 필드를 파싱·검증한다. 형식이 잘못되면 명확한 422로 실패한다."""
+@router.get("/api/capture/{session_id}/final-frame")
+async def get_capture_final_frame(
+    session_id: str,
+    capture_revision: int | None = Query(default=None, ge=1),
+) -> Response:
+    """Return the canonical JPEG selected for an exact capture revision.
+
+    Clients should pass the revision returned by the result endpoint. A reused
+    session id then yields 409 instead of silently returning another capture.
+    Revision and source-frame identity are repeated in response headers because
+    the response body is binary.
+    """
+    state = _load_state_or_422(session_id)
+    _raise_if_missing(session_id)
+    if state is None or state.final_frame_id is None:
+        raise HTTPException(status_code=409, detail="canonical final frame is not ready")
+    if capture_revision is not None and capture_revision != state.capture_revision:
+        raise HTTPException(status_code=409, detail="capture revision no longer matches")
+    def _read_revision_frame() -> bytes:
+        representative, _ = load_session_frame_paths(session_id)
+        if representative.stat().st_size > load_max_capture_file_bytes():
+            raise HTTPException(status_code=413, detail="canonical final frame is too large")
+        return representative.read_bytes()
+
     try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=422, detail=f"{field_name}가 올바른 JSON이 아닙니다: {exc}"
-        ) from exc
+        still_current, content = await run_in_threadpool(
+            run_if_current_revision,
+            session_id,
+            state.capture_revision,
+            _read_revision_frame,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="canonical final frame is missing") from exc
+    if not still_current or content is None:
+        raise HTTPException(status_code=409, detail="capture revision no longer matches")
+    if not content.startswith(b"\xff\xd8\xff"):
+        raise HTTPException(status_code=500, detail="canonical final frame is not JPEG")
+    return Response(
+        content=content,
+        media_type="image/jpeg",
+        headers={
+            "X-Capture-Revision": str(state.capture_revision),
+            "X-Final-Frame-Id": state.final_frame_id,
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+async def _read_jpeg_upload(
+    upload: UploadFile,
+    *,
+    max_file_bytes: int,
+    remaining_total_bytes: int,
+) -> bytes:
+    media_type = (upload.content_type or "").split(";", 1)[0].strip().lower()
+    if media_type and media_type not in _JPEG_CONTENT_TYPES:
+        raise HTTPException(status_code=415, detail="capture frames must be JPEG images")
+    if remaining_total_bytes <= 0:
+        raise HTTPException(status_code=413, detail="capture upload is too large")
+
+    content = bytearray()
+    while True:
+        chunk = await upload.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        content.extend(chunk)
+        if len(content) > max_file_bytes:
+            raise HTTPException(status_code=413, detail="capture image is too large")
+        if len(content) > remaining_total_bytes:
+            raise HTTPException(status_code=413, detail="capture upload is too large")
+    if not content.startswith(b"\xff\xd8\xff"):
+        raise HTTPException(status_code=415, detail="capture frame is not a JPEG image")
+    return bytes(content)
+
+
+def _validate_session_or_422(session_id: str) -> str:
+    try:
+        return validate_session_id(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _load_state_or_422(session_id: str) -> CaptureState | None:
+    _validate_session_or_422(session_id)
+    return load_capture_state(session_id)
+
+
+def _read_snapshot_or_422(session_id: str, reader):
+    _validate_session_or_422(session_id)
+    return read_capture_snapshot(session_id, reader)
+
+
+def _raise_if_missing(session_id: str) -> None:
+    if not session_exists(session_id):
+        raise HTTPException(status_code=404, detail=f"capture session {session_id!r} not found")
+
+
+def _pending_or_failed(state: CaptureState | None) -> str:
+    return "failed" if state is not None and state.status == "failed" else "pending"
+
+
+def _revision(state: CaptureState | None) -> int | None:
+    return state.capture_revision if state is not None else None
+
+
+def _final_frame(state: CaptureState | None) -> str | None:
+    return state.final_frame_id if state is not None else None
+
+
+def _parse_string_list(raw: str, field_name: str) -> list[str]:
+    parsed = _parse_json(raw, field_name)
     if not isinstance(parsed, list) or any(not isinstance(item, str) for item in parsed):
-        raise HTTPException(status_code=422, detail=f"{field_name}는 문자열 JSON 배열이어야 합니다")
+        raise HTTPException(status_code=422, detail=f"{field_name} must be a JSON string array")
+    if len(parsed) > 256 or any(len(item) > 256 for item in parsed):
+        raise HTTPException(status_code=422, detail=f"{field_name} is too large")
     return parsed
 
 
+def _parse_known_subjects(raw: str) -> list[dict]:
+    parsed = _parse_json(raw, "known_subjects")
+    if not isinstance(parsed, list) or len(parsed) > 64:
+        raise HTTPException(status_code=422, detail="known_subjects must be a JSON array")
+    subjects: list[dict] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=422, detail="known_subjects entries must be objects")
+        name = item.get("name")
+        subject_ref = item.get("subject_ref")
+        has_legacy_name = isinstance(name, str) and bool(name.strip())
+        has_opaque_ref = isinstance(subject_ref, str) and bool(
+            _OPAQUE_SUBJECT_REF.fullmatch(subject_ref)
+        )
+        if not has_legacy_name and not has_opaque_ref:
+            raise HTTPException(
+                status_code=422,
+                detail="known_subjects requires a legacy name or opaque local_* subject_ref",
+            )
+        if has_legacy_name and len(name.strip()) > 128:
+            raise HTTPException(status_code=422, detail="known_subjects.name is too long")
+        kind = str(item.get("kind") or "object")
+        if kind not in {"person", "object"}:
+            raise HTTPException(status_code=422, detail="known_subjects.kind is invalid")
+        bbox = _validate_bbox(item.get("bbox"))
+        subject = {"kind": kind, "bbox": bbox}
+        if has_legacy_name:
+            subject["name"] = name.strip()
+        else:
+            # New clients keep real names on-device and send only an opaque,
+            # session-scoped reference. It is retained for correlation but is
+            # never rendered into an MLLM prompt as a person's name.
+            subject["subject_ref"] = subject_ref
+        subjects.append(subject)
+    return subjects
+
+
+def _validate_bbox(raw_bbox: object) -> dict | None:
+    if raw_bbox is None:
+        return None
+    if not isinstance(raw_bbox, dict):
+        raise HTTPException(status_code=422, detail="known_subjects.bbox must be an object")
+    keys = ("x_min", "y_min", "x_max", "y_max")
+    values: dict[str, float] = {}
+    for key in keys:
+        value = raw_bbox.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise HTTPException(status_code=422, detail="known_subjects.bbox must be numeric")
+        number = float(value)
+        if not math.isfinite(number) or not 0 <= number <= 1:
+            raise HTTPException(status_code=422, detail="known_subjects.bbox must be normalized")
+        values[key] = number
+    if values["x_min"] >= values["x_max"] or values["y_min"] >= values["y_max"]:
+        raise HTTPException(status_code=422, detail="known_subjects.bbox has invalid bounds")
+    return values
+
+
 def _parse_candidate_scores(candidate_scores: str, candidate_count: int) -> list[dict]:
-    """JSON 문자열로 전달된 온디바이스 점수를 파싱·검증한다. 형식이 잘못되면 명확한 422로 실패한다."""
-    try:
-        parsed = json.loads(candidate_scores)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=422, detail=f"candidate_scores가 올바른 JSON이 아닙니다: {exc}"
-        ) from exc
+    parsed = _parse_json(candidate_scores, "candidate_scores")
     if not isinstance(parsed, list):
-        raise HTTPException(status_code=422, detail="candidate_scores는 JSON 배열이어야 합니다")
-    # 점수는 후보 순서대로 candidate_N에 매핑되므로, 개수가 어긋나면 엉뚱한 후보에 붙는다.
-    # 빈 배열은 "점수를 아예 안 보냄"이라는 정상 케이스이므로 개수 검증에서 제외한다.
+        raise HTTPException(status_code=422, detail="candidate_scores must be a JSON array")
     if parsed and len(parsed) != candidate_count:
         raise HTTPException(
             status_code=422,
             detail=(
-                f"candidate_scores 개수({len(parsed)})가 "
-                f"후보 프레임 수({candidate_count})와 일치하지 않습니다"
+                f"candidate_scores count ({len(parsed)}) does not match "
+                f"candidate frame count ({candidate_count})"
             ),
         )
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            raise HTTPException(status_code=422, detail="candidate_scores entries must be objects")
+        for key, value in entry.items():
+            if len(str(key)) > 64:
+                raise HTTPException(status_code=422, detail="candidate score key is too long")
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise HTTPException(status_code=422, detail="candidate scores must be numeric")
+            if not math.isfinite(float(value)):
+                raise HTTPException(status_code=422, detail="candidate scores must be finite")
+        _candidate_rotation_degrees([entry], 0)
+        for unit_key in ("blur_score", "eyes_closed_score"):
+            if unit_key in entry and not 0 <= float(entry[unit_key]) <= 1:
+                raise HTTPException(
+                    status_code=422, detail=f"{unit_key} must be between 0 and 1"
+                )
     return parsed
+
+
+def _candidate_rotation_degrees(scores: list[dict], index: int) -> int:
+    if not scores or index >= len(scores):
+        return 0
+    raw_rotation = scores[index].get("rotation_degrees", 0)
+    if isinstance(raw_rotation, bool) or not isinstance(raw_rotation, (int, float)):
+        raise HTTPException(status_code=422, detail="rotation_degrees must be numeric")
+    rotation = int(raw_rotation)
+    if float(raw_rotation) != rotation or rotation not in {0, 90, 180, 270}:
+        raise HTTPException(
+            status_code=422, detail="rotation_degrees must be one of 0, 90, 180 or 270"
+        )
+    return rotation
+
+
+def _parse_json(raw: str, field_name: str) -> object:
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=f"{field_name} is not valid JSON") from exc

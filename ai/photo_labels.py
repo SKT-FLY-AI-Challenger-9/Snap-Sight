@@ -36,9 +36,16 @@ class PhotoLabelTaxonomy:
         return frozenset(label.id for label in self.labels)
 
     def validate_label_ids(self, label_ids: list[str]) -> list[str]:
-        """사전에 존재하는 id 만 남긴다 (LLM 이 사전 밖 라벨을 내면 조용히 버린다)."""
+        """사전에 존재하는 id만 입력 순서대로 한 번씩 남긴다."""
         known = self.ids()
-        return [label_id for label_id in label_ids if label_id in known]
+        seen: set[str] = set()
+        validated: list[str] = []
+        for label_id in label_ids:
+            if label_id not in known or label_id in seen:
+                continue
+            seen.add(label_id)
+            validated.append(label_id)
+        return validated
 
     def prompt_catalog(self) -> str:
         """LLM 라벨링 프롬프트에 넣을 '고를 수 있는 라벨 목록' 텍스트."""

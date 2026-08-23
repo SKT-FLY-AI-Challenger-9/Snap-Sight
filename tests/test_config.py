@@ -4,8 +4,14 @@
 import pytest
 
 from backend.config import (
+    DEFAULT_CAPTURE_CLEANUP_BATCH_SIZE,
+    DEFAULT_CAPTURE_CLEANUP_INTERVAL_SECONDS,
+    DEFAULT_CAPTURE_TTL_SECONDS,
     DEFAULT_SERVER_HOST,
     DEFAULT_SERVER_PORT,
+    load_capture_cleanup_batch_size,
+    load_capture_cleanup_interval_seconds,
+    load_capture_ttl_seconds,
     load_env_variable,
     load_server_host,
     load_server_port,
@@ -58,3 +64,25 @@ def test_load_server_port_falls_back_when_not_a_number(monkeypatch):
     """SERVER_PORT가 정수가 아니면 서버를 죽이지 않고 기본값으로 되돌린다."""
     monkeypatch.setenv("SERVER_PORT", "팔천")
     assert load_server_port() == DEFAULT_SERVER_PORT
+
+
+def test_capture_ttl_defaults_to_24_hours_and_can_be_disabled(monkeypatch):
+    monkeypatch.delenv("SNAPSIGHT_CAPTURE_TTL_SECONDS", raising=False)
+    assert DEFAULT_CAPTURE_TTL_SECONDS == 24 * 60 * 60
+    assert load_capture_ttl_seconds() == DEFAULT_CAPTURE_TTL_SECONDS
+
+    monkeypatch.setenv("SNAPSIGHT_CAPTURE_TTL_SECONDS", "0")
+    assert load_capture_ttl_seconds() == 0
+
+
+def test_capture_ttl_rejects_invalid_negative_override(monkeypatch):
+    monkeypatch.setenv("SNAPSIGHT_CAPTURE_TTL_SECONDS", "-1")
+    assert load_capture_ttl_seconds() == DEFAULT_CAPTURE_TTL_SECONDS
+
+
+def test_capture_cleanup_bounds_invalid_interval_and_batch_overrides(monkeypatch):
+    monkeypatch.setenv("SNAPSIGHT_CAPTURE_CLEANUP_INTERVAL_SECONDS", "999999999")
+    monkeypatch.setenv("SNAPSIGHT_CAPTURE_CLEANUP_BATCH_SIZE", "999999999")
+
+    assert load_capture_cleanup_interval_seconds() == DEFAULT_CAPTURE_CLEANUP_INTERVAL_SECONDS
+    assert load_capture_cleanup_batch_size() == DEFAULT_CAPTURE_CLEANUP_BATCH_SIZE

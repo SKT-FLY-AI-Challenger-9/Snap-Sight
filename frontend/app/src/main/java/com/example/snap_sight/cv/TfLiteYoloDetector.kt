@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.Log
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.gpu.CompatibilityList
+import org.tensorflow.lite.gpu.GpuDelegate
 import java.io.FileInputStream
 import java.io.IOException
 import java.nio.ByteBuffer
@@ -34,10 +36,16 @@ data class TfLiteDetectorConfig(
     val maxDetections: Int = 300,
     val numThreads: Int = 4,
     /**
-     * class 별 NMS 적용 여부. `[1, N, 6]` end-to-end(NMS-free) 출력에서는 모델이 이미
-     * 중복을 제거했으므로 이 값과 무관하게 건너뛴다.
+     * class 별 NMS 적용 여부. 출력 shape 가 `[1, N, 6]`이어도 export 자체가 `nms=false`일 수
+     * 있으므로 기본값은 모든 layout 에 NMS를 적용한다. 모델이 실제로 NMS를 포함할 때만 끈다.
      */
     val applyNms: Boolean = true,
+    /**
+     * 지원 기기에서 GPU delegate 로 추론한다 — CPU 4스레드 상시 추론의 발열·점유를 줄인다
+     * (2026-08-22 실기기 발열 피드백). 미지원 기기·delegate 초기화 실패 시 자동으로 CPU 폴백.
+     * GPU 가 못 도는 연산(end-to-end NMS 등)은 delegate 가 알아서 CPU 에 남긴다.
+     */
+    val useGpu: Boolean = true,
 ) {
     init {
         require(minimumConfidence in 0f..1f) { "minimumConfidence must be in [0, 1]" }
@@ -53,6 +61,7 @@ class TfLiteYoloDetector(
 ) : Detector {
 
     private var interpreter: Interpreter? = null
+    private var gpuDelegate: GpuDelegate? = null
     private var decoder: YoloOutputDecoder? = null
     private var labels: List<String> = emptyList()
 
@@ -78,12 +87,8 @@ class TfLiteYoloDetector(
             throw ModelUnavailableException("라벨 파일이 비어 있음: assets/${config.labelsAsset}")
         }
 
-        val options = Interpreter.Options().apply { setNumThreads(config.numThreads) }
-        val created = try {
-            Interpreter(readModelBuffer(), options)
-        } catch (t: Throwable) {
-            throw ModelUnavailableException("TFLite 인터프리터 생성 실패: ${config.modelAsset}", t)
-        }
+        val modelBuffer = readModelBuffer()
+        val created = createInterpreter(modelBuffer)
 
         try {
             val inputTensor = created.getInputTensor(0)
@@ -153,7 +158,45 @@ class TfLiteYoloDetector(
             )
         } catch (t: Throwable) {
             created.close()
+            runCatching { gpuDelegate?.close() }
+            gpuDelegate = null
             throw t
+        }
+    }
+
+    /** GPU delegate 우선, 미지원·초기화 실패면 CPU 로 폴백해 인터프리터를 만든다. */
+    private fun createInterpreter(modelBuffer: ByteBuffer): Interpreter {
+        if (config.useGpu) {
+            try {
+                val compatibility = CompatibilityList()
+                if (compatibility.isDelegateSupportedOnThisDevice) {
+                    val delegate = GpuDelegate(compatibility.bestOptionsForThisDevice)
+                    try {
+                        val options = Interpreter.Options()
+                            .setNumThreads(config.numThreads)
+                            .addDelegate(delegate)
+                        val created = Interpreter(modelBuffer, options)
+                        gpuDelegate = delegate
+                        Log.i(TAG, "GPU delegate 로 추론 (미지원 연산은 CPU 에 남음)")
+                        return created
+                    } catch (t: Throwable) {
+                        // Interpreter 생성 전에 필드에 보관하지 않으므로 로컬 delegate를 직접 닫는다.
+                        // 일부 연산 미지원 기기에서 세션을 반복할 때 native GPU 자원이 새지 않게 한다.
+                        runCatching { delegate.close() }
+                        throw t
+                    }
+                }
+                Log.i(TAG, "GPU delegate 미지원 기기 — CPU 로 추론")
+            } catch (t: Throwable) {
+                Log.w(TAG, "GPU delegate 초기화 실패 — CPU 로 폴백", t)
+                runCatching { gpuDelegate?.close() }
+                gpuDelegate = null
+            }
+        }
+        return try {
+            Interpreter(modelBuffer, Interpreter.Options().setNumThreads(config.numThreads))
+        } catch (t: Throwable) {
+            throw ModelUnavailableException("TFLite 인터프리터 생성 실패: ${config.modelAsset}", t)
         }
     }
 
@@ -184,6 +227,8 @@ class TfLiteYoloDetector(
     override fun close() {
         interpreter?.close()
         interpreter = null
+        runCatching { gpuDelegate?.close() }
+        gpuDelegate = null
         decoder = null
         inputSpec = null
         inputBuffer = null

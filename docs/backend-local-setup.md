@@ -4,6 +4,11 @@
 
 > 개발용 구성이다. 인증도 HTTPS도 없으므로 신뢰할 수 있는 로컬 네트워크에서만 사용한다.
 
+촬영 데이터는 기본 24시간 뒤 정리 대상이 되고, 서버 시작 시와 기본 15분 간격으로 만료
+세션을 제한된 개수씩 삭제한다. 값은 `.env`의 `SNAPSIGHT_CAPTURE_TTL_SECONDS`,
+`SNAPSIGHT_CAPTURE_CLEANUP_INTERVAL_SECONDS`, `SNAPSIGHT_CAPTURE_CLEANUP_BATCH_SIZE`로 조정한다.
+TTL `0`은 자동 정리를 끄므로 로컬 디버깅 외에는 사용하지 않는 편이 안전하다.
+
 ## 서버 실행
 
 ```bash
@@ -33,7 +38,8 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 
 2. **폰 브라우저**에서 `http://<확인한 IP>:8000/docs`를 먼저 열어본다. FastAPI 문서 화면이 뜨면 연결에 문제가 없다는 뜻이다 — 여기서 막히면 앱 문제가 아니라 네트워크 문제다.
 
-3. 앱의 백엔드 주소(`BuildConfig.BACKEND_BASE_URL`)를 `http://<확인한 IP>:8000`으로 설정한다.
+3. debug 앱의 백엔드 주소를 설정 화면에서 `http://<확인한 IP>:8000`으로 지정하거나,
+   `-PBACKEND_BASE_URL=http://<확인한 IP>:8000`으로 빌드한다. release 앱은 HTTPS만 허용한다.
 
 LAN IP는 고정이 아니다. 와이파이를 바꾸거나 공유기를 재부팅하면 달라지므로 그때마다 다시 확인한다.
 
@@ -58,15 +64,19 @@ curl -o /dev/null -w "%{http_code}\n" http://<LAN IP>:8000/docs
 
 PC에서 실행하되 LAN 주소로 접속하므로 루프백이 아니다. `200`이면 서버는 정상이고, 그래도 폰에서 안 되면 방화벽이나 공유기 문제다.
 
-## 결과 조회 폴링
+## 통합 결과 조회 폴링
 
-`POST /api/capture/frames`는 프레임 저장 직후 응답하고, MLLM 비교는 백그라운드에서 계속된다. 결과는 `GET /api/capture/{session_id}/result`로 조회한다.
+`POST /api/capture/frames`는 서버가 발급한 `capture_revision`을 즉시 반환한다. Android는
+`GET /api/capture/{session_id}/metadata` 하나를 폴링해 짧은 설명·상세 설명·검색 라벨·
+`final_frame_id`를 함께 받고, 후보가 선택됐으면 같은 revision으로 `/final-frame`을 내려받는다.
+`/result`와 `/description`은 구버전 호환용으로 유지된다.
 
 | 응답 | 의미 | 앱 동작 |
 |---|---|---|
 | `404` | 업로드된 적 없는 세션 | 재시도하지 않는다 |
-| `200` + `status: "pending"` | 비교 진행 중 | `retry_after_seconds` 뒤 재조회 |
-| `200` + `status: "done"` | 완료 | `improved`·`reason` 사용 |
+| `200` + `status: "pending"` | 선택/설명 진행 중 | `retry_after_seconds`와 지수 백오프를 함께 적용 |
+| `200` + `status: "failed"` | 파이프라인 종료 실패 | 즉시 폴링 종료 |
+| `200` + `status: "done"` | 완료 | revision 검증 후 설명·라벨·최종 프레임 사용 |
 
 소요 시간 실측치(#37 수동 검증):
 
@@ -75,4 +85,13 @@ PC에서 실행하되 LAN 주소로 접속하므로 루프백이 아니다. `200
 | 규칙 기반으로 발화가 파싱된 세션 | 약 6초 |
 | 규칙이 실패해 LLM 폴백까지 탄 세션 | 약 12초 |
 
-폴링 간격은 응답의 `retry_after_seconds`(기본 2초)를 따르고, **타임아웃은 30초 이상**으로 잡는다 — 짧게 잡으면 폴백을 탄 세션이 전부 실패로 보인다. 기본값은 `backend/config.py`의 `RESULT_POLL_INTERVAL_SECONDS`·`RESULT_POLL_TIMEOUT_SECONDS`에 있다.
+Android 통합 메타데이터 폴러의 전체 타임아웃은 120초다. 429·5xx·전송 오류만 재시도하고,
+401/403을 포함한 다른 4xx 및 알 수 없는 status는 설정/계약 오류로 즉시 종료한다.
+
+## 배포 인증·TLS
+
+- 서버에 `SNAPSIGHT_API_TOKEN`을 설정했다면 Android 빌드에도 같은 값을
+  `-PSNAPSIGHT_API_TOKEN=...`로 주입한다.
+- release 백엔드 주소는
+  `-PSNAPSIGHT_RELEASE_BACKEND_BASE_URL=https://api.example.com`으로 주입한다.
+- release는 저장돼 있던 `http://` 주소도 복원하지 않는다. 로컬 평문 접속은 debug 빌드에만 허용한다.

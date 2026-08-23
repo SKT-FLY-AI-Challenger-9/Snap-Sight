@@ -55,6 +55,8 @@ fun CaptureScreen(
     guidanceText: String,
     onCancel: () -> Unit,
     cvObjects: List<TrackedObject> = emptyList(),
+    /** track_id → 등록 인물·사물 이름 — 해당 상자를 초록색+이름으로 구분해 그린다 */
+    identities: Map<Int, String> = emptyMap(),
     showOverlays: Boolean = true,
     onLensChanged: (isFront: Boolean) -> Unit = {},
     onShutterTap: (() -> Unit)? = null,
@@ -94,7 +96,7 @@ fun CaptureScreen(
                 },
         )
 
-        DetectionOverlay(objects = cvObjects, mirrored = isFrontLens)
+        DetectionOverlay(objects = cvObjects, mirrored = isFrontLens, identities = identities)
 
         // 셀카 모드 전환 — 조준 UI 와 무관하게 항상 접근 가능 (오른쪽 위)
         Surface(

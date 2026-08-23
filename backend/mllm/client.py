@@ -7,9 +7,9 @@ import base64
 import io
 from pathlib import Path
 
-from PIL import Image, UnidentifiedImageError
 from anthropic import Anthropic, APIConnectionError, APIStatusError
 from dotenv import load_dotenv
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from backend.mllm.prompts import SYSTEM_PROMPT, FrameComparisonResult, build_comparison_prompt
 from backend.utils.logger import load_logger
@@ -96,19 +96,33 @@ def _encode_image(path: Path) -> dict:
 
 
 def _downscaled_jpeg(path: Path) -> bytes:
-    """긴 변이 [MAX_IMAGE_DIM]을 넘으면 그 크기로 줄여 JPEG 재인코딩한다. 작으면 원본 그대로.
+    """EXIF 회전을 픽셀에 적용하고, 긴 변이 [MAX_IMAGE_DIM]을 넘으면 그 크기로 줄여 JPEG 재인코딩한다.
 
-    디코딩할 수 없는 바이트면 축소 없이 원본을 반환한다 — 축소는 비용 최적화일 뿐이라,
+    카메라 JPEG 는 픽셀을 센서 방향(가로)으로 두고 EXIF Orientation 으로만 회전을 기록한다. 재인코딩
+    하면서 EXIF 가 사라지면 모델이 누운 사진을 보게 되고, 앱이 보낸 정규화 bbox 위치("왼쪽 위")와도
+    어긋난다 (2026-08-23). 회전도 축소도 필요 없으면 원본 그대로.
+
+    디코딩할 수 없는 바이트면 원본을 반환한다 — 축소는 비용 최적화일 뿐이라,
     이것 때문에 MLLM 호출 자체가 죽으면 안 된다 (판정은 API 쪽 검증에 맡긴다).
     """
     raw = path.read_bytes()
     try:
         with Image.open(io.BytesIO(raw)) as img:
-            if max(img.size) <= MAX_IMAGE_DIM:
+            rotated = _has_orientation_tag(img)
+            if not rotated and max(img.size) <= MAX_IMAGE_DIM:
                 return raw
-            img.thumbnail((MAX_IMAGE_DIM, MAX_IMAGE_DIM))
+            upright = ImageOps.exif_transpose(img) if rotated else img
+            upright.thumbnail((MAX_IMAGE_DIM, MAX_IMAGE_DIM))
             buffer = io.BytesIO()
-            img.convert("RGB").save(buffer, format="JPEG", quality=85)
+            upright.convert("RGB").save(buffer, format="JPEG", quality=85)
             return buffer.getvalue()
     except UnidentifiedImageError:
         return raw
+
+
+def _has_orientation_tag(img: Image.Image) -> bool:
+    """EXIF Orientation 이 1(정상) 이외의 값인지 — 회전·반전이 필요한 JPEG 인지 판정한다."""
+    try:
+        return img.getexif().get(0x0112, 1) != 1
+    except Exception:  # noqa: BLE001 - EXIF 파싱 실패는 회전 없음으로 본다
+        return False

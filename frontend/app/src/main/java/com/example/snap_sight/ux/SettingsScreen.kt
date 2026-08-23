@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -26,6 +27,8 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -48,6 +51,8 @@ fun SettingsScreen(
     onVibrationIntensityChange: (Float) -> Unit,
     onSoundVolumeChange: (Float) -> Unit,
     onSpeechRateChange: (Float) -> Unit,
+    serverAiDescriptionEnabled: Boolean = true,
+    onServerAiDescriptionEnabledChange: (Boolean) -> Unit = {},
     onBack: () -> Unit,
     // 백엔드 서버 주소 재정의 (시연장 Wi-Fi 변경 대비) — 적용·저장 시점은 호출부(돌아가기) 책임
     serverUrl: String = "",
@@ -56,6 +61,10 @@ fun SettingsScreen(
     registeredPeople: List<String> = emptyList(),
     onEnrollFace: (() -> Unit)? = null,
     onDeletePerson: (String) -> Unit = {},
+    // 사물 등록 — 얼굴과 같은 흐름, 파이프라인만 분리 (ObjectIdentifier)
+    registeredObjects: List<String> = emptyList(),
+    onEnrollObject: (() -> Unit)? = null,
+    onDeleteObject: (String) -> Unit = {},
 ) {
     // 시안의 "안내 방식" 접이식 노트 — 기본 접힘 (Progressive Disclosure)
     var helpExpanded by remember { mutableStateOf(false) }
@@ -65,7 +74,10 @@ fun SettingsScreen(
             .fillMaxSize()
             .background(SnapPalette.Background)
             .statusBarsPadding()
-            .navigationBarsPadding(),
+            .navigationBarsPadding()
+            // 키보드가 올라오면 그 높이만큼 줄여서, 맨 아래 서버 주소 입력란이 가려지지 않고
+            // 스크롤로 키보드 위에 보이게 한다 (실사용 피드백 2026-08-22)
+            .imePadding(),
     ) {
         // 상단 바: ‹ (뒤로) + 설정 — 뒤로가기가 서버 주소 적용 시점이기도 하다
         Row(
@@ -134,6 +146,51 @@ fun SettingsScreen(
                 highLabel = "빠르게",
                 onValueChange = onSpeechRateChange,
             )
+
+            Spacer(Modifier.height(12.dp))
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = SnapPalette.Card,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, SnapPalette.CardBorder, RoundedCornerShape(20.dp)),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "서버 AI 사진 설명",
+                            color = SnapPalette.TextPrimary,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            text = "켜면 촬영 사진과 익명 탐지 정보를 설정한 Snap-Sight 서버로 보내고, " +
+                                "서버가 연결한 설명 API에서 상세 설명과 검색 라벨을 받아옵니다. " +
+                                "촬영 요청 문장은 등록 이름을 가린 뒤 전송하며, 등록 이름과 얼굴·사물 " +
+                                "임베딩은 전송하지 않습니다.",
+                            color = SnapPalette.TextSecondary,
+                            fontSize = 13.sp,
+                            lineHeight = 19.sp,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                    Switch(
+                        checked = serverAiDescriptionEnabled,
+                        onCheckedChange = onServerAiDescriptionEnabledChange,
+                        colors = SwitchDefaults.colors(checkedTrackColor = SnapPalette.Accent),
+                        modifier = Modifier.semantics {
+                            contentDescription = if (serverAiDescriptionEnabled) {
+                                "서버 AI 사진 설명 켜짐. 누르면 끄기"
+                            } else {
+                                "서버 AI 사진 설명 꺼짐. 사진 전송에 동의하고 켜기"
+                            }
+                        },
+                    )
+                }
+            }
 
             // 접이식 "안내 방식" 설명 — 시안의 파란 노트 카드
             Spacer(Modifier.height(12.dp))
@@ -251,6 +308,77 @@ fun SettingsScreen(
                                         .semantics {
                                             contentDescription =
                                                 "등록된 $name 삭제. 얼굴 정보가 기기에서 완전히 지워집니다"
+                                        },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 사물 등록 — 얼굴 카드와 같은 스타일 (임베딩은 기기에만 저장)
+            if (onEnrollObject != null) {
+                SectionLabel("내 사물 등록", topPadding = 20.dp)
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = SnapPalette.Card,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, SnapPalette.CardBorder, RoundedCornerShape(20.dp)),
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
+                        Text(
+                            text = "자주 찍는 사물을 등록하면 \"내 텀블러 찍어줘\"처럼 부를 수 있어요. " +
+                                "정보는 이 기기에만 저장됩니다.",
+                            color = SnapPalette.TextSecondary,
+                            fontSize = 13.sp,
+                            lineHeight = 19.sp,
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color.Transparent,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 12.dp)
+                                .border(1.5.dp, SnapPalette.Accent, RoundedCornerShape(12.dp))
+                                .semantics {
+                                    contentDescription =
+                                        "새 사물 등록 시작. 카메라 화면으로 이동해 이름을 말하고 사물을 3초간 비춥니다"
+                                },
+                            onClick = onEnrollObject,
+                        ) {
+                            Text(
+                                text = "＋ 새 사물 등록",
+                                color = SnapPalette.Accent,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 13.dp),
+                            )
+                        }
+                        registeredObjects.forEach { name ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 10.dp),
+                            ) {
+                                Text(
+                                    text = name,
+                                    color = SnapPalette.TextPrimary,
+                                    fontSize = 15.sp,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    text = "삭제",
+                                    color = SnapPalette.WarningStrong,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier
+                                        .clickable { onDeleteObject(name) }
+                                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                                        .semantics {
+                                            contentDescription =
+                                                "등록된 $name 삭제. 정보가 기기에서 완전히 지워집니다"
                                         },
                                 )
                             }
@@ -405,6 +533,8 @@ data class SettingsUiState(
     val soundVolume: Float,
     /** [SPEECH_RATE_RANGE] 범위 — [android.speech.tts.TextToSpeech.setSpeechRate]와 동일 단위(1f = 기본 속도) */
     val speechRate: Float,
+    /** 설정한 Snap-Sight 서버의 설명 API에 사진 업로드를 허용했을 때 true. */
+    val serverAiDescriptionEnabled: Boolean = true,
 )
 
 private val SPEECH_RATE_RANGE = 0.5f..2f

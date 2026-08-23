@@ -17,6 +17,7 @@ class SettingsRepositoryTest {
         val state = repo.load()
 
         assertEquals(SettingsUiState(vibrationIntensity = 1f, soundVolume = 1f, speechRate = 1f), state)
+        assertEquals(true, state.serverAiDescriptionEnabled)
     }
 
     @Test
@@ -54,23 +55,40 @@ class SettingsRepositoryTest {
 
         assertEquals(0.29f, reloaded.vibrationIntensity, 1e-6f)
     }
+
+    @Test
+    fun explicitlyDisabledServerDescriptionRemainsDisabled() {
+        val prefs = FakeSharedPreferences()
+        val repo = SettingsRepository(prefs)
+        repo.save(
+            SettingsUiState(
+                vibrationIntensity = 1f,
+                soundVolume = 1f,
+                speechRate = 1f,
+                serverAiDescriptionEnabled = false,
+            )
+        )
+
+        assertEquals(false, SettingsRepository(prefs).load().serverAiDescriptionEnabled)
+    }
 }
 
 /** 테스트 전용 최소 인메모리 [SharedPreferences] 구현 — float 저장/조회만 실제로 동작한다. */
 private class FakeSharedPreferences : SharedPreferences {
     private val floats = mutableMapOf<String, Float>()
+    private val booleans = mutableMapOf<String, Boolean>()
 
     override fun getFloat(key: String, defValue: Float): Float = floats[key] ?: defValue
 
-    override fun edit(): SharedPreferences.Editor = FakeEditor(floats)
+    override fun edit(): SharedPreferences.Editor = FakeEditor(floats, booleans)
 
-    override fun getAll(): MutableMap<String, *> = floats.toMutableMap()
+    override fun getAll(): MutableMap<String, *> = (floats.mapValues { it.value as Any } + booleans).toMutableMap()
     override fun getString(key: String?, defValue: String?): String? = defValue
     override fun getStringSet(key: String?, defValues: MutableSet<String>?): MutableSet<String>? = defValues
     override fun getInt(key: String?, defValue: Int): Int = defValue
     override fun getLong(key: String?, defValue: Long): Long = defValue
-    override fun getBoolean(key: String?, defValue: Boolean): Boolean = defValue
-    override fun contains(key: String?): Boolean = floats.containsKey(key)
+    override fun getBoolean(key: String?, defValue: Boolean): Boolean = booleans[key] ?: defValue
+    override fun contains(key: String?): Boolean = floats.containsKey(key) || booleans.containsKey(key)
     override fun registerOnSharedPreferenceChangeListener(
         listener: SharedPreferences.OnSharedPreferenceChangeListener?,
     ) = Unit
@@ -78,8 +96,12 @@ private class FakeSharedPreferences : SharedPreferences {
         listener: SharedPreferences.OnSharedPreferenceChangeListener?,
     ) = Unit
 
-    private class FakeEditor(private val floats: MutableMap<String, Float>) : SharedPreferences.Editor {
+    private class FakeEditor(
+        private val floats: MutableMap<String, Float>,
+        private val booleans: MutableMap<String, Boolean>,
+    ) : SharedPreferences.Editor {
         private val pending = mutableMapOf<String, Float>()
+        private val pendingBooleans = mutableMapOf<String, Boolean>()
 
         override fun putFloat(key: String, value: Float): SharedPreferences.Editor {
             pending[key] = value
@@ -88,10 +110,12 @@ private class FakeSharedPreferences : SharedPreferences {
 
         override fun apply() {
             floats.putAll(pending)
+            booleans.putAll(pendingBooleans)
         }
 
         override fun commit(): Boolean {
             floats.putAll(pending)
+            booleans.putAll(pendingBooleans)
             return true
         }
 
@@ -99,7 +123,10 @@ private class FakeSharedPreferences : SharedPreferences {
         override fun putStringSet(key: String?, values: MutableSet<String>?) = this
         override fun putInt(key: String?, value: Int) = this
         override fun putLong(key: String?, value: Long) = this
-        override fun putBoolean(key: String?, value: Boolean) = this
+        override fun putBoolean(key: String?, value: Boolean): SharedPreferences.Editor {
+            if (key != null) pendingBooleans[key] = value
+            return this
+        }
         override fun remove(key: String?) = this
         override fun clear() = this
     }

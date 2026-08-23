@@ -1,6 +1,4 @@
-// 이 파일: 셔터 직전 1초의 프레임들을 계속 임시 저장해두는 순환 저장소.
-// 셔터가 눌리면 그 앞뒤 프레임들을 "후보 사진"으로 꺼내준다.
-// 나중에 AI가 여러 장 중 제일 나은 한 장을 고르기 위한 재료다.
+// 이 파일: 셔터 직전·직후의 저해상도 후보 프레임을 제한된 비용으로 보관하는 순환 저장소.
 package com.example.snap_sight.camera
 
 import android.os.Handler
@@ -9,111 +7,308 @@ import android.util.Log
 import androidx.camera.core.ImageProxy
 
 /**
- * 촬영 시점 "직전 1초 + 직후 1초" 후보 프레임을 확보하는 링 버퍼 (README 파이프라인 7단계).
+ * 촬영 시점 "직전 [preWindowMs] + 직후 [postWindowMs]" 후보 프레임 버퍼.
  *
- * - 분석 스트림에서 [minIntervalMs] 간격으로 프레임을 JPEG 로 압축해 보관한다.
- * - [requestCandidates] 호출(=셔터) 후 직후 창이 채워지면 전후 창 안의 프레임을
- *   최대 [maxCandidates] 장으로 골라 메인 스레드 콜백으로 돌려준다.
- * - 후보는 MLLM 비교용이므로 원본 화질일 필요가 없다 (분석 해상도 640x480 사용).
+ * 중요한 전력 계약:
+ * - 기본값은 [Mode.OFF]이며, 이때 [onFrame]은 JPEG 인코더를 절대 호출하지 않는다.
+ * - 조준이 시작되면 [startPreCapture]로 PRE_CAPTURE를 켠다.
+ * - 셔터에서 [requestCandidates]를 부르면 POST_CAPTURE로 전환되고 완료 뒤 자동으로 OFF가 된다.
+ * - 한 번에 JPEG 작업은 1개뿐이고 저장 배열도 [maxBufferedFrames]를 넘지 않는다.
  *
- * 스레딩: [onFrame] 은 분석 스레드, [requestCandidates]/[flush] 는 메인 스레드에서 호출.
+ * [onFrame]은 보통 CameraX 단일 분석 executor에서 호출되지만, 상태 변경은 메인 스레드에서
+ * 들어오므로 모든 공유 상태는 [lock]으로 보호한다. 인코딩 중 취소되면 완성된 JPEG는 버린다.
  */
 class RingFrameBuffer(
     private val preWindowMs: Long = 1_000,
     private val postWindowMs: Long = 1_000,
-    private val minIntervalMs: Long = 150,
+    /** PRE_CAPTURE 샘플 주기. 예전 minIntervalMs 위치를 유지해 positional 호출도 호환한다. */
+    private val minIntervalMs: Long = DEFAULT_PRE_CAPTURE_INTERVAL_MS,
     private val jpegQuality: Int = 80,
     private val maxCandidates: Int = 6,
+    private val postCaptureIntervalMs: Long = DEFAULT_POST_CAPTURE_INTERVAL_MS,
+    private val maxBufferedFrames: Int = DEFAULT_MAX_BUFFERED_FRAMES,
 ) : FrameSink {
 
-    /** 후보 프레임 1장. [rotationDegrees] 는 정방향 회전값 (JPEG 자체는 회전 안 됨). */
+    enum class Mode { OFF, PRE_CAPTURE, POST_CAPTURE }
+
+    /** 후보 프레임 1장. [rotationDegrees]는 정방향 회전값이며 JPEG 자체는 회전하지 않는다. */
     class Frame(val jpeg: ByteArray, val timestampMs: Long, val rotationDegrees: Int)
+
+    data class Stats(
+        val mode: Mode,
+        val bufferedFrames: Int,
+        val encodedFrames: Long,
+        val skippedWhileOff: Long,
+        val skippedByCadence: Long,
+        val skippedWhileBusy: Long,
+    )
+
+    private data class Pending(
+        val shutterMs: Long,
+        val generation: Long,
+        val callback: (List<Frame>) -> Unit,
+    )
 
     private val lock = Any()
     private val frames = ArrayDeque<Frame>()
+    private val cadence = FrameSamplingGate(minIntervalMs, postCaptureIntervalMs)
+    private val encoder = YuvJpegEncoder()
 
-    private var pendingShutterMs: Long = -1
-    private var pendingCallback: ((List<Frame>) -> Unit)? = null
+    private var currentMode = Mode.OFF
+    private var generation = 0L
+    private var pending: Pending? = null
+    private var timeoutRunnable: Runnable? = null
 
-    private val mainHandler = Handler(Looper.getMainLooper())
+    private var encodedFrames = 0L
+    private var skippedWhileOff = 0L
+    private var skippedByCadence = 0L
+    private var skippedWhileBusy = 0L
 
-    override fun onFrame(image: ImageProxy, rotationDegrees: Int, timestampMs: Long) {
-        val shouldStore: Boolean
+    // JVM 단위 테스트에서 모드·cadence만 검사할 때 Android Looper를 건드리지 않도록 지연 생성한다.
+    private val mainHandlerDelegate = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        Handler(Looper.getMainLooper())
+    }
+    private val mainHandler: Handler get() = mainHandlerDelegate.value
+
+    val mode: Mode get() = synchronized(lock) { currentMode }
+    val isEnabled: Boolean get() = mode != Mode.OFF
+
+    init {
+        require(preWindowMs >= 0L)
+        require(postWindowMs >= 0L)
+        require(minIntervalMs > 0L)
+        require(postCaptureIntervalMs > 0L)
+        require(jpegQuality in 1..100)
+        require(maxCandidates > 0)
+        require(maxBufferedFrames >= maxCandidates)
+    }
+
+    /** 새 조준 세션의 pre-buffer를 시작한다. 기존 세션의 프레임과 pending callback은 폐기한다. */
+    fun startPreCapture() {
         synchronized(lock) {
-            shouldStore = frames.isEmpty() || timestampMs - frames.last().timestampMs >= minIntervalMs
+            generation++
+            cancelPendingLocked()
+            frames.clear()
+            cadence.reset()
+            currentMode = Mode.PRE_CAPTURE
         }
-        if (shouldStore) {
-            val jpeg = image.toJpegBytes(jpegQuality)
-            synchronized(lock) {
-                frames.addLast(Frame(jpeg, timestampMs, rotationDegrees))
-                evictLocked(timestampMs)
-            }
-        }
-        maybeCompletePending(timestampMs)
+    }
+
+    /** 간단한 호환 API. true는 [startPreCapture], false는 [disable]과 같다. */
+    fun setEnabled(enabled: Boolean) {
+        if (enabled) startPreCapture() else disable()
     }
 
     /**
-     * 셔터 시점 등록. 직후 창(postWindowMs)이 채워지는 대로
-     * [callback] 이 메인 스레드에서 호출된다. 진행 중인 요청이 있으면 무시.
+     * 모든 JPEG 작업을 중지한다. 진행 중 후보 요청은 callback 없이 취소된다.
+     * 이미 인코딩 중인 한 프레임은 중단할 수 없지만 generation 검증에서 결과가 버려진다.
      */
-    fun requestCandidates(shutterTimeMs: Long, callback: (List<Frame>) -> Unit) {
+    fun disable(clearFrames: Boolean = true) {
         synchronized(lock) {
-            if (pendingCallback != null) {
-                Log.w(TAG, "이미 후보 수집 중 — 요청 무시")
-                return
+            generation++
+            currentMode = Mode.OFF
+            cadence.reset()
+            cancelPendingLocked()
+            if (clearFrames) frames.clear()
+        }
+    }
+
+    override fun onFrame(image: ImageProxy, rotationDegrees: Int, timestampMs: Long) {
+        var reservationGeneration: Long? = null
+        var earlyCompletion: Completion? = null
+        synchronized(lock) {
+            when (cadence.tryAcquire(currentMode, timestampMs)) {
+                FrameSamplingGate.Result.DISABLED -> {
+                    skippedWhileOff++
+                    return
+                }
+                FrameSamplingGate.Result.TOO_SOON -> {
+                    skippedByCadence++
+                    earlyCompletion = maybeCompletePendingLocked(timestampMs)
+                }
+                FrameSamplingGate.Result.BUSY -> {
+                    skippedWhileBusy++
+                    return
+                }
+                FrameSamplingGate.Result.ACQUIRED -> {
+                    reservationGeneration = generation
+                }
             }
-            pendingShutterMs = shutterTimeMs
-            pendingCallback = callback
         }
-        // 카메라가 멈춰 프레임이 더 안 들어와도 콜백은 보장한다.
-        mainHandler.postDelayed({ maybeCompletePending(Long.MAX_VALUE) }, postWindowMs + TIMEOUT_SLACK_MS)
+        val acquiredGeneration = reservationGeneration
+        if (acquiredGeneration == null) {
+            earlyCompletion?.let(::dispatch)
+            return
+        }
+
+        val jpeg = try {
+            encoder.encode(image, jpegQuality)
+        } catch (t: Throwable) {
+            Log.w(TAG, "후보 프레임 JPEG 인코딩 실패", t)
+            null
+        }
+
+        val completion = synchronized(lock) {
+            cadence.release()
+            if (jpeg != null && generation == acquiredGeneration && currentMode != Mode.OFF) {
+                frames.addLast(Frame(jpeg, timestampMs, rotationDegrees))
+                encodedFrames++
+                evictLocked(timestampMs)
+            }
+            // 취소 전 프레임의 완료가 새 세션의 post-window를 마감해서는 안 된다.
+            if (generation == acquiredGeneration) maybeCompletePendingLocked(timestampMs) else null
+        }
+        completion?.let(::dispatch)
     }
 
-    /** 세션 취소 등으로 즉시 정리할 때. 진행 중 요청은 현재 시점 기준으로 마감. */
-    fun flush() {
-        maybeCompletePending(Long.MAX_VALUE)
-        synchronized(lock) { frames.clear() }
-    }
-
-    private fun maybeCompletePending(nowMs: Long) {
-        val result: List<Frame>
-        val callback: (List<Frame>) -> Unit
+    /**
+     * 셔터 시점을 등록하고 post-window 수집을 시작한다.
+     * 이미 요청 중이면 false를 반환하며 새 callback을 보관하지 않는다.
+     */
+    fun requestCandidates(shutterTimeMs: Long, callback: (List<Frame>) -> Unit): Boolean {
         synchronized(lock) {
-            val cb = pendingCallback ?: return
-            val shutterMs = pendingShutterMs
-            if (nowMs < shutterMs + postWindowMs) return
-            result = frames
-                .filter { it.timestampMs in (shutterMs - preWindowMs)..(shutterMs + postWindowMs) }
-                .let(::subsample)
-            callback = cb
-            pendingCallback = null
-            pendingShutterMs = -1
+            if (pending != null) {
+                Log.w(TAG, "이미 후보 수집 중 — 요청 무시")
+                return false
+            }
+            if (currentMode == Mode.OFF) {
+                // pre-buffer 없이 즉시 셔터가 들어온 경우에도 post-window는 수집한다.
+                generation++
+                frames.clear()
+                cadence.reset()
+            }
+            currentMode = Mode.POST_CAPTURE
+            val requestGeneration = generation
+            pending = Pending(shutterTimeMs, requestGeneration, callback)
+            val timeout = Runnable {
+                val completion = synchronized(lock) timeoutLock@{
+                    val active = pending
+                    if (active == null || active.generation != requestGeneration) return@timeoutLock null
+                    completePendingLocked(active)
+                }
+                completion?.let(::dispatch)
+            }
+            timeoutRunnable = timeout
+            mainHandler.postDelayed(timeout, postWindowMs + TIMEOUT_SLACK_MS)
         }
-        mainHandler.post { callback(result) }
+        return true
     }
 
-    /** 시간축에서 고르게 최대 [maxCandidates] 장을 고른다. */
-    private fun subsample(candidates: List<Frame>): List<Frame> {
-        if (candidates.size <= maxCandidates) return candidates
-        val step = (candidates.size - 1).toDouble() / (maxCandidates - 1)
-        return (0 until maxCandidates).map { candidates[(it * step).toInt()] }
+    /** 이전 API 호환: 진행 중 요청은 현재 프레임으로 완료하고 저장 버퍼를 비운다. */
+    fun flush() {
+        val completion = synchronized(lock) {
+            val active = pending
+            val result = active?.let(::completePendingLocked)
+            frames.clear()
+            result
+        }
+        completion?.let(::dispatch)
+    }
+
+    fun stats(): Stats = synchronized(lock) {
+        Stats(
+            mode = currentMode,
+            bufferedFrames = frames.size,
+            encodedFrames = encodedFrames,
+            skippedWhileOff = skippedWhileOff,
+            skippedByCadence = skippedByCadence,
+            skippedWhileBusy = skippedWhileBusy,
+        )
+    }
+
+    private data class Completion(
+        val callback: (List<Frame>) -> Unit,
+        val frames: List<Frame>,
+    )
+
+    /** lock 안에서만 호출. */
+    private fun maybeCompletePendingLocked(nowMs: Long): Completion? {
+        val active = pending ?: return null
+        if (nowMs < active.shutterMs + postWindowMs) return null
+        return completePendingLocked(active)
+    }
+
+    /** lock 안에서만 호출. */
+    private fun completePendingLocked(active: Pending): Completion {
+        val selected = evenlySubsample(
+            frames.filter { it.timestampMs in (active.shutterMs - preWindowMs)..(active.shutterMs + postWindowMs) },
+            maxCandidates,
+        )
+        pending = null
+        timeoutRunnable?.let { if (mainHandlerDelegate.isInitialized()) mainHandler.removeCallbacks(it) }
+        timeoutRunnable = null
+        currentMode = Mode.OFF
+        cadence.reset()
+        generation++
+        frames.clear()
+        return Completion(active.callback, selected)
+    }
+
+    private fun dispatch(completion: Completion) {
+        mainHandler.post { completion.callback(completion.frames) }
+    }
+
+    /** lock 안에서만 호출. */
+    private fun cancelPendingLocked() {
+        pending = null
+        timeoutRunnable?.let { if (mainHandlerDelegate.isInitialized()) mainHandler.removeCallbacks(it) }
+        timeoutRunnable = null
     }
 
     private fun evictLocked(nowMs: Long) {
-        // 셔터 대기 중엔 전 창 시작점 이전만, 평상시엔 전 창 밖 프레임을 버린다.
-        val keepFrom = if (pendingShutterMs > 0) {
-            pendingShutterMs - preWindowMs
-        } else {
-            nowMs - preWindowMs - EVICT_SLACK_MS
-        }
-        while (frames.isNotEmpty() && frames.first().timestampMs < keepFrom) {
-            frames.removeFirst()
-        }
+        val shutterMs = pending?.shutterMs
+        val keepFrom = if (shutterMs != null) shutterMs - preWindowMs
+        else nowMs - preWindowMs - EVICT_SLACK_MS
+        while (frames.isNotEmpty() && frames.first().timestampMs < keepFrom) frames.removeFirst()
+        while (frames.size > maxBufferedFrames) frames.removeFirst()
     }
 
     private companion object {
         const val TAG = "RingFrameBuffer"
         const val EVICT_SLACK_MS = 300L
         const val TIMEOUT_SLACK_MS = 700L
+        const val DEFAULT_PRE_CAPTURE_INTERVAL_MS = 333L
+        const val DEFAULT_POST_CAPTURE_INTERVAL_MS = 200L
+        const val DEFAULT_MAX_BUFFERED_FRAMES = 16
     }
+}
+
+/** 한 번에 한 인코딩만 허용하는 순수 Kotlin cadence gate. */
+internal class FrameSamplingGate(
+    private val preIntervalMs: Long,
+    private val postIntervalMs: Long,
+) {
+    enum class Result { DISABLED, TOO_SOON, BUSY, ACQUIRED }
+
+    private var lastAcceptedMs = Long.MIN_VALUE
+    private var busy = false
+    fun tryAcquire(mode: RingFrameBuffer.Mode, timestampMs: Long): Result {
+        if (mode == RingFrameBuffer.Mode.OFF) return Result.DISABLED
+        if (busy) return Result.BUSY
+        val interval = if (mode == RingFrameBuffer.Mode.POST_CAPTURE) postIntervalMs else preIntervalMs
+        if (lastAcceptedMs != Long.MIN_VALUE && timestampMs - lastAcceptedMs < interval) {
+            return Result.TOO_SOON
+        }
+        lastAcceptedMs = timestampMs
+        busy = true
+        return Result.ACQUIRED
+    }
+
+    fun release() {
+        busy = false
+    }
+
+    fun reset() {
+        lastAcceptedMs = Long.MIN_VALUE
+        // 이미 진행 중인 인코딩 permit은 유지한다. 세션 전환이 인코딩 두 개를 겹치게 하지 않는다.
+    }
+}
+
+/** 시간축에서 고르게 최대 [limit]개를 고른다. */
+internal fun <T> evenlySubsample(items: List<T>, limit: Int): List<T> {
+    require(limit > 0)
+    if (items.size <= limit) return items.toList()
+    if (limit == 1) return listOf(items[items.size / 2])
+    val step = (items.size - 1).toDouble() / (limit - 1)
+    return (0 until limit).map { items[(it * step).toInt()] }
 }

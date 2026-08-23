@@ -34,14 +34,17 @@ def test_build_comparison_prompt_includes_eyes_closed_scores_labeled_by_candidat
     assert "candidate_2: 눈감음 의심도 0.83" in prompt
 
 
-def test_build_comparison_prompt_never_exposes_blur_score():
+def test_build_comparison_prompt_includes_blur_score_but_not_rotation_metadata():
     prompt = build_comparison_prompt(
         "인물 사진 찍어줘",
         {},
-        candidate_scores=[{"eyes_closed_score": 0.1, "blur_score": 0.77}],
+        candidate_scores=[
+            {"eyes_closed_score": 0.1, "blur_score": 0.77, "rotation_degrees": 90}
+        ],
     )
-    assert "0.77" not in prompt
-    assert "blur" not in prompt.lower()
+    assert "블러 의심도 0.77" in prompt
+    assert "candidate_1" in prompt
+    assert "rotation_degrees: 90" not in prompt
 
 
 def test_build_comparison_prompt_tells_model_to_use_scores_only_at_step_three():
