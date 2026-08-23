@@ -1,0 +1,122 @@
+{
+  "version": 2,
+  "source": "스크립트 - 준서 · 최종 단축본 + 최종 기획 정리(프레이밍 조정 기준 · 개인화 설정)",
+  "note": "TTS 프리캐싱용 문장 정본. 조사는 {을/를} 같은 마커로 두고 ai/voice_script.py가 앞 단어의 받침을 보고 고른다 — '사람를 찾았어요' 같은 오류를 막기 위함. 원문서에는 마커 없이 '{피사체}를'로 적혀 있으나 그대로 치환하면 비문이 된다.",
+  "safety_note": "'뒤로 한 걸음 가세요' 류의 후진 지시는 최종 기획 정리에서 위험하다고 명시적으로 배제됐다. framing.farther는 사용자가 아니라 '핸드폰을 몸 쪽으로 당기는' 지시이며, 이 정본에 후진 지시는 없다.",
+
+  "presets": [
+    { "id": "preset1", "label": "1번 목소리" },
+    { "id": "preset2", "label": "2번 목소리" },
+    { "id": "preset3", "label": "3번 목소리" }
+  ],
+  "presets_note": "최종 기획 정리 '안내 목소리 (프리셋 3종)' — 선택 시 해당 목소리의 프리캐싱 음원 세트로 전환한다. 프리셋마다 assets/voice/<id>/ 아래에 같은 문장 세트를 굽는다. 기본값은 preset1(1순위, 청취 평가로 순위 확정).",
+
+  "playback_rates": { "느림": 0.8, "보통": 1.0, "빠름": 1.5 },
+  "playback_rates_note": "최종 기획 정리 '말하기 속도' — 음원을 속도별로 따로 굽지 않고 재생 배속으로 처리한다 (VoiceAssetPlayer의 PlaybackParams). 그래서 프리셋당 음원 수는 속도와 무관하다.",
+
+  "subjects": [
+    "사람",
+    "풍경",
+    "강아지",
+    "고양이",
+    "케이크",
+    "자동차",
+    "가방",
+    "의자",
+    "화분",
+    "노트북"
+  ],
+  "subjects_note": "'사람'은 SubjectType.PERSON, '풍경'은 SubjectType.LANDSCAPE. 나머지 8개는 ai/slot_parser.py의 OBJECT_LABEL_KEYWORDS에 실존하는 키워드여야 한다 (tests/test_voice_script.py가 검증).",
+
+  "directions": [
+    "왼쪽으로",
+    "오른쪽으로",
+    "위로",
+    "아래로"
+  ],
+  "directions_note": "'조금 {방향} 이동해 주세요' 템플릿에 그대로 들어가도록 조사를 포함한 형태로 저장한다. 원문서는 '방향 6단어 고정'이라 적었으나, 거리 방향(가까이/멀리)은 framing.closer/framing.farther 전용 문장이 따로 있어 이 템플릿에는 쓰이지 않는다.",
+
+  "lines": [
+    { "id": "onboarding.greeting", "group": "앱 실행/온보딩", "text": "안녕하세요. 찍고 싶은 장면을 말씀해 주세요." },
+    { "id": "onboarding.voice_settings", "group": "앱 실행/온보딩", "text": "기본 안내 음성이에요. 목소리와 속도는 설정에서 바꿀 수 있어요." },
+    { "id": "onboarding.ask_target_example", "group": "앱 실행/온보딩", "text": "무엇을 찍을지 말씀해 주세요. 예를 들어, 앞에 있는 사람 찍어줘." },
+    { "id": "onboarding.ask_target", "group": "앱 실행/온보딩", "text": "무엇을 찍을까요?" },
+    { "id": "onboarding.resume", "group": "앱 실행/온보딩", "text": "다시 시작할게요. 무엇을 찍을까요?" },
+
+    { "id": "input.not_heard", "group": "입력/인식", "text": "잘 못 들었어요. 다시 말씀해 주세요." },
+    { "id": "input.ask_short", "group": "입력/인식", "text": "대상을 짧게 말씀해 주세요. 사람, 음식, 강아지처럼요." },
+    { "id": "input.repeated_failure", "group": "입력/인식", "text": "계속 잘 안 들려요. 화면에서 선택하셔도 돼요." },
+    { "id": "input.out_of_scope", "group": "입력/인식", "text": "지금은 사진 촬영만 도와드려요. 대상을 말씀해 주세요." },
+    { "id": "input.unsupported_subject", "group": "입력/인식", "text": "{피사체}{은/는} 아직 지원하지 않아요. 다른 대상을 말씀해 주세요.", "vars": ["subject"] },
+    { "id": "input.ask_composition", "group": "입력/인식", "text": "배경까지 담을까요, 사람 중심으로 담을까요?" },
+    { "id": "input.full_body", "group": "입력/인식", "text": "전신이 나오게 맞출게요." },
+
+    { "id": "posture.tilt_down", "group": "자세", "text": "화면이 정면을 향하게 조금 내려 주세요." },
+    { "id": "posture.tilt_up", "group": "자세", "text": "화면이 정면을 향하게 조금 올려 주세요." },
+    { "id": "posture.align_slowly", "group": "자세", "text": "화면이 정면을 향하게 천천히 맞춰 주세요." },
+    { "id": "posture.hold_chest", "group": "자세", "text": "가슴 앞에서 들고 화면을 정면으로 향해 주세요." },
+
+    { "id": "search.found", "group": "탐색", "text": "{피사체}{을/를} 찾았어요.", "vars": ["subject"] },
+    { "id": "search.not_visible", "group": "탐색", "text": "{피사체}{이/가} 아직 안 보여요. 좌우로 천천히 움직여 주세요.", "vars": ["subject"] },
+    { "id": "search.failed", "group": "탐색", "text": "{피사체}{을/를} 못 찾았어요. 더 찾을까요, 다른 대상을 고를까요?", "vars": ["subject"] },
+    { "id": "search.multiple", "group": "탐색", "text": "{피사체}{이/가} 여러 개 보여요. 어느 쪽으로 맞출까요?", "vars": ["subject"] },
+
+    { "id": "framing.start", "group": "프레이밍/상태 변화", "text": "소리와 진동을 따라 천천히 움직여 주세요." },
+    { "id": "framing.move", "group": "프레이밍/상태 변화", "text": "조금 {방향} 이동해 주세요.", "vars": ["direction"] },
+    { "id": "framing.reverse", "group": "프레이밍/상태 변화", "text": "반대 방향이에요. 잠시 멈춰 주세요." },
+    { "id": "framing.closer", "group": "프레이밍/상태 변화", "text": "조금 가까이 가 주세요." },
+    { "id": "framing.farther", "group": "프레이밍/상태 변화", "text": "조금 뒤로 당겨 주세요." },
+    { "id": "framing.lost", "group": "프레이밍/상태 변화", "text": "{피사체}{이/가} 화면에서 벗어났어요. 다시 찾을게요.", "vars": ["subject"] },
+    { "id": "framing.reacquired", "group": "프레이밍/상태 변화", "text": "다시 찾았어요." },
+    { "id": "framing.subject_moving", "group": "프레이밍/상태 변화", "text": "피사체가 움직여요. 멈추면 다시 맞출게요." },
+    { "id": "framing.take_your_time", "group": "프레이밍/상태 변화", "text": "천천히 하셔도 돼요. 지금 촬영도 가능해요." },
+
+    { "id": "capture.ready", "group": "촬영", "text": "좋아요. 촬영할 수 있어요." },
+    { "id": "capture.adjust_more", "group": "촬영", "text": "조금만 더 맞출게요." },
+    { "id": "capture.shooting", "group": "촬영", "text": "촬영할게요." },
+    { "id": "capture.shoot_now", "group": "촬영", "text": "지금 상태로 촬영할게요." },
+    { "id": "capture.save_failed", "group": "촬영", "text": "저장하지 못했어요. 다시 촬영할까요?" },
+
+    { "id": "result.saved", "group": "결과", "text": "사진을 저장했어요." },
+    { "id": "result.description_pending", "group": "결과", "text": "사진 설명을 준비하고 있어요." },
+    { "id": "result.description_failed", "group": "결과", "text": "설명을 못 불러왔어요. 사진은 저장됐어요." },
+    { "id": "result.retry_same_target", "group": "결과", "text": "같은 대상으로 다시 맞출게요." },
+
+    { "id": "permission.camera", "group": "권한/기기", "text": "카메라 권한이 필요해요. 다음 화면에서 선택해 주세요." },
+    { "id": "permission.microphone", "group": "권한/기기", "text": "음성 요청에는 마이크 권한이 필요해요. 화면 선택도 가능해요." },
+    { "id": "permission.open_settings", "group": "권한/기기", "text": "권한은 설정에서 바꿀 수 있어요. 설정을 열까요?" },
+    { "id": "device.camera_start_failed", "group": "권한/기기", "text": "카메라를 시작하지 못했어요. 다시 시도할까요?" },
+    { "id": "device.overheat", "group": "권한/기기", "text": "기기가 뜨거워 안내가 느려질 수 있어요." },
+    { "id": "device.battery_low", "group": "권한/기기", "text": "배터리가 15퍼센트 이하예요." },
+    { "id": "device.storage_full", "group": "권한/기기", "text": "저장 공간이 부족해요. 공간을 확보한 뒤 촬영해 주세요." },
+    { "id": "device.imu_missing", "group": "권한/기기", "text": "자세 보정 없이 안내를 계속할게요." },
+
+    { "id": "env.dark", "group": "환경", "text": "주변이 어두워요. 그대로 찍거나 밝은 곳으로 가 주세요." },
+    { "id": "env.shaky", "group": "환경", "text": "핸드폰을 잡고 잠시 멈춰 주세요." },
+    { "id": "env.lens_blocked", "group": "환경", "text": "렌즈가 가려진 것 같아요. 확인해 주세요." },
+    { "id": "env.backlight", "group": "환경", "text": "뒤쪽 빛이 강해요. 그대로 찍거나 방향을 바꿔 주세요." },
+    { "id": "env.noisy", "group": "환경", "text": "소음 때문에 잘 안 들려요. 화면에서 선택하셔도 돼요." },
+
+    { "id": "network.offline", "group": "네트워크/대기", "text": "인터넷이 없어요. 촬영은 되지만 사진 설명은 안 돼요." },
+    { "id": "network.idle_prompt", "group": "네트워크/대기", "text": "필요하실 때 말씀해 주세요." },
+    { "id": "network.timeout_warning", "group": "네트워크/대기", "text": "곧 안내를 종료할게요. 계속하려면 계속이라고 말씀해 주세요." },
+
+    { "id": "global.cancelled", "group": "전역 명령 응답", "text": "촬영을 취소했어요." },
+    { "id": "global.paused", "group": "전역 명령 응답", "text": "잠시 멈출게요." },
+    { "id": "global.resumed", "group": "전역 명령 응답", "text": "계속할게요." },
+    { "id": "global.voice_off", "group": "전역 명령 응답", "text": "음성 안내를 끌게요." },
+
+    { "id": "preview.voice_sample", "group": "설정/미리듣기", "text": "왼쪽으로 이동하세요. 사진이 촬영되었습니다." },
+    { "id": "settings.channel_guard", "group": "설정/미리듣기", "text": "다른 안내 방법을 하나 켠 뒤에 끌 수 있어요." },
+
+    { "id": "framing.nudge_once", "group": "프레이밍/상태 변화", "text": "조금만 {방향}.", "vars": ["direction"] },
+    { "id": "framing.zoom_hint_closer", "group": "프레이밍/상태 변화", "text": "조금 더 가까이에서 촬영하면 대상을 크게 담을 수 있어요." },
+    { "id": "framing.lost_short", "group": "프레이밍/상태 변화", "text": "화면에서 벗어났어요." },
+    { "id": "search.rescan", "group": "탐색", "text": "카메라를 천천히 움직이며 찾아주세요." },
+
+    { "id": "capture.frame_complete", "group": "촬영", "text": "프레임 조정이 완료되었습니다. 촬영을 시작합니다." },
+    { "id": "capture.count_three", "group": "촬영", "text": "셋." },
+    { "id": "capture.count_two", "group": "촬영", "text": "둘." },
+    { "id": "capture.count_one", "group": "촬영", "text": "하나." }
+  ]
+}
