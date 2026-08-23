@@ -1,0 +1,1161 @@
+{
+  "version": 2,
+  "engine": "elevenlabs",
+  "preset": "preset1",
+  "preset_label": "1번 목소리",
+  "generated_from": "ai/voice/script.json",
+  "assets": [
+    {
+      "id": "capture.adjust_more",
+      "line_id": "capture.adjust_more",
+      "group": "촬영",
+      "text": "조금만 더 맞출게요.",
+      "text_sha1": "900b6c7199934a1cf2518d4f373adad163d5b3b7",
+      "file": "capture__adjust_more.mp3",
+      "bytes": 25539
+    },
+    {
+      "id": "capture.count_one",
+      "line_id": "capture.count_one",
+      "group": "촬영",
+      "text": "하나.",
+      "text_sha1": "5e3044d1f212ecd8997d966cb39567170b97f8d7",
+      "file": "capture__count_one.mp3",
+      "bytes": 10911
+    },
+    {
+      "id": "capture.count_three",
+      "line_id": "capture.count_three",
+      "group": "촬영",
+      "text": "셋.",
+      "text_sha1": "fbb073220f338aa11873eeaf1856c0b26cac3210",
+      "file": "capture__count_three.mp3",
+      "bytes": 12164
+    },
+    {
+      "id": "capture.count_two",
+      "line_id": "capture.count_two",
+      "group": "촬영",
+      "text": "둘.",
+      "text_sha1": "100c5bbfa58643470986a44439ab007e58a9c1b4",
+      "file": "capture__count_two.mp3",
+      "bytes": 10075
+    },
+    {
+      "id": "capture.frame_complete",
+      "line_id": "capture.frame_complete",
+      "group": "촬영",
+      "text": "프레임 조정이 완료되었습니다. 촬영을 시작합니다.",
+      "text_sha1": "6090ec79cc8902aa2a138c47487649b1783477a1",
+      "file": "capture__frame_complete.mp3",
+      "bytes": 62737
+    },
+    {
+      "id": "capture.ready",
+      "line_id": "capture.ready",
+      "group": "촬영",
+      "text": "좋아요. 촬영할 수 있어요.",
+      "text_sha1": "e5dbde3177ba21d25b66cfe2ed9623a174b723c0",
+      "file": "capture__ready.mp3",
+      "bytes": 30137
+    },
+    {
+      "id": "capture.save_failed",
+      "line_id": "capture.save_failed",
+      "group": "촬영",
+      "text": "저장하지 못했어요. 다시 촬영할까요?",
+      "text_sha1": "d5483452caecddeff23f40f755f6d4a5ee24c098",
+      "file": "capture__save_failed.mp3",
+      "bytes": 41004
+    },
+    {
+      "id": "capture.shoot_now",
+      "line_id": "capture.shoot_now",
+      "group": "촬영",
+      "text": "지금 상태로 촬영할게요.",
+      "text_sha1": "b16cc8e013d8e07e5ab062fbcc8d022549847a79",
+      "file": "capture__shoot_now.mp3",
+      "bytes": 30973
+    },
+    {
+      "id": "capture.shooting",
+      "line_id": "capture.shooting",
+      "group": "촬영",
+      "text": "촬영할게요.",
+      "text_sha1": "cfca62846ed7a36475c52018e35b3ee006d465c4",
+      "file": "capture__shooting.mp3",
+      "bytes": 17598
+    },
+    {
+      "id": "device.battery_low",
+      "line_id": "device.battery_low",
+      "group": "권한/기기",
+      "text": "배터리가 15퍼센트 이하예요.",
+      "text_sha1": "81a6c4900607216a2bd0f5b99004d31665259d21",
+      "file": "device__battery_low.mp3",
+      "bytes": 35152
+    },
+    {
+      "id": "device.camera_start_failed",
+      "line_id": "device.camera_start_failed",
+      "group": "권한/기기",
+      "text": "카메라를 시작하지 못했어요. 다시 시도할까요?",
+      "text_sha1": "764d4f3454be14085f1ba1c24fc895194705cc26",
+      "file": "device__camera_start_failed.mp3",
+      "bytes": 56886
+    },
+    {
+      "id": "device.imu_missing",
+      "line_id": "device.imu_missing",
+      "group": "권한/기기",
+      "text": "자세 보정 없이 안내를 계속할게요.",
+      "text_sha1": "8ef0aa02649fe279014a5eec76ecfd9ac2eb33d9",
+      "file": "device__imu_missing.mp3",
+      "bytes": 39750
+    },
+    {
+      "id": "device.overheat",
+      "line_id": "device.overheat",
+      "group": "권한/기기",
+      "text": "기기가 뜨거워 안내가 느려질 수 있어요.",
+      "text_sha1": "34eb3cc0cb433f0dc5fb4b6538ca20e44386c116",
+      "file": "device__overheat.mp3",
+      "bytes": 56050
+    },
+    {
+      "id": "device.storage_full",
+      "line_id": "device.storage_full",
+      "group": "권한/기기",
+      "text": "저장 공간이 부족해요. 공간을 확보한 뒤 촬영해 주세요.",
+      "text_sha1": "69cd827ed136c07c8271fa0b95aff646fb785f56",
+      "file": "device__storage_full.mp3",
+      "bytes": 70261
+    },
+    {
+      "id": "env.backlight",
+      "line_id": "env.backlight",
+      "group": "환경",
+      "text": "뒤쪽 빛이 강해요. 그대로 찍거나 방향을 바꿔 주세요.",
+      "text_sha1": "1b79d9334d7248c48b5e2d4f8516e0bd5ecfbf96",
+      "file": "env__backlight.mp3",
+      "bytes": 76948
+    },
+    {
+      "id": "env.dark",
+      "line_id": "env.dark",
+      "group": "환경",
+      "text": "주변이 어두워요. 그대로 찍거나 밝은 곳으로 가 주세요.",
+      "text_sha1": "436220c9334a77fbff3e85829cd647723539cc76",
+      "file": "env__dark.mp3",
+      "bytes": 74022
+    },
+    {
+      "id": "env.lens_blocked",
+      "line_id": "env.lens_blocked",
+      "group": "환경",
+      "text": "렌즈가 가려진 것 같아요. 확인해 주세요.",
+      "text_sha1": "43fbecc93fa1f363dd304ee310dc9b0ec94b3057",
+      "file": "env__lens_blocked.mp3",
+      "bytes": 44765
+    },
+    {
+      "id": "env.noisy",
+      "line_id": "env.noisy",
+      "group": "환경",
+      "text": "소음 때문에 잘 안 들려요. 화면에서 선택하셔도 돼요.",
+      "text_sha1": "d9f07fc8522bfea2065f70143317dc21688df5a8",
+      "file": "env__noisy.mp3",
+      "bytes": 64827
+    },
+    {
+      "id": "env.shaky",
+      "line_id": "env.shaky",
+      "group": "환경",
+      "text": "핸드폰을 잡고 잠시 멈춰 주세요.",
+      "text_sha1": "6abf56044850363b2668fafe6ce7e4dde154e4ed",
+      "file": "env__shaky.mp3",
+      "bytes": 39750
+    },
+    {
+      "id": "framing.closer",
+      "line_id": "framing.closer",
+      "group": "프레이밍/상태 변화",
+      "text": "조금 가까이 가 주세요.",
+      "text_sha1": "6fb486f9a44d0b56bbb1b15809cec53880844303",
+      "file": "framing__closer.mp3",
+      "bytes": 23449
+    },
+    {
+      "id": "framing.farther",
+      "line_id": "framing.farther",
+      "group": "프레이밍/상태 변화",
+      "text": "조금 뒤로 당겨 주세요.",
+      "text_sha1": "11cfa9941302e264f04afc7477084fec6b2cc80d",
+      "file": "framing__farther.mp3",
+      "bytes": 25539
+    },
+    {
+      "id": "framing.lost.가방",
+      "line_id": "framing.lost",
+      "group": "프레이밍/상태 변화",
+      "text": "가방이 화면에서 벗어났어요. 다시 찾을게요.",
+      "text_sha1": "547f5e9273b5fef67ca4f770c20237979eb45e42",
+      "file": "framing__lost__가방.mp3",
+      "bytes": 49363
+    },
+    {
+      "id": "framing.lost.강아지",
+      "line_id": "framing.lost",
+      "group": "프레이밍/상태 변화",
+      "text": "강아지가 화면에서 벗어났어요. 다시 찾을게요.",
+      "text_sha1": "ce0ac53640e1e66b98f6b488d7cebf861d2202ae",
+      "file": "framing__lost__강아지.mp3",
+      "bytes": 48527
+    },
+    {
+      "id": "framing.lost.고양이",
+      "line_id": "framing.lost",
+      "group": "프레이밍/상태 변화",
+      "text": "고양이가 화면에서 벗어났어요. 다시 찾을게요.",
+      "text_sha1": "8a197a7337e54caf7f168948a145cccb7af7e131",
+      "file": "framing__lost__고양이.mp3",
+      "bytes": 53960
+    },
+    {
+      "id": "framing.lost.노트북",
+      "line_id": "framing.lost",
+      "group": "프레이밍/상태 변화",
+      "text": "노트북이 화면에서 벗어났어요. 다시 찾을게요.",
+      "text_sha1": "aaa89750c52fd76767744abbb8857726ab5ab0a2",
+      "file": "framing__lost__노트북.mp3",
+      "bytes": 51035
+    },
+    {
+      "id": "framing.lost.사람",
+      "line_id": "framing.lost",
+      "group": "프레이밍/상태 변화",
+      "text": "사람이 화면에서 벗어났어요. 다시 찾을게요.",
+      "text_sha1": "a3ae7694f6f66d9d07dfdd6ce630e0c842c18f6b",
+      "file": "framing__lost__사람.mp3",
+      "bytes": 47691
+    },
+    {
+      "id": "framing.lost.의자",
+      "line_id": "framing.lost",
+      "group": "프레이밍/상태 변화",
+      "text": "의자가 화면에서 벗어났어요. 다시 찾을게요.",
+      "text_sha1": "e887d24b947f45f3cfb57285fbfdbc36d077bb2e",
+      "file": "framing__lost__의자.mp3",
+      "bytes": 47273
+    },
+    {
+      "id": "framing.lost.자동차",
+      "line_id": "framing.lost",
+      "group": "프레이밍/상태 변화",
+      "text": "자동차가 화면에서 벗어났어요. 다시 찾을게요.",
+      "text_sha1": "880610164241ed39bafa73794dc6fa5e37c1ec8b",
+      "file": "framing__lost__자동차.mp3",
+      "bytes": 53960
+    },
+    {
+      "id": "framing.lost.케이크",
+      "line_id": "framing.lost",
+      "group": "프레이밍/상태 변화",
+      "text": "케이크가 화면에서 벗어났어요. 다시 찾을게요.",
+      "text_sha1": "f84e1a6332aeb4b85b34620180ea03a5b475ca57",
+      "file": "framing__lost__케이크.mp3",
+      "bytes": 53960
+    },
+    {
+      "id": "framing.lost.풍경",
+      "line_id": "framing.lost",
+      "group": "프레이밍/상태 변화",
+      "text": "풍경이 화면에서 벗어났어요. 다시 찾을게요.",
+      "text_sha1": "3659755a28b77ce46c5c2d71c84e3681a224daf5",
+      "file": "framing__lost__풍경.mp3",
+      "bytes": 53124
+    },
+    {
+      "id": "framing.lost.화분",
+      "line_id": "framing.lost",
+      "group": "프레이밍/상태 변화",
+      "text": "화분이 화면에서 벗어났어요. 다시 찾을게요.",
+      "text_sha1": "f2a3ab7cb634d4532946c922551a3ae6d5894c8e",
+      "file": "framing__lost__화분.mp3",
+      "bytes": 50199
+    },
+    {
+      "id": "framing.lost_short",
+      "line_id": "framing.lost_short",
+      "group": "프레이밍/상태 변화",
+      "text": "화면에서 벗어났어요.",
+      "text_sha1": "05420d20ac4add1de328c2fb775e98144b3793e5",
+      "file": "framing__lost_short.mp3",
+      "bytes": 24703
+    },
+    {
+      "id": "framing.move.아래로",
+      "line_id": "framing.move",
+      "group": "프레이밍/상태 변화",
+      "text": "조금 아래로 이동해 주세요.",
+      "text_sha1": "53ab9186227246d7c6264824c547b13506661a14",
+      "file": "framing__move__아래로.mp3",
+      "bytes": 27629
+    },
+    {
+      "id": "framing.move.오른쪽으로",
+      "line_id": "framing.move",
+      "group": "프레이밍/상태 변화",
+      "text": "조금 오른쪽으로 이동해 주세요.",
+      "text_sha1": "851d3eb9574ce95cb002fa15528d453eb2f721b8",
+      "file": "framing__move__오른쪽으로.mp3",
+      "bytes": 38078
+    },
+    {
+      "id": "framing.move.왼쪽으로",
+      "line_id": "framing.move",
+      "group": "프레이밍/상태 변화",
+      "text": "조금 왼쪽으로 이동해 주세요.",
+      "text_sha1": "94807b1a6d71abd5dc17ed8293c6270615493644",
+      "file": "framing__move__왼쪽으로.mp3",
+      "bytes": 30137
+    },
+    {
+      "id": "framing.move.위로",
+      "line_id": "framing.move",
+      "group": "프레이밍/상태 변화",
+      "text": "조금 위로 이동해 주세요.",
+      "text_sha1": "ccdf77aadd479114b357fc7317ffd65600d25238",
+      "file": "framing__move__위로.mp3",
+      "bytes": 25539
+    },
+    {
+      "id": "framing.nudge_once.아래로",
+      "line_id": "framing.nudge_once",
+      "group": "프레이밍/상태 변화",
+      "text": "조금만 아래로.",
+      "text_sha1": "aa2e6c4bbfc7302b6ba6fc79402f6bbe2a59a84d",
+      "file": "framing__nudge_once__아래로.mp3",
+      "bytes": 19688
+    },
+    {
+      "id": "framing.nudge_once.오른쪽으로",
+      "line_id": "framing.nudge_once",
+      "group": "프레이밍/상태 변화",
+      "text": "조금만 오른쪽으로.",
+      "text_sha1": "012762fc9972064e6e274a340bf0cbf9f4cd08c9",
+      "file": "framing__nudge_once__오른쪽으로.mp3",
+      "bytes": 24703
+    },
+    {
+      "id": "framing.nudge_once.왼쪽으로",
+      "line_id": "framing.nudge_once",
+      "group": "프레이밍/상태 변화",
+      "text": "조금만 왼쪽으로.",
+      "text_sha1": "6231ec491b2b9cc3205670608be4c8a0f6baf627",
+      "file": "framing__nudge_once__왼쪽으로.mp3",
+      "bytes": 22613
+    },
+    {
+      "id": "framing.nudge_once.위로",
+      "line_id": "framing.nudge_once",
+      "group": "프레이밍/상태 변화",
+      "text": "조금만 위로.",
+      "text_sha1": "83934a3cc8afcb5a3e67d283dc7efc958a873ecf",
+      "file": "framing__nudge_once__위로.mp3",
+      "bytes": 18016
+    },
+    {
+      "id": "framing.reacquired",
+      "line_id": "framing.reacquired",
+      "group": "프레이밍/상태 변화",
+      "text": "다시 찾았어요.",
+      "text_sha1": "6c4a177f3b8c32a5575abd7c55e0e525e2cb454e",
+      "file": "framing__reacquired.mp3",
+      "bytes": 20524
+    },
+    {
+      "id": "framing.reverse",
+      "line_id": "framing.reverse",
+      "group": "프레이밍/상태 변화",
+      "text": "반대 방향이에요. 잠시 멈춰 주세요.",
+      "text_sha1": "b862b62b7b39001c4b06118116560a66a03395f6",
+      "file": "framing__reverse.mp3",
+      "bytes": 41839
+    },
+    {
+      "id": "framing.start",
+      "line_id": "framing.start",
+      "group": "프레이밍/상태 변화",
+      "text": "소리와 진동을 따라 천천히 움직여 주세요.",
+      "text_sha1": "345e72c2ea551c8190fb161cfa922aa45da1a8e6",
+      "file": "framing__start.mp3",
+      "bytes": 45601
+    },
+    {
+      "id": "framing.subject_moving",
+      "line_id": "framing.subject_moving",
+      "group": "프레이밍/상태 변화",
+      "text": "피사체가 움직여요. 멈추면 다시 맞출게요.",
+      "text_sha1": "c719e8e62bddd00e25b2814048f737e5d79480ed",
+      "file": "framing__subject_moving.mp3",
+      "bytes": 48527
+    },
+    {
+      "id": "framing.take_your_time",
+      "line_id": "framing.take_your_time",
+      "group": "프레이밍/상태 변화",
+      "text": "천천히 하셔도 돼요. 지금 촬영도 가능해요.",
+      "text_sha1": "c1fe68b0ff11e9f5abeae22fb21130cfd3f44f82",
+      "file": "framing__take_your_time.mp3",
+      "bytes": 58976
+    },
+    {
+      "id": "framing.zoom_hint_closer",
+      "line_id": "framing.zoom_hint_closer",
+      "group": "프레이밍/상태 변화",
+      "text": "조금 더 가까이에서 촬영하면 대상을 크게 담을 수 있어요.",
+      "text_sha1": "1d6ba150da8fd407b7dc635443af47bb82a1d8d3",
+      "file": "framing__zoom_hint_closer.mp3",
+      "bytes": 71515
+    },
+    {
+      "id": "global.cancelled",
+      "line_id": "global.cancelled",
+      "group": "전역 명령 응답",
+      "text": "촬영을 취소했어요.",
+      "text_sha1": "5d1d482ed858463d9b371a0f939a0c54e49f8d95",
+      "file": "global__cancelled.mp3",
+      "bytes": 22613
+    },
+    {
+      "id": "global.paused",
+      "line_id": "global.paused",
+      "group": "전역 명령 응답",
+      "text": "잠시 멈출게요.",
+      "text_sha1": "ccade4459bfc55d3ec2a7c20dd0c847731e357ea",
+      "file": "global__paused.mp3",
+      "bytes": 23449
+    },
+    {
+      "id": "global.resumed",
+      "line_id": "global.resumed",
+      "group": "전역 명령 응답",
+      "text": "계속할게요.",
+      "text_sha1": "488f335fc5584b0050acf1b49e3ea9db801a4763",
+      "file": "global__resumed.mp3",
+      "bytes": 17598
+    },
+    {
+      "id": "global.voice_off",
+      "line_id": "global.voice_off",
+      "group": "전역 명령 응답",
+      "text": "음성 안내를 끌게요.",
+      "text_sha1": "1cfd8f385ca93ea05546e97a65c1524224cc47e9",
+      "file": "global__voice_off.mp3",
+      "bytes": 25539
+    },
+    {
+      "id": "input.ask_composition",
+      "line_id": "input.ask_composition",
+      "group": "입력/인식",
+      "text": "배경까지 담을까요, 사람 중심으로 담을까요?",
+      "text_sha1": "f15029bdacfe619f5e2d3baed4d1401a59b6dbd5",
+      "file": "input__ask_composition.mp3",
+      "bytes": 53124
+    },
+    {
+      "id": "input.ask_short",
+      "line_id": "input.ask_short",
+      "group": "입력/인식",
+      "text": "대상을 짧게 말씀해 주세요. 사람, 음식, 강아지처럼요.",
+      "text_sha1": "bc35279a7fe43b19bb1ef81f1c5b9dbcfd0f88a4",
+      "file": "input__ask_short.mp3",
+      "bytes": 86561
+    },
+    {
+      "id": "input.full_body",
+      "line_id": "input.full_body",
+      "group": "입력/인식",
+      "text": "전신이 나오게 맞출게요.",
+      "text_sha1": "a2f05f919ceb70f2f562abbb3a691dcb3342ab55",
+      "file": "input__full_body.mp3",
+      "bytes": 27211
+    },
+    {
+      "id": "input.not_heard",
+      "line_id": "input.not_heard",
+      "group": "입력/인식",
+      "text": "잘 못 들었어요. 다시 말씀해 주세요.",
+      "text_sha1": "efb68c6aebdae3fa81b5639286d729cd50a81bd4",
+      "file": "input__not_heard.mp3",
+      "bytes": 42675
+    },
+    {
+      "id": "input.out_of_scope",
+      "line_id": "input.out_of_scope",
+      "group": "입력/인식",
+      "text": "지금은 사진 촬영만 도와드려요. 대상을 말씀해 주세요.",
+      "text_sha1": "d53cb08a999aa3154e166cd44299121b6640e5dc",
+      "file": "input__out_of_scope.mp3",
+      "bytes": 74022
+    },
+    {
+      "id": "input.repeated_failure",
+      "line_id": "input.repeated_failure",
+      "group": "입력/인식",
+      "text": "계속 잘 안 들려요. 화면에서 선택하셔도 돼요.",
+      "text_sha1": "7e104a0ad2945acf2a14ab46ddef378278a48f70",
+      "file": "input__repeated_failure.mp3",
+      "bytes": 54378
+    },
+    {
+      "id": "input.unsupported_subject.가방",
+      "line_id": "input.unsupported_subject",
+      "group": "입력/인식",
+      "text": "가방은 아직 지원하지 않아요. 다른 대상을 말씀해 주세요.",
+      "text_sha1": "7af1816e4c0cd31aec895c5096b884421e9e4dd5",
+      "file": "input__unsupported_subject__가방.mp3",
+      "bytes": 65663
+    },
+    {
+      "id": "input.unsupported_subject.강아지",
+      "line_id": "input.unsupported_subject",
+      "group": "입력/인식",
+      "text": "강아지는 아직 지원하지 않아요. 다른 대상을 말씀해 주세요.",
+      "text_sha1": "2312ee30dd88f3acfce2fccbaf11458a21f9f73c",
+      "file": "input__unsupported_subject__강아지.mp3",
+      "bytes": 71097
+    },
+    {
+      "id": "input.unsupported_subject.고양이",
+      "line_id": "input.unsupported_subject",
+      "group": "입력/인식",
+      "text": "고양이는 아직 지원하지 않아요. 다른 대상을 말씀해 주세요.",
+      "text_sha1": "88868065c723dace2e2e6e53e6efa17acef07d2f",
+      "file": "input__unsupported_subject__고양이.mp3",
+      "bytes": 70261
+    },
+    {
+      "id": "input.unsupported_subject.노트북",
+      "line_id": "input.unsupported_subject",
+      "group": "입력/인식",
+      "text": "노트북은 아직 지원하지 않아요. 다른 대상을 말씀해 주세요.",
+      "text_sha1": "258d45422163ef1227a2844cd1c33c9e2a1fd9ac",
+      "file": "input__unsupported_subject__노트북.mp3",
+      "bytes": 71515
+    },
+    {
+      "id": "input.unsupported_subject.사람",
+      "line_id": "input.unsupported_subject",
+      "group": "입력/인식",
+      "text": "사람은 아직 지원하지 않아요. 다른 대상을 말씀해 주세요.",
+      "text_sha1": "ddb83712115ab8604c218a72fa201b2ea2385ca1",
+      "file": "input__unsupported_subject__사람.mp3",
+      "bytes": 63573
+    },
+    {
+      "id": "input.unsupported_subject.의자",
+      "line_id": "input.unsupported_subject",
+      "group": "입력/인식",
+      "text": "의자는 아직 지원하지 않아요. 다른 대상을 말씀해 주세요.",
+      "text_sha1": "8d8a18359a847037f75a4b721317420272aada7d",
+      "file": "input__unsupported_subject__의자.mp3",
+      "bytes": 67335
+    },
+    {
+      "id": "input.unsupported_subject.자동차",
+      "line_id": "input.unsupported_subject",
+      "group": "입력/인식",
+      "text": "자동차는 아직 지원하지 않아요. 다른 대상을 말씀해 주세요.",
+      "text_sha1": "4766039b9bea07f2f037882403a68180d49b5c3f",
+      "file": "input__unsupported_subject__자동차.mp3",
+      "bytes": 73186
+    },
+    {
+      "id": "input.unsupported_subject.케이크",
+      "line_id": "input.unsupported_subject",
+      "group": "입력/인식",
+      "text": "케이크는 아직 지원하지 않아요. 다른 대상을 말씀해 주세요.",
+      "text_sha1": "49991a38809ea67dd5a7e046172e3654a7e288a1",
+      "file": "input__unsupported_subject__케이크.mp3",
+      "bytes": 66499
+    },
+    {
+      "id": "input.unsupported_subject.풍경",
+      "line_id": "input.unsupported_subject",
+      "group": "입력/인식",
+      "text": "풍경은 아직 지원하지 않아요. 다른 대상을 말씀해 주세요.",
+      "text_sha1": "c5fcce6e00ee2c5c9413d7f77a90411d9d1a4763",
+      "file": "input__unsupported_subject__풍경.mp3",
+      "bytes": 71097
+    },
+    {
+      "id": "input.unsupported_subject.화분",
+      "line_id": "input.unsupported_subject",
+      "group": "입력/인식",
+      "text": "화분은 아직 지원하지 않아요. 다른 대상을 말씀해 주세요.",
+      "text_sha1": "e713aa49187fc3ad73b67d5f2fd2b9bcf9127d29",
+      "file": "input__unsupported_subject__화분.mp3",
+      "bytes": 72351
+    },
+    {
+      "id": "network.idle_prompt",
+      "line_id": "network.idle_prompt",
+      "group": "네트워크/대기",
+      "text": "필요하실 때 말씀해 주세요.",
+      "text_sha1": "3162d8060b17928eb0123cbd62dbb7d798d13835",
+      "file": "network__idle_prompt.mp3",
+      "bytes": 30973
+    },
+    {
+      "id": "network.offline",
+      "line_id": "network.offline",
+      "group": "네트워크/대기",
+      "text": "인터넷이 없어요. 촬영은 되지만 사진 설명은 안 돼요.",
+      "text_sha1": "0737e7ac5b0366c43f98228c50c24c89402e73b0",
+      "file": "network__offline.mp3",
+      "bytes": 67753
+    },
+    {
+      "id": "network.timeout_warning",
+      "line_id": "network.timeout_warning",
+      "group": "네트워크/대기",
+      "text": "곧 안내를 종료할게요. 계속하려면 계속이라고 말씀해 주세요.",
+      "text_sha1": "60f02c8b50e65cbbf4420b1d579c654b31387d72",
+      "file": "network__timeout_warning.mp3",
+      "bytes": 76948
+    },
+    {
+      "id": "onboarding.ask_target",
+      "line_id": "onboarding.ask_target",
+      "group": "앱 실행/온보딩",
+      "text": "무엇을 찍을까요?",
+      "text_sha1": "64a2fb488b3f6cfdfdf8d5bff7f71e732db8a3cc",
+      "file": "onboarding__ask_target.mp3",
+      "bytes": 21777
+    },
+    {
+      "id": "onboarding.ask_target_example",
+      "line_id": "onboarding.ask_target_example",
+      "group": "앱 실행/온보딩",
+      "text": "무엇을 찍을지 말씀해 주세요. 예를 들어, 앞에 있는 사람 찍어줘.",
+      "text_sha1": "6af0dea10713a7408ccb0590aff2b3c4f942b123",
+      "file": "onboarding__ask_target_example.mp3",
+      "bytes": 92413
+    },
+    {
+      "id": "onboarding.greeting",
+      "line_id": "onboarding.greeting",
+      "group": "앱 실행/온보딩",
+      "text": "안녕하세요. 찍고 싶은 장면을 말씀해 주세요.",
+      "text_sha1": "86a7208b912a0b63c9a660525896c75935cd32f4",
+      "file": "onboarding__greeting.mp3",
+      "bytes": 49363
+    },
+    {
+      "id": "onboarding.resume",
+      "line_id": "onboarding.resume",
+      "group": "앱 실행/온보딩",
+      "text": "다시 시작할게요. 무엇을 찍을까요?",
+      "text_sha1": "555a552279d03e4b111aef68edea07d2da2c0569",
+      "file": "onboarding__resume.mp3",
+      "bytes": 38914
+    },
+    {
+      "id": "onboarding.voice_settings",
+      "line_id": "onboarding.voice_settings",
+      "group": "앱 실행/온보딩",
+      "text": "기본 안내 음성이에요. 목소리와 속도는 설정에서 바꿀 수 있어요.",
+      "text_sha1": "e67cde20adcaf67763de26cb87567b4ebc83ff81",
+      "file": "onboarding__voice_settings.mp3",
+      "bytes": 77784
+    },
+    {
+      "id": "permission.camera",
+      "line_id": "permission.camera",
+      "group": "권한/기기",
+      "text": "카메라 권한이 필요해요. 다음 화면에서 선택해 주세요.",
+      "text_sha1": "322f7f30e227c3868e2ec4e38855c8293e7e79d1",
+      "file": "permission__camera.mp3",
+      "bytes": 67335
+    },
+    {
+      "id": "permission.microphone",
+      "line_id": "permission.microphone",
+      "group": "권한/기기",
+      "text": "음성 요청에는 마이크 권한이 필요해요. 화면 선택도 가능해요.",
+      "text_sha1": "a221a6c3c9290efbe0f3027f45844b60f685b15d",
+      "file": "permission__microphone.mp3",
+      "bytes": 80710
+    },
+    {
+      "id": "permission.open_settings",
+      "line_id": "permission.open_settings",
+      "group": "권한/기기",
+      "text": "권한은 설정에서 바꿀 수 있어요. 설정을 열까요?",
+      "text_sha1": "b993807869fcec85e812bdd8e400e4772622eeb6",
+      "file": "permission__open_settings.mp3",
+      "bytes": 53124
+    },
+    {
+      "id": "posture.align_slowly",
+      "line_id": "posture.align_slowly",
+      "group": "자세",
+      "text": "화면이 정면을 향하게 천천히 맞춰 주세요.",
+      "text_sha1": "59c0690d3c8ae75e93bdea5b4576c1d12db36685",
+      "file": "posture__align_slowly.mp3",
+      "bytes": 46437
+    },
+    {
+      "id": "posture.hold_chest",
+      "line_id": "posture.hold_chest",
+      "group": "자세",
+      "text": "가슴 앞에서 들고 화면을 정면으로 향해 주세요.",
+      "text_sha1": "47c7d1a875738c897b2f204f5ce8f44b3b3180f0",
+      "file": "posture__hold_chest.mp3",
+      "bytes": 52288
+    },
+    {
+      "id": "posture.tilt_down",
+      "line_id": "posture.tilt_down",
+      "group": "자세",
+      "text": "화면이 정면을 향하게 조금 내려 주세요.",
+      "text_sha1": "99ccc90b675719e4ed7644568bc4ddd62e52b58c",
+      "file": "posture__tilt_down.mp3",
+      "bytes": 44765
+    },
+    {
+      "id": "posture.tilt_up",
+      "line_id": "posture.tilt_up",
+      "group": "자세",
+      "text": "화면이 정면을 향하게 조금 올려 주세요.",
+      "text_sha1": "12f5800a57f8ecff6814892d484c703ededaf38f",
+      "file": "posture__tilt_up.mp3",
+      "bytes": 44765
+    },
+    {
+      "id": "preview.voice_sample",
+      "line_id": "preview.voice_sample",
+      "group": "설정/미리듣기",
+      "text": "왼쪽으로 이동하세요. 사진이 촬영되었습니다.",
+      "text_sha1": "52f97ccd1774600f14510b3baf63ad4e77ca56e7",
+      "file": "preview__voice_sample.mp3",
+      "bytes": 49363
+    },
+    {
+      "id": "result.description_failed",
+      "line_id": "result.description_failed",
+      "group": "결과",
+      "text": "설명을 못 불러왔어요. 사진은 저장됐어요.",
+      "text_sha1": "ea8fea72e185c50e51ef175d005d8ada5e7a101a",
+      "file": "result__description_failed.mp3",
+      "bytes": 61066
+    },
+    {
+      "id": "result.description_pending",
+      "line_id": "result.description_pending",
+      "group": "결과",
+      "text": "사진 설명을 준비하고 있어요.",
+      "text_sha1": "63700efb0f25fb205da554e49b75f783e24c34ce",
+      "file": "result__description_pending.mp3",
+      "bytes": 33062
+    },
+    {
+      "id": "result.retry_same_target",
+      "line_id": "result.retry_same_target",
+      "group": "결과",
+      "text": "같은 대상으로 다시 맞출게요.",
+      "text_sha1": "45ff6e8a190fab35848a1f002791822a1b0e6254",
+      "file": "result__retry_same_target.mp3",
+      "bytes": 33898
+    },
+    {
+      "id": "result.saved",
+      "line_id": "result.saved",
+      "group": "결과",
+      "text": "사진을 저장했어요.",
+      "text_sha1": "1c6bebffc735a06ecf3d242d52c890521cdf7fcd",
+      "file": "result__saved.mp3",
+      "bytes": 23449
+    },
+    {
+      "id": "search.failed.가방",
+      "line_id": "search.failed",
+      "group": "탐색",
+      "text": "가방을 못 찾았어요. 더 찾을까요, 다른 대상을 고를까요?",
+      "text_sha1": "ef06862a71c00dc861d2f2cb9fefdd1878cb16b1",
+      "file": "search__failed__가방.mp3",
+      "bytes": 75276
+    },
+    {
+      "id": "search.failed.강아지",
+      "line_id": "search.failed",
+      "group": "탐색",
+      "text": "강아지를 못 찾았어요. 더 찾을까요, 다른 대상을 고를까요?",
+      "text_sha1": "ef48515f91e40fd29912ee4e26462eeaa4a39a87",
+      "file": "search__failed__강아지.mp3",
+      "bytes": 74022
+    },
+    {
+      "id": "search.failed.고양이",
+      "line_id": "search.failed",
+      "group": "탐색",
+      "text": "고양이를 못 찾았어요. 더 찾을까요, 다른 대상을 고를까요?",
+      "text_sha1": "14a1e26026607832f20a68e4a706fae68c1bb7bd",
+      "file": "search__failed__고양이.mp3",
+      "bytes": 74022
+    },
+    {
+      "id": "search.failed.노트북",
+      "line_id": "search.failed",
+      "group": "탐색",
+      "text": "노트북을 못 찾았어요. 더 찾을까요, 다른 대상을 고를까요?",
+      "text_sha1": "4c04a7c9c6ffc076da256f6ba5d66d00ee5dc01a",
+      "file": "search__failed__노트북.mp3",
+      "bytes": 74440
+    },
+    {
+      "id": "search.failed.사람",
+      "line_id": "search.failed",
+      "group": "탐색",
+      "text": "사람을 못 찾았어요. 더 찾을까요, 다른 대상을 고를까요?",
+      "text_sha1": "8158be9066699efdf430dee6710b12b404f551ec",
+      "file": "search__failed__사람.mp3",
+      "bytes": 73186
+    },
+    {
+      "id": "search.failed.의자",
+      "line_id": "search.failed",
+      "group": "탐색",
+      "text": "의자를 못 찾았어요. 더 찾을까요, 다른 대상을 고를까요?",
+      "text_sha1": "535578fb747b84f28bb7a2e059ee1b60cdd17a3b",
+      "file": "search__failed__의자.mp3",
+      "bytes": 72351
+    },
+    {
+      "id": "search.failed.자동차",
+      "line_id": "search.failed",
+      "group": "탐색",
+      "text": "자동차를 못 찾았어요. 더 찾을까요, 다른 대상을 고를까요?",
+      "text_sha1": "1ed3f04d2c5d766e270aec75e298d2067572da41",
+      "file": "search__failed__자동차.mp3",
+      "bytes": 76948
+    },
+    {
+      "id": "search.failed.케이크",
+      "line_id": "search.failed",
+      "group": "탐색",
+      "text": "케이크를 못 찾았어요. 더 찾을까요, 다른 대상을 고를까요?",
+      "text_sha1": "1f2ae50524561f4f9998eea8f19737287e31ee6b",
+      "file": "search__failed__케이크.mp3",
+      "bytes": 76112
+    },
+    {
+      "id": "search.failed.풍경",
+      "line_id": "search.failed",
+      "group": "탐색",
+      "text": "풍경을 못 찾았어요. 더 찾을까요, 다른 대상을 고를까요?",
+      "text_sha1": "fa8a4aeebc8fb8179a1db65908fad53d1626c294",
+      "file": "search__failed__풍경.mp3",
+      "bytes": 75276
+    },
+    {
+      "id": "search.failed.화분",
+      "line_id": "search.failed",
+      "group": "탐색",
+      "text": "화분을 못 찾았어요. 더 찾을까요, 다른 대상을 고를까요?",
+      "text_sha1": "06c4c144e8cfd888555a4f55e7d5f8d7c40729b5",
+      "file": "search__failed__화분.mp3",
+      "bytes": 74022
+    },
+    {
+      "id": "search.found.가방",
+      "line_id": "search.found",
+      "group": "탐색",
+      "text": "가방을 찾았어요.",
+      "text_sha1": "40ba1e673e218516793d9b3b85d44e2dc7c9c0fb",
+      "file": "search__found__가방.mp3",
+      "bytes": 21777
+    },
+    {
+      "id": "search.found.강아지",
+      "line_id": "search.found",
+      "group": "탐색",
+      "text": "강아지를 찾았어요.",
+      "text_sha1": "edbe2146e6f1f51b48e9dc9c9dd21f893e46b821",
+      "file": "search__found__강아지.mp3",
+      "bytes": 23449
+    },
+    {
+      "id": "search.found.고양이",
+      "line_id": "search.found",
+      "group": "탐색",
+      "text": "고양이를 찾았어요.",
+      "text_sha1": "0f0dea886dc6ce992b6746e39f2cd6b7d1a2e8de",
+      "file": "search__found__고양이.mp3",
+      "bytes": 23449
+    },
+    {
+      "id": "search.found.노트북",
+      "line_id": "search.found",
+      "group": "탐색",
+      "text": "노트북을 찾았어요.",
+      "text_sha1": "4200d58cc003465cbf517ed13ed4a00aeb4ff5fc",
+      "file": "search__found__노트북.mp3",
+      "bytes": 23449
+    },
+    {
+      "id": "search.found.사람",
+      "line_id": "search.found",
+      "group": "탐색",
+      "text": "사람을 찾았어요.",
+      "text_sha1": "55f0c386f731b373c03b24a38049e4cfba1dc443",
+      "file": "search__found__사람.mp3",
+      "bytes": 20524
+    },
+    {
+      "id": "search.found.의자",
+      "line_id": "search.found",
+      "group": "탐색",
+      "text": "의자를 찾았어요.",
+      "text_sha1": "13f857410b4030eaa2244f613f5884432f1ec3c0",
+      "file": "search__found__의자.mp3",
+      "bytes": 20942
+    },
+    {
+      "id": "search.found.자동차",
+      "line_id": "search.found",
+      "group": "탐색",
+      "text": "자동차를 찾았어요.",
+      "text_sha1": "acea6cdcd17f7830c16fa7f9089532f36f9b0891",
+      "file": "search__found__자동차.mp3",
+      "bytes": 24285
+    },
+    {
+      "id": "search.found.케이크",
+      "line_id": "search.found",
+      "group": "탐색",
+      "text": "케이크를 찾았어요.",
+      "text_sha1": "2ed43d79d7193751d271db9bf657126c4008482c",
+      "file": "search__found__케이크.mp3",
+      "bytes": 22613
+    },
+    {
+      "id": "search.found.풍경",
+      "line_id": "search.found",
+      "group": "탐색",
+      "text": "풍경을 찾았어요.",
+      "text_sha1": "fd392d9f74c5188e672489096c937f8f91b72641",
+      "file": "search__found__풍경.mp3",
+      "bytes": 21777
+    },
+    {
+      "id": "search.found.화분",
+      "line_id": "search.found",
+      "group": "탐색",
+      "text": "화분을 찾았어요.",
+      "text_sha1": "b45d32b14fe721e54ce50f73ca7539a28a0ea9d5",
+      "file": "search__found__화분.mp3",
+      "bytes": 20942
+    },
+    {
+      "id": "search.multiple.가방",
+      "line_id": "search.multiple",
+      "group": "탐색",
+      "text": "가방이 여러 개 보여요. 어느 쪽으로 맞출까요?",
+      "text_sha1": "c2ab70090f26287b6126f79639e3e3f0e7b089f8",
+      "file": "search__multiple__가방.mp3",
+      "bytes": 47691
+    },
+    {
+      "id": "search.multiple.강아지",
+      "line_id": "search.multiple",
+      "group": "탐색",
+      "text": "강아지가 여러 개 보여요. 어느 쪽으로 맞출까요?",
+      "text_sha1": "60f5b5be0ca2e5b044c34c36e843ab783b71e97e",
+      "file": "search__multiple__강아지.mp3",
+      "bytes": 53124
+    },
+    {
+      "id": "search.multiple.고양이",
+      "line_id": "search.multiple",
+      "group": "탐색",
+      "text": "고양이가 여러 개 보여요. 어느 쪽으로 맞출까요?",
+      "text_sha1": "3c2c3c475047abfa7dad0addb0cab4d21213c8c5",
+      "file": "search__multiple__고양이.mp3",
+      "bytes": 52288
+    },
+    {
+      "id": "search.multiple.노트북",
+      "line_id": "search.multiple",
+      "group": "탐색",
+      "text": "노트북이 여러 개 보여요. 어느 쪽으로 맞출까요?",
+      "text_sha1": "523afc2ddc7a97e65a623171652bd0f4623ae569",
+      "file": "search__multiple__노트북.mp3",
+      "bytes": 49363
+    },
+    {
+      "id": "search.multiple.사람",
+      "line_id": "search.multiple",
+      "group": "탐색",
+      "text": "사람이 여러 개 보여요. 어느 쪽으로 맞출까요?",
+      "text_sha1": "3fa91d1de8efef973816b0cc6b9d54758d361ed1",
+      "file": "search__multiple__사람.mp3",
+      "bytes": 48527
+    },
+    {
+      "id": "search.multiple.의자",
+      "line_id": "search.multiple",
+      "group": "탐색",
+      "text": "의자가 여러 개 보여요. 어느 쪽으로 맞출까요?",
+      "text_sha1": "777d8e439465f2cb0c5f99316cd1e4a20e456fb8",
+      "file": "search__multiple__의자.mp3",
+      "bytes": 50199
+    },
+    {
+      "id": "search.multiple.자동차",
+      "line_id": "search.multiple",
+      "group": "탐색",
+      "text": "자동차가 여러 개 보여요. 어느 쪽으로 맞출까요?",
+      "text_sha1": "69f7008ab0b849eb19462572c429f8ed2448557e",
+      "file": "search__multiple__자동차.mp3",
+      "bytes": 54378
+    },
+    {
+      "id": "search.multiple.케이크",
+      "line_id": "search.multiple",
+      "group": "탐색",
+      "text": "케이크가 여러 개 보여요. 어느 쪽으로 맞출까요?",
+      "text_sha1": "ec73023b6a3f20c7f4710a60dbae56e2995cf19e",
+      "file": "search__multiple__케이크.mp3",
+      "bytes": 54378
+    },
+    {
+      "id": "search.multiple.풍경",
+      "line_id": "search.multiple",
+      "group": "탐색",
+      "text": "풍경이 여러 개 보여요. 어느 쪽으로 맞출까요?",
+      "text_sha1": "884f78ef5a442b5fabcb554ba4386fdee9226d2b",
+      "file": "search__multiple__풍경.mp3",
+      "bytes": 53124
+    },
+    {
+      "id": "search.multiple.화분",
+      "line_id": "search.multiple",
+      "group": "탐색",
+      "text": "화분이 여러 개 보여요. 어느 쪽으로 맞출까요?",
+      "text_sha1": "eb74910cb38880015c2001a87f159ff4086462ee",
+      "file": "search__multiple__화분.mp3",
+      "bytes": 49363
+    },
+    {
+      "id": "search.not_visible.가방",
+      "line_id": "search.not_visible",
+      "group": "탐색",
+      "text": "가방이 아직 안 보여요. 좌우로 천천히 움직여 주세요.",
+      "text_sha1": "d616f72762c25c55d5ecf7a9600c0a29ac712e20",
+      "file": "search__not_visible__가방.mp3",
+      "bytes": 61066
+    },
+    {
+      "id": "search.not_visible.강아지",
+      "line_id": "search.not_visible",
+      "group": "탐색",
+      "text": "강아지가 아직 안 보여요. 좌우로 천천히 움직여 주세요.",
+      "text_sha1": "e1f6e0a535d8cdbc2cab29c0082546dea6a6553a",
+      "file": "search__not_visible__강아지.mp3",
+      "bytes": 60648
+    },
+    {
+      "id": "search.not_visible.고양이",
+      "line_id": "search.not_visible",
+      "group": "탐색",
+      "text": "고양이가 아직 안 보여요. 좌우로 천천히 움직여 주세요.",
+      "text_sha1": "875585a966c7b1cc4c9fb8e00d0ac02053c69002",
+      "file": "search__not_visible__고양이.mp3",
+      "bytes": 63573
+    },
+    {
+      "id": "search.not_visible.노트북",
+      "line_id": "search.not_visible",
+      "group": "탐색",
+      "text": "노트북이 아직 안 보여요. 좌우로 천천히 움직여 주세요.",
+      "text_sha1": "29561a06a03b738828c7a723ce38cd94ccaf6650",
+      "file": "search__not_visible__노트북.mp3",
+      "bytes": 67335
+    },
+    {
+      "id": "search.not_visible.사람",
+      "line_id": "search.not_visible",
+      "group": "탐색",
+      "text": "사람이 아직 안 보여요. 좌우로 천천히 움직여 주세요.",
+      "text_sha1": "9ee59770dbe4025f598b98e7076cfbc4d04c1d4d",
+      "file": "search__not_visible__사람.mp3",
+      "bytes": 57722
+    },
+    {
+      "id": "search.not_visible.의자",
+      "line_id": "search.not_visible",
+      "group": "탐색",
+      "text": "의자가 아직 안 보여요. 좌우로 천천히 움직여 주세요.",
+      "text_sha1": "905db2f6862fb7c4e9053502b1723394c52c4fcf",
+      "file": "search__not_visible__의자.mp3",
+      "bytes": 56050
+    },
+    {
+      "id": "search.not_visible.자동차",
+      "line_id": "search.not_visible",
+      "group": "탐색",
+      "text": "자동차가 아직 안 보여요. 좌우로 천천히 움직여 주세요.",
+      "text_sha1": "25eb6e412ba14862115a602644cefe4bc044edd3",
+      "file": "search__not_visible__자동차.mp3",
+      "bytes": 61902
+    },
+    {
+      "id": "search.not_visible.케이크",
+      "line_id": "search.not_visible",
+      "group": "탐색",
+      "text": "케이크가 아직 안 보여요. 좌우로 천천히 움직여 주세요.",
+      "text_sha1": "43f235aa6fd6037ec491a154c0a983c5aa193f7f",
+      "file": "search__not_visible__케이크.mp3",
+      "bytes": 56886
+    },
+    {
+      "id": "search.not_visible.풍경",
+      "line_id": "search.not_visible",
+      "group": "탐색",
+      "text": "풍경이 아직 안 보여요. 좌우로 천천히 움직여 주세요.",
+      "text_sha1": "27f5736a7c40118fb1f619ebabac621c2b241d6c",
+      "file": "search__not_visible__풍경.mp3",
+      "bytes": 65663
+    },
+    {
+      "id": "search.not_visible.화분",
+      "line_id": "search.not_visible",
+      "group": "탐색",
+      "text": "화분이 아직 안 보여요. 좌우로 천천히 움직여 주세요.",
+      "text_sha1": "71e144a491803e04320ab51f6444442aad135817",
+      "file": "search__not_visible__화분.mp3",
+      "bytes": 61066
+    },
+    {
+      "id": "search.rescan",
+      "line_id": "search.rescan",
+      "group": "탐색",
+      "text": "카메라를 천천히 움직이며 찾아주세요.",
+      "text_sha1": "5f05ba68829fb5ef59ce36ea25232d44b4b587c9",
+      "file": "search__rescan.mp3",
+      "bytes": 39750
+    },
+    {
+      "id": "settings.channel_guard",
+      "line_id": "settings.channel_guard",
+      "group": "설정/미리듣기",
+      "text": "다른 안내 방법을 하나 켠 뒤에 끌 수 있어요.",
+      "text_sha1": "37eaa3a3de79cf8393a4168f0c4e34b2bb11a3b5",
+      "file": "settings__channel_guard.mp3",
+      "bytes": 44765
+    }
+  ]
+}
