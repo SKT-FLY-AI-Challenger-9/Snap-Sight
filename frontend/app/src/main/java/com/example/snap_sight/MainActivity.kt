@@ -558,6 +558,9 @@ class MainActivity : ComponentActivity() {
                     shutterMissingTarget = null
                     lastAnnouncedGaze = null // 셀카 시선 안내를 세션마다 새로 시작
                 } else {
+                    // 조준을 벗어나면(셔터·취소 포함) 분석이 멈춰 정책이 진동을 끌 기회가 없다 —
+                    // 존재 확인 연속 진동은 카메라 조준 화면 전용이므로 여기서 무조건 끈다 (2026-08-24)
+                    guidanceFeedback.stopPresenceVibration()
                     synchronized(targetIntentLock) { targetSpecPending = false }
                     // 조준 종료 — 이번 세션의 트래킹 안정성 지표를 남긴다 (기능 1-A, 캘리브레이션 근거)
                     motionEstimator.stop()

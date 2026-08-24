@@ -270,7 +270,12 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         runCatching { vibrator.vibrate(effect) }
     }
 
-    private fun stopPresenceVibration() {
+    /**
+     * 존재 확인 연속 진동을 즉시 끈다. 조준(AIMING)을 벗어나는 모든 경로(셔터·취소·홈 복귀)에서
+     * 호출해야 한다 — 분석이 멈추면 정책이 스스로 끌 기회가 없어 진동이 계속 돌기 때문
+     * (실사용 피드백 2026-08-24: "사진 저장 후에도 진동이 반복").
+     */
+    fun stopPresenceVibration() {
         if (!presenceVibrating) return
         presenceVibrating = false
         runCatching { vibrator.cancel() }
