@@ -196,6 +196,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     /** 새 촬영 세션(AIMING 진입) — 이전 세션의 "이미 말했음" 상태를 지운다. */
     fun resetSession() {
         policy.reset()
+        stopPresenceVibration() // 정책 reset 은 액션을 못 내보내므로 여기서 직접 끈다
         // A target/session generation change invalidates queued movement and READY speech.
         // Keeping it alive would let guidance for the previous target continue after the
         // new intent has already become visible in the UI.
@@ -244,9 +245,35 @@ class GuidanceFeedback(context: Context) : DeviationListener {
                 )
                 GuidanceAction.Vibrate -> vibrateShort()
                 GuidanceAction.WarningTone -> playWarningTone()
+                GuidanceAction.PresenceVibrationStart -> startPresenceVibration()
+                GuidanceAction.PresenceVibrationStop -> stopPresenceVibration()
             }
         }
         return decision.verdict
+    }
+
+    // ---- 존재 확인 연속 진동 — 피사체가 잡혀 있는 동안 "징징" (사용자 요청 2026-08-24) ----
+
+    @Volatile
+    private var presenceVibrating = false
+
+    private fun startPresenceVibration() {
+        val amplitude = GuidanceFeedbackSettingsMapper.vibrationAmplitude(vibrationIntensity) ?: return
+        presenceVibrating = true
+        // 140ms 진동 + 160ms 휴지 반복 — 연속감은 있되 모터 과열·소음을 피하는 패턴
+        val timings = longArrayOf(0, PRESENCE_PULSE_ON_MS, PRESENCE_PULSE_OFF_MS)
+        val effect = if (vibrator.hasAmplitudeControl()) {
+            VibrationEffect.createWaveform(timings, intArrayOf(0, amplitude, 0), 0)
+        } else {
+            VibrationEffect.createWaveform(timings, 0)
+        }
+        runCatching { vibrator.vibrate(effect) }
+    }
+
+    private fun stopPresenceVibration() {
+        if (!presenceVibrating) return
+        presenceVibrating = false
+        runCatching { vibrator.cancel() }
     }
 
     // ---- 세션 이벤트 안내 (MainActivity 가 호출) ----
@@ -564,6 +591,8 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     private fun speak(text: String, priority: SpeechPriority) = announce(text, null, priority)
 
     private fun vibrateShort() {
+        // 존재 확인 연속 진동이 도는 중엔 한발 진동으로 패턴을 끊지 않는다 — 그 채널이 우선
+        if (presenceVibrating) return
         // null = 진동 강도 0(무음 설정) — 아예 울리지 않는다
         val amplitude = GuidanceFeedbackSettingsMapper.vibrationAmplitude(vibrationIntensity) ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -595,6 +624,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         tts.stop()
         tts.shutdown()
         stopPrecached()
+        stopPresenceVibration()
         toneGenerator?.release()
         toneGenerator = null
         runCatching { shutterSound.release() }
@@ -615,6 +645,9 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         const val TTS_ECHO_GUARD_MS = 250L
         /** 즉석 합성 실패 후 이 시간 동안은 재시도 없이 바로 TTS — 오프라인 발화 지연 방지. */
         const val DYNAMIC_FAILURE_BACKOFF_MS = 30_000L
+        // 존재 확인 연속 진동 파형 — 140ms 온 / 160ms 오프 반복
+        const val PRESENCE_PULSE_ON_MS = 140L
+        const val PRESENCE_PULSE_OFF_MS = 160L
         // 등록 스캔 시작/종료 — 전환 earcon(DTMF)·LOST 경고(BEEP2)와 겹치지 않는 음색
         const val SCAN_START_TONE = ToneGenerator.TONE_PROP_BEEP
         const val SCAN_END_TONE = ToneGenerator.TONE_PROP_ACK
