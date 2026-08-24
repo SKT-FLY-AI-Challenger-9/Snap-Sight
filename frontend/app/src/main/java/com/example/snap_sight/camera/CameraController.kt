@@ -5,11 +5,14 @@ package com.example.snap_sight.camera
 
 import android.content.ContentValues
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
 import android.util.Size
+import android.view.OrientationEventListener
+import android.view.Surface
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
@@ -24,6 +27,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.doOnLayout
 import androidx.lifecycle.LifecycleOwner
 import com.example.snap_sight.cv.FrameProcessor
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -72,12 +76,47 @@ class CameraController(private val context: Context) {
 
     private val captureGeneration = AtomicLong(0L)
 
+    // ---- 가로모드 (2026-08-24) ----
+    // UI(Activity)는 세로 고정이지만, 기기를 가로로 눕혀 찍으면 사진은 든 방향대로
+    // 똑바로 저장돼야 한다. 화면 회전이 잠겨 있어 display rotation 이 항상 0 이므로,
+    // 물리 방향 센서로 ImageCapture.targetRotation 만 따라가게 한다.
+    // 분석 스트림(CV·링 버퍼)은 그대로 둔다 — 조준 안내·오버레이 좌표계는 세로 기준 유지.
+
+    /** 마지막으로 관측된 기기 물리 방향의 Surface 회전값. 재바인딩 시 초기값으로도 쓴다. */
+    private var deviceRotation: Int = Surface.ROTATION_0
+
+    private val orientationListener by lazy {
+        object : OrientationEventListener(context) {
+            override fun onOrientationChanged(orientation: Int) {
+                if (orientation == ORIENTATION_UNKNOWN) return
+                val rotation = when (orientation) {
+                    in 45 until 135 -> Surface.ROTATION_270
+                    in 135 until 225 -> Surface.ROTATION_180
+                    in 225 until 315 -> Surface.ROTATION_90
+                    else -> Surface.ROTATION_0
+                }
+                if (rotation == deviceRotation) return
+                deviceRotation = rotation
+                Log.i(TAG, "기기 방향 변경 → 촬영 회전 ${rotation * 90}°")
+                imageCapture?.targetRotation = rotation
+            }
+        }
+    }
+
     // release() 이후 다시 start() 되는 경우에 대비해 재생성 가능하게 var 로 둔다
     private var analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val frameAnalysisAdapter = FrameAnalysisAdapter()
 
     /** 촬영 이벤트 수신자. 언제든 교체 가능. */
     var captureEventListener: CaptureEventListener? = null
+
+    /**
+     * 연사 승자 후처리 훅 (2026-08-25) — 새 파일을 돌려주면 그 파일을 게시하고, null 이면
+     * 원본 그대로. MainActivity 가 인물 세션일 때 [PortraitAutoCrop] 을 연결한다.
+     * 연사 채점 스레드에서 호출되므로 블로킹 작업이 허용된다.
+     */
+    @Volatile
+    var burstFinisher: ((File) -> File?)? = null
 
     var lensFacing: Int = CameraSelector.LENS_FACING_BACK
         private set
@@ -163,9 +202,12 @@ class CameraController(private val context: Context) {
         }
 
         // 순간 포착이 목적이므로 셔터 지연 최소화를 우선한다.
+        // targetRotation 은 기기 물리 방향을 따른다 (가로모드) — 이후 변경은 orientationListener 가 반영.
         imageCapture = ImageCapture.Builder()
             .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+            .setTargetRotation(deviceRotation)
             .build()
+        orientationListener.enable()
 
         imageAnalysis?.clearAnalyzer()
         analyzerAttached = false
@@ -276,8 +318,12 @@ class CameraController(private val context: Context) {
     /**
      * 사진 촬영. 결과는 MediaStore(Pictures/SnapSight)에 저장되고
      * [captureEventListener] 로 통지된다.
+     *
+     * [burstCount] 가 2 이상이고 세션 ID가 있으면 연사 모드 — 그 수만큼 연속으로 찍어
+     * 가장 선명한 한 장만 MediaStore 에 저장한다 ([BurstPhotoSelector], 2026-08-24).
+     * 통지는 일반 촬영과 동일하게 onPhotoSaved 1회라 하위 파이프라인은 차이를 모른다.
      */
-    fun takePhoto(sessionId: String? = null) {
+    fun takePhoto(sessionId: String? = null, burstCount: Int = 1) {
         val capture = imageCapture ?: run {
             captureEventListener?.onCaptureError(
                 sessionId,
@@ -314,11 +360,204 @@ class CameraController(private val context: Context) {
             zoomFuture.addListener({
                 if (requestGeneration != captureGeneration.get()) return@addListener
                 Log.i(TAG, "셔터 전 줌 1.0 복귀 완료 → 촬영")
-                doTakePicture(capture, outputOptions, sessionId, requestGeneration)
+                startCapture(capture, outputOptions, sessionId, burstCount, requestGeneration)
             }, ContextCompat.getMainExecutor(context))
             return
         }
-        doTakePicture(capture, outputOptions, sessionId, requestGeneration)
+        startCapture(capture, outputOptions, sessionId, burstCount, requestGeneration)
+    }
+
+    private fun startCapture(
+        capture: ImageCapture,
+        outputOptions: ImageCapture.OutputFileOptions,
+        sessionId: String?,
+        burstCount: Int,
+        requestGeneration: Long,
+    ) {
+        if (burstCount > 1 && sessionId != null) {
+            captureBurst(capture, sessionId, burstCount, requestGeneration)
+        } else {
+            doTakePicture(capture, outputOptions, sessionId, requestGeneration)
+        }
+    }
+
+    /**
+     * 연사 촬영 — [count]장을 앱 캐시에 순차 저장하고, 가장 선명한 한 장만 MediaStore 로
+     * 옮긴 뒤 나머지를 지운다. MediaStore 를 오염시키지 않아 갤러리·사진 찾기에는 승자
+     * 한 장만 보인다. 개별 컷 실패는 건너뛰고, 전부 실패했을 때만 onCaptureError.
+     */
+    private fun captureBurst(
+        capture: ImageCapture,
+        sessionId: String,
+        count: Int,
+        requestGeneration: Long,
+    ) {
+        val shots = ArrayList<File>(count)
+
+        fun cleanup() = shots.forEach { runCatching { it.delete() } }
+
+        fun finish() {
+            if (requestGeneration != captureGeneration.get()) {
+                cleanup()
+                return
+            }
+            if (shots.isEmpty()) {
+                captureEventListener?.onCaptureError(
+                    sessionId,
+                    IllegalStateException("연사 촬영이 모두 실패함"),
+                )
+                return
+            }
+            // 채점(JPEG 디코드 + 라플라시안)과 MediaStore 복사는 메인 스레드 밖에서
+            Thread({
+                // 컷별 점수를 전부 남긴다 — `adb logcat -s CameraController` 로 선택 근거를 검증
+                val scored = shots.map { it to BurstPhotoSelector.scoreJpeg(it) }
+                scored.forEachIndexed { index, (shot, score) ->
+                    Log.i(
+                        TAG,
+                        "연사 채점 [$sessionId] ${index + 1}/${scored.size}: " +
+                            "${shot.name} (${shot.length()} bytes) → 선명도 %.1f".format(score),
+                    )
+                }
+                val best = scored.maxByOrNull { it.second }?.first ?: shots.first()
+                Log.i(TAG, "연사 최고 컷 선택 [$sessionId]: ${best.name}")
+                // 승자 후처리 (인물 3분할 크롭 등) — 실패해도 원본 게시로 이어간다
+                val finished = runCatching { burstFinisher?.invoke(best) }
+                    .onFailure { Log.w(TAG, "연사 승자 후처리 실패 — 원본 게시", it) }
+                    .getOrNull()
+                val uri = runCatching { publishBurstWinner(finished ?: best, sessionId) }
+                    .onFailure { Log.e(TAG, "연사 최고 컷 저장 실패", it) }
+                    .getOrNull()
+                preserveBurstShotsForDebug(scored, best, sessionId, finished)
+                ContextCompat.getMainExecutor(context).execute {
+                    if (requestGeneration != captureGeneration.get()) return@execute
+                    if (uri != null) {
+                        captureEventListener?.onPhotoSaved(sessionId, uri)
+                    } else {
+                        captureEventListener?.onCaptureError(
+                            sessionId,
+                            IllegalStateException("연사 최고 컷을 저장하지 못함"),
+                        )
+                    }
+                }
+            }, "SnapSight-BurstSelect-${sessionId.takeLast(8)}").start()
+        }
+
+        fun shoot(index: Int) {
+            if (requestGeneration != captureGeneration.get()) {
+                cleanup()
+                return
+            }
+            if (index >= count) {
+                finish()
+                return
+            }
+            val file = File(context.cacheDir, "SnapSight_burst_${sessionId}_$index.jpg")
+            val options = ImageCapture.OutputFileOptions.Builder(file).build()
+            capture.takePicture(
+                options,
+                ContextCompat.getMainExecutor(context),
+                object : ImageCapture.OnImageSavedCallback {
+                    override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                        shots.add(file)
+                        shoot(index + 1)
+                    }
+
+                    override fun onError(exception: ImageCaptureException) {
+                        Log.w(TAG, "연사 ${index + 1}/$count 촬영 실패 — 나머지로 계속", exception)
+                        runCatching { file.delete() }
+                        shoot(index + 1)
+                    }
+                },
+            )
+        }
+        shoot(0)
+    }
+
+    /**
+     * 연사 디버그 보존 (사용자 요청 2026-08-24) — 탈락 컷 포함 전 컷을 점수·승자 표시가
+     * 담긴 이름으로 앱 외부 전용 폴더에 옮긴다. 눈으로 어떤 컷들 중 뭘 골랐는지 검증하는
+     * 용도이며, PC 에서 바로 꺼내 볼 수 있다:
+     *
+     *   adb pull /sdcard/Android/data/<패키지>/files/burst_debug
+     *
+     * 폴더는 세션 ID 별이고 최근 [BURST_DEBUG_KEEP]개 세션만 남긴다. 보존에 실패하면
+     * 원본 캐시 컷을 지워 기존 정리 동작으로 돌아간다.
+     */
+    private fun preserveBurstShotsForDebug(
+        scored: List<Pair<File, Double>>,
+        best: File,
+        sessionId: String,
+        processed: File? = null,
+    ) {
+        try {
+            val root = File(context.getExternalFilesDir(null) ?: context.cacheDir, BURST_DEBUG_DIR)
+            val dir = File(root, sessionId)
+            dir.mkdirs()
+            for ((shot, score) in scored) {
+                val marker = if (shot == best) "_WINNER" else ""
+                val target = File(dir, "%s_score%.1f%s.jpg".format(shot.nameWithoutExtension, score, marker))
+                if (!shot.renameTo(target)) {
+                    shot.copyTo(target, overwrite = true)
+                    shot.delete()
+                }
+            }
+            // 후처리본(크롭)도 같이 남겨 전/후를 눈으로 비교할 수 있게 한다
+            processed?.let { file ->
+                val target = File(dir, file.name)
+                if (!file.renameTo(target)) {
+                    file.copyTo(target, overwrite = true)
+                    file.delete()
+                }
+            }
+            Log.i(TAG, "연사 컷 보존 [$sessionId]: ${dir.absolutePath}")
+            // 오래된 세션 폴더 정리 — 디버그 보존이 저장 공간을 무한정 먹지 않게
+            root.listFiles()
+                ?.sortedByDescending { it.lastModified() }
+                ?.drop(BURST_DEBUG_KEEP)
+                ?.forEach { it.deleteRecursively() }
+        } catch (t: Throwable) {
+            Log.w(TAG, "연사 디버그 보존 실패 — 캐시 컷 삭제로 대체", t)
+            scored.forEach { (shot, _) -> runCatching { shot.delete() } }
+            processed?.let { runCatching { it.delete() } }
+        }
+    }
+
+    /**
+     * 연사 승자를 일반 촬영과 같은 이름(SnapSight_<sessionId>)·경로로 MediaStore 에
+     * 게시한다. [CanonicalFrameStore] 와 같은 IS_PENDING 패턴 — 쓰다 만 파일이
+     * 갤러리에 노출되지 않는다.
+     */
+    private fun publishBurstWinner(file: File, sessionId: String): Uri {
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, "SnapSight_$sessionId")
+            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/SnapSight")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+        }
+        val resolver = context.contentResolver
+        val uri = requireNotNull(
+            resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values),
+        ) { "MediaStore insert returned null" }
+        try {
+            resolver.openOutputStream(uri)?.use { out ->
+                file.inputStream().use { it.copyTo(out) }
+            } ?: error("MediaStore output stream could not be opened")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                resolver.update(
+                    uri,
+                    ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) },
+                    null,
+                    null,
+                )
+            }
+            return uri
+        } catch (t: Throwable) {
+            runCatching { resolver.delete(uri, null, null) }
+            throw t
+        }
     }
 
     /** 아직 CameraX에 전달되지 않은 줌 대기 촬영을 무효화한다. 저장 중 요청은 콜백에서 세션 ID로 걸러진다. */
@@ -373,6 +612,7 @@ class CameraController(private val context: Context) {
             boundLifecycleOwner = null
             boundPreviewView = null
         }
+        orientationListener.disable()
         cancelPendingCapture()
         imageAnalysis?.clearAnalyzer()
         analyzerAttached = false
@@ -432,6 +672,12 @@ class CameraController(private val context: Context) {
 
     private companion object {
         const val TAG = "CameraController"
+
+        /** 연사 디버그 보존 폴더 (외부 앱 전용 저장소) — adb pull 로 접근 가능. */
+        const val BURST_DEBUG_DIR = "burst_debug"
+
+        /** 보존할 최근 세션 폴더 수 — 초과분은 오래된 것부터 삭제. */
+        const val BURST_DEBUG_KEEP = 20
         val ANALYSIS_RESOLUTION = Size(640, 480)
     }
 }

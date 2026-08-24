@@ -48,6 +48,11 @@ internal enum class GuidanceDirection(val utterance: String) {
     CLOSER("조금 가까이 가 주세요."),
     /** 정의만 남김 — [GuidancePolicy.pickDirection] 은 FARTHER 를 고르지 않는다. */
     FARTHER("조금 뒤로 당겨 주세요."),
+
+    // 음식 피치 (2026-08-25) — 음식 세션에서 폰 각도를 목표(45°)로 유도. CV 편차가 아니라
+    // 기울기 센서에서 오므로 pickDirection 이 아닌 judge() 의 피치 분기가 고른다.
+    TILT_LAY("폰을 조금 더 눕혀 주세요."),
+    TILT_RAISE("폰을 조금 세워 주세요."),
 }
 
 /** 한 번의 canonical 평가에서 나온 최종 verdict와 렌더링 액션. */
@@ -150,15 +155,22 @@ internal class GuidancePolicy(
         nowMs: Long,
         zoomHandlesDistance: Boolean = false,
         readyBlockedReason: String? = null,
+        pitchDeviationDeg: Float? = null,
     ): List<GuidanceAction> = processJudgment(
         state = state,
         result = result,
         nowMs = nowMs,
         zoomHandlesDistance = zoomHandlesDistance,
         readyBlockedReason = readyBlockedReason,
+        pitchDeviationDeg = pitchDeviationDeg,
     ).actions
 
-    /** 액션과 UI가 같은 evaluator 호출의 verdict를 공유하도록 하는 canonical 진입점. */
+    /**
+     * 액션과 UI가 같은 evaluator 호출의 verdict를 공유하도록 하는 canonical 진입점.
+     *
+     * @param pitchDeviationDeg 음식 세션의 폰 각도 편차 (목표각 - 현재각, 도 단위) — null 이면
+     *        피치 안내 없음. 양수 = 더 눕혀야 함, 음수 = 세워야 함.
+     */
     @Synchronized
     fun processJudgment(
         state: GuidanceState,
@@ -166,11 +178,15 @@ internal class GuidancePolicy(
         nowMs: Long,
         zoomHandlesDistance: Boolean = false,
         readyBlockedReason: String? = null,
+        pitchDeviationDeg: Float? = null,
     ): GuidanceDecision {
         val readiness = readinessEvaluator.evaluate(result, nowMs)
         // 존재 확인 진동 — 어떤 안내 분기든 상관없이 매 판정마다 갱신한다
         val presence = presenceActions(state.detected, nowMs)
-        val actions = judge(state, result, readiness, nowMs, zoomHandlesDistance, readyBlockedReason)
+        val actions = judge(
+            state, result, readiness, nowMs, zoomHandlesDistance, readyBlockedReason,
+            pitchDeviationDeg,
+        )
         return GuidanceDecision(readiness, presence + actions)
     }
 
@@ -211,6 +227,7 @@ internal class GuidancePolicy(
         nowMs: Long,
         zoomHandlesDistance: Boolean,
         readyBlockedReason: String?,
+        pitchDeviationDeg: Float? = null,
     ): List<GuidanceAction> {
         if (!state.detected) {
             // 첫 검출 전에는 "사라졌어요"(LOST)가 아니라 탐색 안내(t2/t3)를 쓴다 — 비프 없음
@@ -238,6 +255,19 @@ internal class GuidancePolicy(
         if (refound && subjectDesignated) {
             lastSpokenAtMs = nowMs
             return listOf(GuidanceAction.Speak(REFIND_UTTERANCE))
+        }
+
+        // 음식 피치 (2026-08-25): 폰 각도가 목표를 벗어나 있으면 구도·READY 안내보다 먼저
+        // 각도부터 맞춘다. 이 분기는 대상 검출 뒤에만 온다 — 발화가 무장(arm)하고 실제 검출이
+        // 확정(confirm)하는 구조라, 아무것도 안 잡힌 허공에 "눕혀 주세요"를 말하지 않는다.
+        if (pitchDeviationDeg != null && abs(pitchDeviationDeg) > PITCH_TOLERANCE_DEG) {
+            readySpokenThisEpisode = false
+            val direction = if (pitchDeviationDeg > 0) {
+                GuidanceDirection.TILT_LAY
+            } else {
+                GuidanceDirection.TILT_RAISE
+            }
+            return speakDirectionIfDue(direction, nowMs)
         }
 
         if (readiness.ready) {
@@ -275,6 +305,11 @@ internal class GuidancePolicy(
         if (direction == null) {
             return heartbeat(readiness, zoomHandlesDistance, nowMs)
         }
+        return speakDirectionIfDue(direction, nowMs)
+    }
+
+    /** 방향 단어 공통 게이팅 — 같은 방향은 [DIRECTION_REPEAT_MS], 바뀐 방향도 [DIRECTION_MIN_GAP_MS] 간격. */
+    private fun speakDirectionIfDue(direction: GuidanceDirection, nowMs: Long): List<GuidanceAction> {
         heartbeatStateSinceMs = null
         val changed = direction != lastDirection
         val elapsed = nowMs - lastDirectionAtMs
@@ -420,6 +455,9 @@ internal class GuidancePolicy(
 
         /** 피사체가 이만큼 연속으로 잡혀 있으면 존재 확인 연속 진동 시작. */
         const val PRESENCE_VIBRATION_AFTER_MS = 1_500L
+
+        /** 음식 피치 목표각 허용 오차 — 이 안이면 각도 안내를 멈추고 구도 안내로 넘어간다. */
+        const val PITCH_TOLERANCE_DEG = 12f
         const val READY_DEBOUNCE_MS = 300L
         const val READY_RESPEAK_MS = 3_000L
 
