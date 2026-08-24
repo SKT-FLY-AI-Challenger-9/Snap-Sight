@@ -813,7 +813,8 @@ enum class VoicePreset(val key: String, val label: String, val assetDir: String?
 enum class SpeechSpeed(val label: String, val rate: Float) {
     SLOW("느리게", 0.8f),
     NORMAL("보통", 1.0f),
-    FAST("빠르게", 1.5f),
+    // 1.5 는 실기기 청취에서 급하게 들림 — 10% 낮춤 (사용자 피드백 2026-08-24)
+    FAST("빠르게", 1.35f),
     ;
 
     companion object {
