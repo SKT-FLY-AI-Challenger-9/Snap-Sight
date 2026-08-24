@@ -86,6 +86,7 @@ import com.example.snap_sight.network.FrameUploader
 import com.example.snap_sight.network.LabelNormalizeClient
 import com.example.snap_sight.network.MetadataClient
 import com.example.snap_sight.network.MetadataLabelContract
+import com.example.snap_sight.network.SpeechSynthClient
 import com.example.snap_sight.network.UtteranceClient
 import com.example.snap_sight.privacy.CloudTextRedactor
 import com.example.snap_sight.privacy.RegisteredIdentityMatcher
@@ -147,6 +148,8 @@ class MainActivity : ComponentActivity() {
     private val canonicalFrameStore by lazy { CanonicalFrameStore(this) }
     private val descriptionLookup by lazy { DescriptionLookup(this) }
     private val metadataClient = MetadataClient()
+    // 동적 문장(촬영 요약·사진 설명)의 프리셋 보이스 즉석 합성 — 백엔드 SKT 프록시
+    private val speechSynthClient = SpeechSynthClient()
 
     // 커스텀 라벨 등록 시 "내 개"/"내 강아지" 같은 동의어를 기존 라벨로 병합 (2026-08-22)
     private val labelNormalizeClient = LabelNormalizeClient()
@@ -480,6 +483,8 @@ class MainActivity : ComponentActivity() {
         // 셀카 모드: 구도가 맞아도 시선이 카메라를 벗어나 있으면 "지금 촬영하세요"를 보류하고 사유를 말한다
         guidanceFeedback.readyGate = { selfieGaze.readyBlockReason() }
         guidanceFeedback.applySettings(settingsUiState) // 저장된 설정값을 시작부터 반영
+        // 동적 문장(촬영 요약·사진 설명)도 프리셋 보이스로 — 백엔드 SKT 프록시 즉석 합성 연결
+        guidanceFeedback.dynamicSpeechFetcher = { text, voice -> speechSynthClient.fetch(text, voice) }
 
         // 첫 화면(온보딩) 사용법 안내 — 탭 문법을 모르는 최초 사용자를 위한 1회 멘트.
         // TTS 초기화 전이면 GuidanceFeedback 이 보관했다가 준비되는 즉시 말한다.
@@ -561,8 +566,13 @@ class MainActivity : ComponentActivity() {
                 when (state) {
                     // LISTENING 안내는 listeningPrompt 게이트가 담당 — 안내가 끝난 뒤에
                     // 인식이 시작되므로 안내 음성이 발화로 인식되지 않는다 (2026-08-22)
-                    // 노션 확정 스크립트 문장 (4-1 조정 시작) — 프레이밍은 사운드·햅틱 주도
-                    SessionState.AIMING -> guidanceFeedback.announce("소리와 진동을 따라 천천히 움직여 주세요.")
+                    // 탭 문법 안내(사용자 요청 2026-08-24) → 노션 확정 문장 (4-1 조정 시작) 순서로
+                    SessionState.AIMING -> guidanceFeedback.announce(
+                        "화면을 두 번 터치해 촬영하거나, 꾹 눌러 홈으로 이동해 주세요.",
+                        onDone = {
+                            guidanceFeedback.announce("소리와 진동을 따라 천천히 움직여 주세요.")
+                        },
+                    )
                     SessionState.CAPTURING -> {
                         val now = System.currentTimeMillis()
                         synchronized(cvSnapshotLock) {
@@ -618,12 +628,14 @@ class MainActivity : ComponentActivity() {
                         guidanceFeedback.playShutter()
                     }
                     SessionState.SAVED -> {
-                        // 스크립트 6-1(저장) → 6-2(짧은 결과 설명) 순서 — r1 음원 뒤에 온디바이스 요약
+                        // 스크립트 6-1(저장) → 6-2(짧은 결과 설명) 순서 — r1 음원이 나가는 동안
+                        // 온디바이스 요약을 프리셋 보이스로 미리 합성해 두 문장 다 같은 목소리로 나온다
                         val headline = captureHeadline()
+                        guidanceFeedback.prefetchDynamic(headline)
                         guidanceFeedback.announce(
                             "사진을 저장했어요.",
                             onDone = {
-                                guidanceFeedback.announce(
+                                guidanceFeedback.announceDynamic(
                                     headline,
                                     priority = GuidanceFeedback.SpeechPriority.CAPTURE,
                                 )
@@ -883,7 +895,7 @@ class MainActivity : ComponentActivity() {
                                             "AI 라벨" to lastResultAutoLabels.joinToString(", ")
                                         ),
                                         onReplayDescription = {
-                                            speak(
+                                            guidanceFeedback.announceDynamic(
                                                 lastResultDescription
                                                     ?: lastResultDescriptionStatus
                                                     ?: "사진 설명을 준비하고 있어요."
@@ -1104,6 +1116,9 @@ class MainActivity : ComponentActivity() {
                 Log.i(TAG, "통합 사진 이해 도착 [$sessionId] 라벨 ${labels.fixed}")
                 val localizedBrief = localizeSubjectRefs(sessionId, metadata.briefDescription)
                 val localizedDetail = localizeSubjectRefs(sessionId, metadata.longDescription)
+                // 설명 낭독 전에 프리셋 보이스 합성을 미리 걸어둔다 (canonical 저장 경로는 몇 초 뒤 낭독)
+                localizedBrief?.let { guidanceFeedback.prefetchDynamic(it) }
+                localizedDetail?.let { guidanceFeedback.prefetchDynamic(it) }
                 if (isCurrentVisibleResult(sessionId)) {
                     val description = localizedDetail ?: localizedBrief
                     lastResultDescription = description
@@ -1211,7 +1226,8 @@ class MainActivity : ComponentActivity() {
         if (!isCurrentServerCapture(sessionId, serverRevision) ||
             !isCurrentVisibleResult(sessionId) || brief.isNullOrBlank()
         ) return
-        guidanceFeedback.announce(brief, priority = GuidanceFeedback.SpeechPriority.STATUS)
+        // 서버 설명도 프리셋 보이스로 — 카탈로그 밖 동적 문장이라 즉석 합성(캐시 우선) 경로
+        guidanceFeedback.announceDynamic(brief, priority = GuidanceFeedback.SpeechPriority.STATUS)
     }
 
     private fun isCurrentVisibleResult(sessionId: String): Boolean =

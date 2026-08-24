@@ -18,8 +18,11 @@ import android.util.Log
 import com.example.snap_sight.cv.DeviationListener
 import com.example.snap_sight.cv.DeviationResult
 import com.example.snap_sight.cv.ReadinessVerdict
+import java.io.File
+import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -79,6 +82,17 @@ class GuidanceFeedback(context: Context) : DeviationListener {
      */
     @Volatile
     private var voiceAssetDir: String? = null
+
+    /**
+     * 카탈로그에 없는 동적 문장을 프리셋 보이스로 즉석 합성하는 훅 (text, voiceKey) → mp3 바이트.
+     * MainActivity 가 백엔드 /api/tts/skt 프록시([SpeechSynthClient])로 연결한다. null 이면 항상 TTS.
+     */
+    @Volatile
+    var dynamicSpeechFetcher: ((text: String, voiceKey: String) -> ByteArray?)? = null
+
+    /** 프리셋이 기본(TTS)이 아니면 그 키(aria/oliver) — 동적 합성 보이스 선택. */
+    @Volatile
+    private var dynamicVoiceKey: String? = null
 
     @Volatile
     private var ttsInitFailed = false
@@ -170,7 +184,9 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         soundVolume = settings.soundVolume.coerceIn(0f, 1f)
         pendingSpeechRate = GuidanceFeedbackSettingsMapper.speechRate(settings)
         if (ttsReady) tts.setSpeechRate(pendingSpeechRate)
-        voiceAssetDir = VoicePreset.fromKey(settings.voicePreset).assetDir
+        val preset = VoicePreset.fromKey(settings.voicePreset)
+        voiceAssetDir = preset.assetDir
+        dynamicVoiceKey = preset.takeIf { it.assetDir != null }?.key
         rebuildToneGenerator()
     }
 
@@ -342,14 +358,31 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     /** 확정 문장 음원을 즉시 재생한다. 성공 시 true, 실패하면 false(호출부가 TTS 폴백). */
     private fun playPrecached(assetId: String, utteranceId: String, priority: SpeechPriority): Boolean {
         val dir = voiceAssetDir ?: return false
+        return playMediaSource(utteranceId, priority, "asset:$assetId") { player ->
+            appContext.assets.openFd("$dir/$assetId.mp3").use { fd ->
+                player.setDataSource(fd.fileDescriptor, fd.startOffset, fd.length)
+            }
+        }
+    }
+
+    /** 동적 합성 캐시 파일을 재생한다 — 성공 시 true. */
+    private fun playCachedFile(file: File, utteranceId: String, priority: SpeechPriority): Boolean =
+        playMediaSource(utteranceId, priority, file.name) { player ->
+            player.setDataSource(file.path)
+        }
+
+    private inline fun playMediaSource(
+        utteranceId: String,
+        priority: SpeechPriority,
+        sourceLabel: String,
+        setSource: (MediaPlayer) -> Unit,
+    ): Boolean {
         synchronized(assetPlayerLock) {
             stopPrecachedLocked()
             runCatching { tts.stop() } // TTS 가 말하는 중이었다면 함께 끊는다 (FLUSH 의미 유지)
             val player = MediaPlayer()
             return runCatching {
-                appContext.assets.openFd("$dir/$assetId.mp3").use { fd ->
-                    player.setDataSource(fd.fileDescriptor, fd.startOffset, fd.length)
-                }
+                setSource(player)
                 player.setOnCompletionListener { completeAsset(utteranceId) }
                 player.setOnErrorListener { _, _, _ -> completeAsset(utteranceId); true }
                 player.prepare()
@@ -362,11 +395,109 @@ class GuidanceFeedback(context: Context) : DeviationListener {
                 activeSpeechPriority = priority
                 true
             }.getOrElse {
-                Log.w(TAG, "프리캐싱 음원 재생 실패($assetId) — TTS 폴백", it)
+                Log.w(TAG, "음원 재생 실패($sourceLabel) — TTS 폴백", it)
                 runCatching { player.release() }
                 false
             }
         }
+    }
+
+    // ---- 동적 문장 즉석 합성 (촬영 요약·사진 설명 — 카탈로그에 없는 문장) ----
+
+    private val dynamicFetchExecutor by lazy {
+        Executors.newSingleThreadExecutor { r -> Thread(r, "SnapSight-TtsFetch") }
+    }
+
+    private fun dynamicCacheFile(voiceKey: String, text: String): File {
+        val digest = MessageDigest.getInstance("SHA-1")
+            .digest(text.trim().toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        return File(File(File(appContext.cacheDir, "tts_cache"), voiceKey), "$digest.mp3")
+    }
+
+    /**
+     * 동적 문장의 합성 음원을 미리 받아 캐시한다 — 낭독 시점의 대기를 없애는 프리페치.
+     * 셔터 직후 온디바이스 요약처럼 "곧 말할 문장"이 정해지는 즉시 호출한다.
+     */
+    fun prefetchDynamic(text: String) {
+        val voice = dynamicVoiceKey ?: return
+        if (text.isBlank() || SpeechCatalog.assetIdFor(text) != null) return
+        val fetcher = dynamicSpeechFetcher ?: return
+        val target = dynamicCacheFile(voice, text)
+        if (target.exists()) return
+        dynamicFetchExecutor.execute {
+            if (target.exists()) return@execute
+            runCatching {
+                val bytes = fetcher(text, voice) ?: return@execute
+                target.parentFile?.mkdirs()
+                val tmp = File(target.parentFile, "${target.name}.tmp")
+                tmp.writeBytes(bytes)
+                if (!tmp.renameTo(target)) tmp.delete()
+            }.onFailure { Log.w(TAG, "동적 합성 프리페치 실패", it) }
+        }
+    }
+
+    /**
+     * 동적 문장 안내 — 프리셋 보이스가 켜져 있으면 즉석 합성(캐시 우선)으로, 아니면 내장 TTS.
+     * 합성 실패·지연 시엔 내장 TTS 폴백이라 안내가 유실되지 않는다.
+     */
+    fun announceDynamic(
+        text: String,
+        onDone: (() -> Unit)? = null,
+        priority: SpeechPriority = SpeechPriority.STATUS,
+    ) {
+        val voice = dynamicVoiceKey
+        if (voice == null || SpeechCatalog.assetIdFor(text) != null) {
+            announce(text, onDone, priority)
+            return
+        }
+        val active = activeSpeechPriority
+        if (active != null && active.level > priority.level) {
+            // 높은 우선순위가 진행 중 — 기존 규칙 그대로 (onDone 없으면 버리고, 있으면 TTS 큐로)
+            announce(text, onDone, priority)
+            return
+        }
+        val cached = dynamicCacheFile(voice, text)
+        if (cached.exists() && startDynamicPlayback(cached, text, onDone, priority)) return
+        val fetcher = dynamicSpeechFetcher
+        if (fetcher == null) {
+            announce(text, onDone, priority)
+            return
+        }
+        dynamicFetchExecutor.execute {
+            val ready = runCatching {
+                if (!cached.exists()) {
+                    fetcher(text, voice)?.let { bytes ->
+                        cached.parentFile?.mkdirs()
+                        cached.writeBytes(bytes)
+                    }
+                }
+                cached.exists()
+            }.getOrDefault(false)
+            transitionHandler.post {
+                val activeNow = activeSpeechPriority
+                if (activeNow != null && activeNow.level > priority.level && onDone == null) return@post
+                if (!ready || !startDynamicPlayback(cached, text, onDone, priority)) {
+                    announce(text, onDone, priority)
+                }
+            }
+        }
+    }
+
+    private fun startDynamicPlayback(
+        file: File,
+        text: String,
+        onDone: (() -> Unit)?,
+        priority: SpeechPriority,
+    ): Boolean {
+        val id = "announce_${utteranceCounter.incrementAndGet()}"
+        if (onDone != null) utteranceCallbacks[id] = onDone
+        utterancePriorities[id] = priority
+        if (playCachedFile(file, id, priority)) return true
+        utterancePriorities.remove(id)
+        utteranceCallbacks.remove(id)
+        Log.w(TAG, "동적 캐시 재생 실패 — TTS 폴백: ${text.take(20)}")
+        return false
     }
 
     /** 진행 중인 프리캐싱 재생을 끊는다 — 완료 콜백은 반드시 호출된다. */
