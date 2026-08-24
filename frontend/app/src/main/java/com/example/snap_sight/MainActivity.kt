@@ -481,6 +481,12 @@ class MainActivity : ComponentActivity() {
         guidanceFeedback.readyGate = { selfieGaze.readyBlockReason() }
         guidanceFeedback.applySettings(settingsUiState) // 저장된 설정값을 시작부터 반영
 
+        // 첫 화면(온보딩) 사용법 안내 — 탭 문법을 모르는 최초 사용자를 위한 1회 멘트.
+        // TTS 초기화 전이면 GuidanceFeedback 이 보관했다가 준비되는 즉시 말한다.
+        if (currentScreen == AppScreen.ONBOARDING) {
+            guidanceFeedback.announce("두 번 터치하면 다음으로, 꾹 누르면 뒤로가기 입니다.")
+        }
+
         // 이름 가림은 첫 발화부터 준비돼 있어야 한다. 등록 DB는 소규모이므로 UI/세션을 열기 전에
         // 동기 로드하고, 상대적으로 덜 긴급한 사진 라벨 인덱스만 백그라운드에서 읽는다.
         reloadRegisteredIdentities(threadName = "SnapSight-IdentityNames-Initial")
@@ -693,6 +699,8 @@ class MainActivity : ComponentActivity() {
                                 identityName = localIdentityName,
                                 forceNewGeneration = true,
                             )
+                            // 등록 이름은 스펙 도착 전에도 탐색 안내에 바로 쓴다
+                            localIdentityName?.let { guidanceFeedback.setSessionSubject(it) }
                             if (localIdentityName == null) {
                                 guidanceText = "촬영 요청을 확인하고 있어요"
                             }
@@ -2131,6 +2139,12 @@ class MainActivity : ComponentActivity() {
             targetSpecPending = false
             generation
         }
+        // 탐색·이탈 안내 문장의 피사체 이름 (스크립트 상태 3) — 등록 이름 > 발화 라벨 한글명 > "피사체"
+        val subjectKorean = when {
+            effectiveSpec?.subjectType == TargetSpec.SubjectType.PERSON -> "사람"
+            else -> effectiveSpec?.objectLabel?.let { KOREAN_LABELS[it.trim().lowercase()] }
+        }
+        guidanceFeedback.setSessionSubject(identityName ?: subjectKorean)
         synchronized(targetIntentLock) {
             if (!cvProcessor.isCurrentTargetIntentGeneration(appliedGeneration)) return
             val appliedMode = AimingGuidanceModeResolver.resolve(

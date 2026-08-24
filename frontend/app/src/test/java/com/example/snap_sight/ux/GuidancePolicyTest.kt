@@ -247,28 +247,79 @@ class GuidancePolicyTest {
     @Test
     fun `brief loss is silent`() {
         val policy = GuidancePolicy()
-        assertTrue(policy.feed(lostResult, now = 0).isEmpty())
-        assertTrue(policy.feed(lostResult, now = GuidancePolicy.LOST_DEBOUNCE_MS - 1).isEmpty())
-        // 다시 찾으면 에피소드 종료 — 아무 것도 안 나갔다
-        val back = policy.feed(result(0.3f, 0f), now = GuidancePolicy.LOST_DEBOUNCE_MS + 100)
+        // 한 번 검출된 뒤의 이탈만 LOST 정책 — 첫 검출 전은 탐색 안내가 담당한다
+        policy.feed(result(0.3f, 0f), now = 0)
+        assertTrue(policy.feed(lostResult, now = 100).isEmpty())
+        assertTrue(policy.feed(lostResult, now = 100 + GuidancePolicy.LOST_DEBOUNCE_MS - 1).isEmpty())
+        // 다시 찾으면 에피소드 종료 — 아무 것도 안 나갔고 방향 안내가 바로 재개된다
+        val back = policy.feed(result(0.3f, 0f), now = 1_500)
         assertEquals(listOf(GuidanceDirection.RIGHT.utterance), speech(back))
     }
 
     @Test
     fun `sustained loss beeps at intervals and speaks only once much later`() {
         val policy = GuidancePolicy()
-        policy.feed(lostResult, now = 0)
-        val first = policy.feed(lostResult, now = GuidancePolicy.LOST_DEBOUNCE_MS)
+        policy.feed(result(0.3f, 0f), now = 0) // 검출 후 이탈이어야 LOST 정책
+        val lostAt = 100L
+        policy.feed(lostResult, now = lostAt)
+        val first = policy.feed(lostResult, now = lostAt + GuidancePolicy.LOST_DEBOUNCE_MS)
         assertEquals(listOf(GuidanceAction.WarningTone), first)
-        assertTrue(policy.feed(lostResult, now = GuidancePolicy.LOST_DEBOUNCE_MS + 1_000).isEmpty())
-        val second = policy.feed(lostResult, now = GuidancePolicy.LOST_DEBOUNCE_MS + GuidancePolicy.LOST_TONE_INTERVAL_MS)
+        assertTrue(policy.feed(lostResult, now = lostAt + GuidancePolicy.LOST_DEBOUNCE_MS + 1_000).isEmpty())
+        val second = policy.feed(
+            lostResult,
+            now = lostAt + GuidancePolicy.LOST_DEBOUNCE_MS + GuidancePolicy.LOST_TONE_INTERVAL_MS,
+        )
         assertEquals(listOf(GuidanceAction.WarningTone), second)
 
-        val spoken = policy.feed(lostResult, now = GuidancePolicy.LOST_SPEAK_AFTER_MS)
+        val spoken = policy.feed(lostResult, now = lostAt + GuidancePolicy.LOST_SPEAK_AFTER_MS)
         assertTrue(spoken.contains(GuidanceAction.Speak(GuidancePolicy.LOST_UTTERANCE)))
         // 이후 같은 에피소드에서는 음성 반복 없음 (톤만)
-        val later = policy.feed(lostResult, now = GuidancePolicy.LOST_SPEAK_AFTER_MS + GuidancePolicy.LOST_TONE_INTERVAL_MS)
+        val later = policy.feed(
+            lostResult,
+            now = lostAt + GuidancePolicy.LOST_SPEAK_AFTER_MS + GuidancePolicy.LOST_TONE_INTERVAL_MS,
+        )
         assertEquals(listOf(GuidanceAction.WarningTone), later)
+    }
+
+    // ---- 탐색 안내 (노션 스크립트 상태 3, 2026-08-24) ----
+
+    @Test
+    fun `initial searching hints then announces found without any tones`() {
+        val policy = GuidancePolicy()
+        assertTrue(policy.feed(lostResult, now = 0).isEmpty())
+        assertTrue(policy.feed(lostResult, now = 1_000).isEmpty())
+        val hint = policy.feed(lostResult, now = GuidancePolicy.SEARCH_HINT_AFTER_MS)
+        assertEquals(listOf("피사체가 아직 안 보여요. 좌우로 천천히 움직여 주세요."), speech(hint))
+        assertTrue(hint.none { it == GuidanceAction.WarningTone })
+        val fail = policy.feed(lostResult, now = GuidancePolicy.SEARCH_FAIL_AFTER_MS)
+        assertEquals(listOf("피사체를 못 찾았어요. 더 찾을까요, 다른 대상을 고를까요?"), speech(fail))
+        val found = policy.feed(result(0.3f, 0f), now = GuidancePolicy.SEARCH_FAIL_AFTER_MS + 1_000)
+        assertEquals(listOf("피사체를 찾았어요."), speech(found))
+    }
+
+    @Test
+    fun `subject name flows into search sentences with correct josa`() {
+        val policy = GuidancePolicy()
+        policy.setSubject("강아지")
+        policy.feed(lostResult, now = 0)
+        val hint = policy.feed(lostResult, now = GuidancePolicy.SEARCH_HINT_AFTER_MS)
+        assertEquals(listOf("강아지가 아직 안 보여요. 좌우로 천천히 움직여 주세요."), speech(hint))
+        val found = policy.feed(result(0.3f, 0f), now = GuidancePolicy.SEARCH_HINT_AFTER_MS + 1_000)
+        assertEquals(listOf("강아지를 찾았어요."), speech(found))
+    }
+
+    @Test
+    fun `refind after spoken lost announces once and immediate detection start skips found`() {
+        val policy = GuidancePolicy()
+        // 시작부터 보이면 "찾았어요" 없이 방향 안내로 직행 (탐색 단계가 없었음)
+        val direct = policy.feed(result(0.3f, 0f), now = 0)
+        assertEquals(listOf(GuidanceDirection.RIGHT.utterance), speech(direct))
+        // 긴 이탈로 "벗어났어요"까지 나간 뒤 재검출 → "다시 찾았어요." 1회
+        val lostAt = 100L
+        policy.feed(lostResult, now = lostAt)
+        policy.feed(lostResult, now = lostAt + GuidancePolicy.LOST_SPEAK_AFTER_MS)
+        val refound = policy.feed(result(0.3f, 0f), now = lostAt + GuidancePolicy.LOST_SPEAK_AFTER_MS + 500)
+        assertEquals(listOf(GuidancePolicy.REFIND_UTTERANCE), speech(refound))
     }
 
     @Test
