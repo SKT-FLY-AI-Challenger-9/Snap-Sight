@@ -331,15 +331,33 @@ class GuidanceFeedback(context: Context) : DeviationListener {
             return
         }
         val flush = active == null || priority.level >= active.level
+
+        // 한 앱 한 목소리: ① 확정 문장은 프리캐싱 음원, ② 그 외 문장은 즉석 합성(캐시 우선),
+        // ③ 프리셋이 기본이거나 합성 불가·실패면 내장 TTS. FLUSH 상황에서만 음원 경로를 탄다
+        // (진행 중인 높은 우선순위 발화 뒤에 이어 붙이는 드문 경우는 내장 TTS 큐가 처리).
+        val assetId = voiceAssetDir?.let { SpeechCatalog.assetIdFor(text) }
+        if (flush && assetId != null) {
+            val id = "announce_${utteranceCounter.incrementAndGet()}"
+            if (onDone != null) utteranceCallbacks[id] = onDone
+            utterancePriorities[id] = priority
+            if (playPrecached(assetId, id, priority)) return
+            utterancePriorities.remove(id)
+            utteranceCallbacks.remove(id)
+        }
+        if (flush && assetId == null && scheduleDynamic(text, onDone, priority)) return
+
+        speakWithTts(text, onDone, priority, flush)
+    }
+
+    private fun speakWithTts(
+        text: String,
+        onDone: (() -> Unit)?,
+        priority: SpeechPriority,
+        flush: Boolean,
+    ) {
         val id = "announce_${utteranceCounter.incrementAndGet()}"
         if (onDone != null) utteranceCallbacks[id] = onDone
         utterancePriorities[id] = priority
-
-        // 프리캐싱 음원 — 확정 문장 + 보이스 프리셋 + FLUSH 상황에서만 쓴다.
-        // (진행 중인 높은 우선순위 발화 뒤에 이어 붙이는 드문 경우는 내장 TTS 큐가 처리)
-        val assetId = voiceAssetDir?.let { SpeechCatalog.assetIdFor(text) }
-        if (flush && assetId != null && playPrecached(assetId, id, priority)) return
-
         val queueMode = if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
         if (flush) stopPrecached() // 진행 중인 음원 재생도 새 발화에 밀려난다 (스테일 음성 방지)
         val result = tts.speak(text, queueMode, null, id)
@@ -422,6 +440,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     fun prefetchDynamic(text: String) {
         val voice = dynamicVoiceKey ?: return
         if (text.isBlank() || SpeechCatalog.assetIdFor(text) != null) return
+        if (dynamicSpeechGate?.invoke(text) == false) return
         val fetcher = dynamicSpeechFetcher ?: return
         val target = dynamicCacheFile(voice, text)
         if (target.exists()) return
@@ -437,32 +456,38 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         }
     }
 
-    /**
-     * 동적 문장 안내 — 프리셋 보이스가 켜져 있으면 즉석 합성(캐시 우선)으로, 아니면 내장 TTS.
-     * 합성 실패·지연 시엔 내장 TTS 폴백이라 안내가 유실되지 않는다.
-     */
+    /** 동적 문장 안내 — 이제 [announce] 자체가 같은 일을 한다 (호출부 호환용 별칭). */
     fun announceDynamic(
         text: String,
         onDone: (() -> Unit)? = null,
         priority: SpeechPriority = SpeechPriority.STATUS,
-    ) {
-        val voice = dynamicVoiceKey
-        if (voice == null || SpeechCatalog.assetIdFor(text) != null) {
-            announce(text, onDone, priority)
-            return
-        }
-        val active = activeSpeechPriority
-        if (active != null && active.level > priority.level) {
-            // 높은 우선순위가 진행 중 — 기존 규칙 그대로 (onDone 없으면 버리고, 있으면 TTS 큐로)
-            announce(text, onDone, priority)
-            return
-        }
+    ) = announce(text, onDone, priority)
+
+    /**
+     * 이 문장을 서버 합성으로 보내도 되는가 — false 면 즉석 합성을 건너뛰고 내장 TTS.
+     * MainActivity 가 등록 이름 포함 여부로 연결한다 (등록 이름은 기기 밖으로 내보내지 않는다).
+     */
+    @Volatile
+    var dynamicSpeechGate: ((String) -> Boolean)? = null
+
+    /** 마지막 합성 실패 시각 — 오프라인에서 발화마다 타임아웃을 기다리지 않게 잠시 물러선다. */
+    @Volatile
+    private var lastDynamicFailureMs = Long.MIN_VALUE / 2
+
+    /** 즉석 합성 경로를 스케줄한다 — 맡았으면 true, 아니면 false(호출부가 TTS 로). */
+    private fun scheduleDynamic(
+        text: String,
+        onDone: (() -> Unit)?,
+        priority: SpeechPriority,
+    ): Boolean {
+        val voice = dynamicVoiceKey ?: return false
+        val fetcher = dynamicSpeechFetcher ?: return false
+        if (text.isBlank()) return false
+        if (dynamicSpeechGate?.invoke(text) == false) return false
         val cached = dynamicCacheFile(voice, text)
-        if (cached.exists() && startDynamicPlayback(cached, text, onDone, priority)) return
-        val fetcher = dynamicSpeechFetcher
-        if (fetcher == null) {
-            announce(text, onDone, priority)
-            return
+        if (cached.exists()) return startDynamicPlayback(cached, text, onDone, priority)
+        if (System.currentTimeMillis() - lastDynamicFailureMs < DYNAMIC_FAILURE_BACKOFF_MS) {
+            return false // 최근 실패(오프라인 등) — 바로 TTS 로
         }
         dynamicFetchExecutor.execute {
             val ready = runCatching {
@@ -474,14 +499,20 @@ class GuidanceFeedback(context: Context) : DeviationListener {
                 }
                 cached.exists()
             }.getOrDefault(false)
+            if (ready) {
+                lastDynamicFailureMs = Long.MIN_VALUE / 2
+            } else {
+                lastDynamicFailureMs = System.currentTimeMillis()
+            }
             transitionHandler.post {
                 val activeNow = activeSpeechPriority
                 if (activeNow != null && activeNow.level > priority.level && onDone == null) return@post
                 if (!ready || !startDynamicPlayback(cached, text, onDone, priority)) {
-                    announce(text, onDone, priority)
+                    speakWithTts(text, onDone, priority, flush = true)
                 }
             }
         }
+        return true
     }
 
     private fun startDynamicPlayback(
@@ -582,6 +613,8 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         const val NAV_TONE_GAP_MS = 110L
         /** 발화 완료 콜백을 이만큼 늦게 호출 — 스피커 잔향이 마이크에 잡히는 것을 줄인다. */
         const val TTS_ECHO_GUARD_MS = 250L
+        /** 즉석 합성 실패 후 이 시간 동안은 재시도 없이 바로 TTS — 오프라인 발화 지연 방지. */
+        const val DYNAMIC_FAILURE_BACKOFF_MS = 30_000L
         // 등록 스캔 시작/종료 — 전환 earcon(DTMF)·LOST 경고(BEEP2)와 겹치지 않는 음색
         const val SCAN_START_TONE = ToneGenerator.TONE_PROP_BEEP
         const val SCAN_END_TONE = ToneGenerator.TONE_PROP_ACK
