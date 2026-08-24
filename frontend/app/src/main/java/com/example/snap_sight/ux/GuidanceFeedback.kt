@@ -174,6 +174,9 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         rebuildToneGenerator()
     }
 
+    /** 탐색·이탈 안내 문장에 들어갈 피사체 이름 — 발화·스펙이 해석되는 대로 호출 (null이면 "피사체"). */
+    fun setSessionSubject(word: String?) = policy.setSubject(word)
+
     /** 새 촬영 세션(AIMING 진입) — 이전 세션의 "이미 말했음" 상태를 지운다. */
     fun resetSession() {
         policy.reset()

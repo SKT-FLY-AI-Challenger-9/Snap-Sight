@@ -80,6 +80,16 @@ internal class GuidancePolicy(
     /** 하트비트 대상 상태에 처음 들어온 시각 — 진입 즉시가 아니라 지속될 때만 말하기 위한 기준. */
     private var heartbeatStateSinceMs: Long? = null
 
+    // ---- 탐색 안내 (노션 스크립트 상태 3) — 첫 검출 전의 "찾는 중" 단계 ----
+    /** 이번 세션에서 피사체를 한 번이라도 검출했는가 — 전이면 탐색 안내, 후면 LOST 정책. */
+    private var subjectEverDetected = false
+    /** 탐색(무검출) 시작 시각 — t2/t3 안내 타이밍 기준. */
+    private var searchingSinceMs: Long? = null
+    private var searchHintSpoken = false
+    private var searchFailSpoken = false
+    /** 안내 문장에 넣을 피사체 이름 (예: "강아지") — 세션마다 [setSubject]로 갱신. */
+    private var subjectWord: String = DEFAULT_SUBJECT
+
     /** 새 세션 시작 — 이전 세션의 "이미 말했음" 상태를 지운다. */
     @Synchronized
     fun reset() {
@@ -94,6 +104,17 @@ internal class GuidancePolicy(
         lastReadyBlockedSpokenAtMs = Long.MIN_VALUE / 2
         lastSpokenAtMs = Long.MIN_VALUE / 2
         heartbeatStateSinceMs = null
+        subjectEverDetected = false
+        searchingSinceMs = null
+        searchHintSpoken = false
+        searchFailSpoken = false
+        subjectWord = DEFAULT_SUBJECT
+    }
+
+    /** 이번 세션의 피사체 이름 — 발화·스펙이 해석되는 대로 호출한다 (null/공백이면 "피사체"). */
+    @Synchronized
+    fun setSubject(word: String?) {
+        subjectWord = word?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_SUBJECT
     }
 
     /**
@@ -126,11 +147,32 @@ internal class GuidancePolicy(
     ): GuidanceDecision {
         val readiness = readinessEvaluator.evaluate(result, nowMs)
         fun decision(actions: List<GuidanceAction>) = GuidanceDecision(readiness, actions)
-        if (!state.detected) return decision(onLost(nowMs))
+        if (!state.detected) {
+            // 첫 검출 전에는 "벗어났어요"(LOST)가 아니라 탐색 안내(t2/t3)를 쓴다 — 비프 없음
+            return decision(if (subjectEverDetected) onLost(nowMs) else onSearching(nowMs))
+        }
 
+        // 첫 검출 — 탐색 단계가 실제로 있었을 때만 "찾았어요"를 말한다 (스크립트 3-1).
+        // 세션 시작부터 바로 보였다면 방향 안내가 곧장 시작되는 것으로 충분하다.
+        if (!subjectEverDetected) {
+            subjectEverDetected = true
+            val searched = searchingSinceMs != null
+            searchingSinceMs = null
+            if (searched) {
+                lastSpokenAtMs = nowMs
+                return decision(listOf(GuidanceAction.Speak(subjectFoundUtterance())))
+            }
+        }
+
+        // 재탐지 — 이탈 안내(f6)까지 나갔던 긴 LOST 에서 돌아오면 1회 알린다 (스크립트 4-10)
+        val refound = lostSpoken
         // 다시 찾음 — LOST 에피소드 종료
         lostSinceMs = null
         lostSpoken = false
+        if (refound) {
+            lastSpokenAtMs = nowMs
+            return decision(listOf(GuidanceAction.Speak(REFIND_UTTERANCE)))
+        }
 
         if (readiness.ready) {
             if (readyBlockedReason != null) {
@@ -205,6 +247,44 @@ internal class GuidancePolicy(
         return listOf(GuidanceAction.Speak(text))
     }
 
+    /**
+     * 첫 검출 전의 탐색 단계 (노션 스크립트 3-2/3-3) — 경고음 없이 음성만.
+     * [SEARCH_HINT_AFTER_MS] 뒤 "아직 안 보여요" 1회, [SEARCH_FAIL_AFTER_MS] 뒤 "못 찾았어요" 1회.
+     */
+    private fun onSearching(nowMs: Long): List<GuidanceAction> {
+        readySpokenThisEpisode = false
+        lastDirection = null
+        heartbeatStateSinceMs = null
+        val since = searchingSinceMs ?: run { searchingSinceMs = nowMs; return emptyList() }
+        if (!searchHintSpoken && nowMs - since >= SEARCH_HINT_AFTER_MS) {
+            searchHintSpoken = true
+            lastSpokenAtMs = nowMs
+            return listOf(GuidanceAction.Speak(subjectSearchingUtterance()))
+        }
+        if (!searchFailSpoken && nowMs - since >= SEARCH_FAIL_AFTER_MS) {
+            searchFailSpoken = true
+            lastSpokenAtMs = nowMs
+            return listOf(GuidanceAction.Speak(subjectNotFoundUtterance()))
+        }
+        return emptyList()
+    }
+
+    // 탐색 안내 문장 — SpeechCatalog 의 피사체 변형 음원과 완전 일치해야 한다 (조사 포함)
+    private fun subjectFoundUtterance() = "$subjectWord${josa("을", "를")} 찾았어요."
+    private fun subjectSearchingUtterance() =
+        "$subjectWord${josa("이", "가")} 아직 안 보여요. 좌우로 천천히 움직여 주세요."
+    private fun subjectNotFoundUtterance() =
+        "$subjectWord${josa("을", "를")} 못 찾았어요. 더 찾을까요, 다른 대상을 고를까요?"
+    private fun subjectLostUtterance() =
+        "$subjectWord${josa("이", "가")} 화면에서 벗어났어요. 다시 찾을게요."
+
+    /** 받침 유무로 조사 선택 — 한글이 아니면 받침 없는 쪽(를/가)을 쓴다. */
+    private fun josa(withBatchim: String, withoutBatchim: String): String {
+        val last = subjectWord.lastOrNull() ?: return withoutBatchim
+        if (last !in '가'..'힣') return withoutBatchim
+        return if ((last - '가') % 28 != 0) withBatchim else withoutBatchim
+    }
+
     private fun onLost(nowMs: Long): List<GuidanceAction> {
         readySpokenThisEpisode = false
         lastDirection = null // 다시 찾으면 방향을 바로 말해준다
@@ -220,7 +300,9 @@ internal class GuidancePolicy(
         if (!lostSpoken && nowMs - since >= LOST_SPEAK_AFTER_MS) {
             lostSpoken = true
             lastSpokenAtMs = nowMs
-            actions.add(GuidanceAction.Speak(lostUtterance))
+            // 커스텀 lostUtterance 를 넘긴 호출자(테스트)는 존중, 기본값이면 피사체 이름을 넣는다
+            val text = if (lostUtterance == LOST_UTTERANCE) subjectLostUtterance() else lostUtterance
+            actions.add(GuidanceAction.Speak(text))
         }
         return actions
     }
@@ -250,9 +332,15 @@ internal class GuidancePolicy(
     }
 
     companion object {
-        // 노션 확정 스크립트 문장 (5-1 READY / 4-9 이탈) — SpeechCatalog 프리캐싱 음원과 일치
+        // 노션 확정 스크립트 문장 (5-1 READY / 4-9 이탈 / 4-10 재탐지) — SpeechCatalog 음원과 일치
         const val READY_UTTERANCE = "좋아요. 촬영할 수 있어요."
         const val LOST_UTTERANCE = "피사체가 화면에서 벗어났어요. 다시 찾을게요."
+        const val REFIND_UTTERANCE = "다시 찾았어요."
+        const val DEFAULT_SUBJECT = "피사체"
+
+        /** 탐색(첫 검출 전) — "아직 안 보여요" / "못 찾았어요" 안내 시점 (스크립트 3-2/3-3). */
+        const val SEARCH_HINT_AFTER_MS = 4_000L
+        const val SEARCH_FAIL_AFTER_MS = 12_000L
 
         const val DIRECTION_REPEAT_MS = 2_500L
         const val DIRECTION_MIN_GAP_MS = 1_000L
