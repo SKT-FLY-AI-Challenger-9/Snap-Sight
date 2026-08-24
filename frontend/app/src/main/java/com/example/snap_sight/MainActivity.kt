@@ -1271,9 +1271,9 @@ class MainActivity : ComponentActivity() {
         guidanceFeedback.playScreenEnter()
         val firstVisit = visitedScreens.add(screen)
         val message = when (screen) {
+            // 설정은 매 진입마다 무엇을 바꿀 수 있는지 알려준다 (사용자 요청 2026-08-24)
             AppScreen.SETTINGS ->
-                if (firstVisit) "설정 화면입니다. 진동, 사운드, 음성 속도를 조절할 수 있어요"
-                else "설정 화면입니다"
+                "설정 화면입니다. 이곳에서 음성 가이드, 속도, 진동 강도를 변경할 수 있어요"
             AppScreen.GALLERY ->
                 if (firstVisit) {
                     "갤러리입니다. 사진이 분류별 폴더로 정리돼 있고, " +
