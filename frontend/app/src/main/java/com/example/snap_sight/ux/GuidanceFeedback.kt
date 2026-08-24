@@ -50,6 +50,33 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     private val appContext = context.applicationContext
     private val policy = GuidancePolicy()
 
+    // ---- TalkBack 공존 (2026-08-24) ----
+    // 스크린리더(탐색 터치)가 켜져 있으면 TalkBack 낭독과 우리 앱 음성이 겹쳐 들린다.
+    // 그동안은 앱의 모든 발화를 잠근다 — 진동·earcon·셔터음은 겹침이 없어 그대로 두고,
+    // 발화 뒤 순서 연쇄(onDone: 안내 후 STT 시작 등)는 즉시 이어가 흐름이 멈추지 않게 한다.
+    // 탐색 터치는 TalkBack 류 스크린리더가 켜졌을 때만 활성화되는 신호라 오탐이 적다.
+    private val accessibilityManager = appContext.getSystemService(Context.ACCESSIBILITY_SERVICE)
+        as? android.view.accessibility.AccessibilityManager
+
+    @Volatile
+    private var screenReaderActive: Boolean =
+        accessibilityManager?.isTouchExplorationEnabled == true
+
+    private val touchExplorationListener =
+        android.view.accessibility.AccessibilityManager.TouchExplorationStateChangeListener { enabled ->
+            screenReaderActive = enabled
+            Log.i(
+                TAG,
+                if (enabled) "탐색 터치(스크린리더) 감지 — 앱 음성 잠금"
+                else "탐색 터치 해제 — 앱 음성 재개",
+            )
+        }
+
+    init {
+        accessibilityManager?.addTouchExplorationStateChangeListener(touchExplorationListener)
+        if (screenReaderActive) Log.i(TAG, "시작 시점에 스크린리더 감지 — 앱 음성 잠금 상태로 시작")
+    }
+
     /**
      * true 를 돌려주면 "너무 작음(CLOSER)"은 자동 줌인이 처리 중인 것으로 보고 "가까이"를 말하지 않는다.
      * MainActivity 가 `AutoZoomController.canZoomIn` 으로 연결한다. 분석 스레드에서 호출된다.
@@ -63,6 +90,13 @@ class GuidanceFeedback(context: Context) : DeviationListener {
      */
     @Volatile
     var readyGate: (() -> String?)? = null
+
+    /**
+     * 음식 세션의 폰 각도 편차(목표각 - 현재각, 도)를 돌려주는 훅 — null 이면 피치 안내 없음.
+     * MainActivity 가 음식 세션 판정 + TiltSensorMonitor 로 연결한다. 분석 스레드에서 호출된다.
+     */
+    @Volatile
+    var pitchDeviation: (() -> Float?)? = null
 
     @Volatile
     private var ttsReady = false
@@ -235,6 +269,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
             state, result, nowMs,
             zoomHandlesDistance = zoomHandles,
             readyBlockedReason = readyGate?.invoke(),
+            pitchDeviationDeg = pitchDeviation?.invoke(),
         )
         for (action in decision.actions) {
             when (action) {
@@ -348,6 +383,12 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         onDone: (() -> Unit)? = null,
         priority: SpeechPriority = SpeechPriority.STATUS,
     ) {
+        if (screenReaderActive) {
+            // TalkBack 낭독과 겹치지 않게 침묵 — 순서 연쇄(onDone)는 반드시 이어간다.
+            // 발화가 없으니 안내 음성이 마이크에 섞일 일도 없다.
+            onDone?.let { done -> transitionHandler.post { done() } }
+            return
+        }
         if (!ttsReady) {
             if (!ttsInitFailed) {
                 // 초기화 중 — 보관했다가 준비되면 말한다 (나중 것이 먼저 것을 대체)
@@ -470,6 +511,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
      * 셔터 직후 온디바이스 요약처럼 "곧 말할 문장"이 정해지는 즉시 호출한다.
      */
     fun prefetchDynamic(text: String) {
+        if (screenReaderActive) return // 어차피 말하지 않을 문장 — 합성 비용 절약
         val voice = dynamicVoiceKey ?: return
         if (text.isBlank() || SpeechCatalog.assetIdFor(text) != null) return
         if (dynamicSpeechGate?.invoke(text) == false) return
@@ -626,6 +668,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
 
     /** Activity onDestroy 등에서 호출 — TTS/톤/음원 리소스 해제. */
     fun release() {
+        accessibilityManager?.removeTouchExplorationStateChangeListener(touchExplorationListener)
         tts.stop()
         tts.shutdown()
         stopPrecached()

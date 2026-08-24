@@ -43,6 +43,8 @@ import com.example.snap_sight.camera.FrameScorer
 import com.example.snap_sight.camera.GalleryPhoto
 import com.example.snap_sight.camera.PhotoLibrary
 import com.example.snap_sight.camera.MissingSubjectNotice
+import com.example.snap_sight.camera.PortraitAutoCrop
+import com.example.snap_sight.camera.TiltSensorMonitor
 import com.example.snap_sight.camera.RingFrameBuffer
 import com.example.snap_sight.camera.SessionState
 import com.example.snap_sight.cv.ByteTrackLiteConfig
@@ -73,6 +75,7 @@ import com.example.snap_sight.cv.SnapSightFrameProcessor
 import com.example.snap_sight.cv.TargetLockConfig
 import com.example.snap_sight.cv.TargetSelectionState
 import com.example.snap_sight.cv.TfLiteDetectorConfig
+import com.example.snap_sight.cv.SlotParser
 import com.example.snap_sight.cv.SpecDeviationCalculator
 import com.example.snap_sight.cv.TrackedObject
 import com.example.snap_sight.cv.TargetLockStats
@@ -97,12 +100,14 @@ import com.example.snap_sight.search.PhotoQuery
 import com.example.snap_sight.search.PhotoQueryParser
 import com.example.snap_sight.search.PhotoSearchEngine
 import com.example.snap_sight.stt.SpeechToTextRecognizer
+import com.example.snap_sight.ux.AutoCaptureArbiter
 import com.example.snap_sight.ux.CaptureScreen
 import com.example.snap_sight.ux.CaptureAnnouncementBuilder
 import com.example.snap_sight.ux.GALLERY_ALL_FOLDER
 import com.example.snap_sight.ux.GalleryScreen
 import com.example.snap_sight.ux.PhotoViewerScreen
 import com.example.snap_sight.ux.GuidanceFeedback
+import com.example.snap_sight.ux.GuidancePolicy
 import com.example.snap_sight.ux.GuidanceTextStabilizer
 import com.example.snap_sight.ux.HomeScreen
 import com.example.snap_sight.ux.ResultScreen
@@ -213,6 +218,26 @@ class MainActivity : ComponentActivity() {
 
     // 셀카 모드 시선 판정 — 전면 카메라일 때만 켜진다 (CaptureScreen onLensChanged 로 토글)
     private val selfieGaze = SelfieGazeMonitor()
+
+    /**
+     * 자동촬영 중재자 (2026-08-24) — 등록 이름·objectLabel 로 대상이 명확한 세션에서
+     * 대상 검출이 이어지면 셔터를 세션당 1회 요청한다. 타겟 세대마다
+     * [resetTargetDerivedStateLocked] 에서 리셋된다. 풍경·일반 촬영은 기존 두 번 탭
+     * 수동 촬영 그대로다.
+     */
+    private val autoCapture = AutoCaptureArbiter()
+
+    /**
+     * 음식 세션 여부 (2026-08-25) — 발화의 objectLabel 이 음식류이거나 원문에 음식 키워드가
+     * 있으면 true. GuidancePolicy 가 폰 각도(45°) 안내를 켜는 무장(arm) 신호이며, 실제 검출이
+     * 확정(confirm)한다. 자동촬영도 각도가 맞기 전에는 발동하지 않는다.
+     */
+    @Volatile
+    private var foodPitchSession = false
+
+    /** 인물(subjectType=person 또는 등록 이름) 세션 — 자동촬영 승자 컷에 3분할 크롭 적용. */
+    @Volatile
+    private var portraitCropEligible = false
 
     /** 인물 인식 + 사물 인식 + 셀카 시선 판정을 한 훅으로 묶는다 (분석 스레드에서 순차 실행). */
     private val faceAnalyzers = object : FaceFrameAnalyzer {
@@ -482,6 +507,20 @@ class MainActivity : ComponentActivity() {
         }
         // 셀카 모드: 구도가 맞아도 시선이 카메라를 벗어나 있으면 "지금 촬영하세요"를 보류하고 사유를 말한다
         guidanceFeedback.readyGate = { selfieGaze.readyBlockReason() }
+        // 음식 피치 안내 (2026-08-25): TiltSensorMonitor 는 listener 가 있어야 샘플링을 시작한다.
+        // 값 소비는 아래 훅이 @Volatile property 로 직접 읽으므로 리스너 본문은 비워 둔다.
+        sessionManager.tiltMonitor.listener = TiltSensorMonitor.Listener { _, _ -> }
+        guidanceFeedback.pitchDeviation = {
+            if (foodPitchSession) {
+                FOOD_TARGET_PITCH_DEG - sessionManager.tiltMonitor.pitchDegrees
+            } else {
+                null
+            }
+        }
+        // 인물 세션의 자동촬영 승자 컷은 얼굴 3분할 크롭으로 마무리한다 (연사 채점 스레드에서 호출)
+        cameraController.burstFinisher = { file ->
+            if (portraitCropEligible) PortraitAutoCrop.apply(file) else null
+        }
         guidanceFeedback.applySettings(settingsUiState) // 저장된 설정값을 시작부터 반영
         // 동적 문장(촬영 요약·사진 설명)도 프리셋 보이스로 — 백엔드 SKT 프록시 즉석 합성 연결.
         // 등록 이름이 든 문장은 서버로 보내지 않는다(프라이버시 계약) — 그 문장만 내장 TTS.
@@ -703,6 +742,23 @@ class MainActivity : ComponentActivity() {
                 val serverText = serverSafeUtterance(text)
                 sessionRawText = text // 시안(v31): 해석하는 동안 홈 마이크 아래에 발화 원문을 보여준다
                 currentRawText = serverText
+                // 하이브리드 1단계: 서버로 보낼 문장과 같은 문장을 규칙 기반 파서(SlotParser,
+                // ai/slot_parser.py 포팅)로 기기에서 먼저 해석한다. 신호가 잡히면(status=ok)
+                // 서버 왕복(수 초 + 네트워크 의존) 없이 즉시 조준을 시작한다 — 서버가 죽어 있어도
+                // 키워드에 걸리는 발화는 일반 촬영 모드로 떨어지지 않는다. 규칙이 못 알아들은
+                // 발화만 아래의 백엔드 LLM 폴백(ai/llm_fallback.py)으로 넘긴다.
+                val localSpec = SlotParser.parse(serverText, sessionId)
+                if (localSpec.isActionable) {
+                    Log.i(
+                        TAG,
+                        "온디바이스 타겟 스펙 확정 [$sessionId]: " +
+                            "type=${localSpec.subjectType.wire}, " +
+                            "label=${localSpec.objectLabel}, " +
+                            "confidence=${localSpec.confidence} — 서버 왕복 생략",
+                    )
+                    applyTargetSpecIfStillAiming(sessionId, localSpec, localRawText = text)
+                    return
+                }
                 // 등록 이름("유재석 찍어줘")은 STT 원문만으로 기기에서 바로 안다 — 백엔드 스펙(수 초)을
                 // 기다리는 동안에도 오버레이·조준 대상을 그 이름으로 좁힌다 (2026-08-23)
                 if (sessionManager.sessionId == sessionId && sessionManager.state == SessionState.AIMING) {
@@ -2113,6 +2169,9 @@ class MainActivity : ComponentActivity() {
         guidanceFeedback.resetSession()
         guidanceTextStabilizer.reset()
         deviationCalculator.reset()
+        autoCapture.reset()
+        foodPitchSession = false
+        portraitCropEligible = false
         currentIdentities = emptyMap()
         synchronized(cvSnapshotLock) {
             latestObservedObjects = emptyList()
@@ -2124,6 +2183,11 @@ class MainActivity : ComponentActivity() {
         lastAimingVerdictAtMs = 0L
         lastAimingSubjectDetected = false
     }
+
+    /** 음식 세션이면 폰 각도가 목표(45°) 허용 오차 안일 때만 true — 자동촬영 게이트. */
+    private fun foodPitchSatisfied(): Boolean = !foodPitchSession ||
+        kotlin.math.abs(FOOD_TARGET_PITCH_DEG - sessionManager.tiltMonitor.pitchDegrees) <=
+        GuidancePolicy.PITCH_TOLERANCE_DEG
 
     private fun applyTargetSpecIfStillAiming(
         sessionId: String,
@@ -2172,6 +2236,15 @@ class MainActivity : ComponentActivity() {
                 KOREAN_LABELS[label.trim().lowercase()] ?: label
             }
         }
+        // 음식 세션 판정 — 발화가 무장(arm)하고 실제 검출이 확정(confirm)한다 (2026-08-25).
+        // 인물이 함께 지정된 발화("케이크 든 사람")는 subjectType 이 object 가 아니므로 제외된다.
+        foodPitchSession = effectiveSpec?.subjectType == TargetSpec.SubjectType.OBJECT &&
+            (effectiveSpec.objectLabel in FOOD_LABELS ||
+                FOOD_KEYWORDS.any { (localRawText ?: serverRawText).contains(it) })
+        // 인물 세션이면 자동촬영 승자 컷에 3분할 크롭을 건다 (등록 사물 이름은 얼굴이 없어
+        // 크롭이 스스로 건너뛰므로 identityName 포함이 안전하다)
+        portraitCropEligible = effectiveSpec?.subjectType == TargetSpec.SubjectType.PERSON ||
+            identityName != null
         guidanceFeedback.setSessionSubject(identityName ?: subjectKorean)
         synchronized(targetIntentLock) {
             if (!cvProcessor.isCurrentTargetIntentGeneration(appliedGeneration)) return
@@ -2306,6 +2379,41 @@ class MainActivity : ComponentActivity() {
             lastAimingVerdictAtMs = output.timestampMs
             lastAimingSubjectDetected = it.subjectDetected
             verdict
+        }
+
+        // ⑤-b 자동촬영 (2026-08-24) — 등록 이름·objectLabel 로 대상이 명확한 세션에서만,
+        // 그 대상이 화면에 연속으로 잡혀 있으면 두 번 탭 없이 셔터를 요청한다. 구도 READY 는
+        // 요구하지 않는다("잡히면 찍는다" — READY 를 걸면 구도가 안 나올 때 영영 미발동).
+        // 예고 발화 없이 셔터 효과음만 낸다.
+        // 풍경(LANDSCAPE)·일반 촬영(GENERAL_WAITING)은 eligible=false 라 수동 촬영 그대로다.
+        if (sessionManager.state == SessionState.AIMING) {
+            val autoEligible = guidanceMode == AimingGuidanceMode.COMPOSITION &&
+                (output.targetIdentityName != null || output.targetSpec?.objectLabel != null)
+            val fire = autoCapture.onJudgment(
+                eligible = autoEligible,
+                // 지정 대상 검출(존재 진동과 같은 신호) + 셀카 시선 게이트 + 음식 세션은
+                // 폰 각도까지 이번 판정에서 통과해야 유지 시간이 쌓인다
+                detected = deviation?.subjectDetected == true &&
+                    selfieGaze.readyBlockReason() == null &&
+                    foodPitchSatisfied(),
+                nowMs = output.timestampMs,
+            )
+            if (fire) {
+                val expectedSessionId = sessionManager.sessionId
+                val generation = output.targetIntentGeneration
+                Log.i(
+                    TAG,
+                    "자동촬영 발동 [$expectedSessionId] — 대상 검출 " +
+                        "${AutoCaptureArbiter.AUTO_CAPTURE_HOLD_MS}ms 유지",
+                )
+                runOnUiThread {
+                    // 판정(분석 스레드)과 셔터 사이에 타겟 세대·세션이 바뀌었으면 무효 —
+                    // 수동 두 번 탭과 겹쳐도 autoShutter 의 AIMING 가드가 이중 촬영을 막는다
+                    if (cvProcessor.isCurrentTargetIntentGeneration(generation)) {
+                        sessionManager.autoShutter(expectedSessionId)
+                    }
+                }
+            }
         }
 
         // 세션 배율은 1.0배로 고정돼 있다 (AutoZoomController.SESSION_START_ZOOM == BASE_ZOOM,
@@ -2851,6 +2959,19 @@ class MainActivity : ComponentActivity() {
             "케이크", "빵", "디저트", "밥", "식사", "요리", "접시", "식탁", "메뉴",
             "과일", "파스타", "피자", "치킨", "샐러드", "맥주", "와인",
         )
+
+        /**
+         * 음식 피치 안내 (2026-08-25) — 발화 objectLabel 이 이 taxonomy 라벨이면 음식 세션.
+         * 원문 키워드([FOOD_KEYWORDS])와 함께 무장 신호로 쓴다.
+         */
+        private val FOOD_LABELS = setOf(
+            "cake", "pizza", "donut", "hamburger", "sushi", "pie", "cookies", "ice cream",
+            "steak", "pasta", "noodles", "egg tart", "french fries", "hot dog", "sandwich",
+            "sausage", "cheese", "egg", "bread", "dessert",
+        )
+
+        /** 음식 세션의 목표 폰 각도 — 45° 비스듬 샷 (탑다운 90°는 조준 난도가 높아 후속). */
+        private const val FOOD_TARGET_PITCH_DEG = 45f
         const val CV_TAG = "SnapSightCV"
         const val PREFS_NAME = "snap_sight_prefs"
         const val KEY_ONBOARDING_DONE = "onboarding_done"

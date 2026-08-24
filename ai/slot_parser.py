@@ -1,3 +1,11 @@
+"""규칙 기반 슬롯 파서 — 하이브리드 해석의 참조 구현.
+
+frontend `cv/SlotParser.kt` 는 이 파일의 Kotlin 포팅으로, 앱이 서버 왕복 전에 같은
+규칙을 기기에서 먼저 돌린다 (신호가 잡히면 서버 생략, 못 알아들은 발화만 LLM 폴백).
+키워드 표·규칙·confidence 산식을 고치면 반드시 양쪽을 함께 고친다 —
+`tests/test_slot_parser.py` 와 `SlotParserTest.kt` 가 각각 미러 검증한다.
+"""
+
 import re
 
 from ai.target_spec import Framing, SubjectType, TargetSpec, TargetSpecSource, TargetSpecStatus

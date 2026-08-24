@@ -190,6 +190,22 @@ class CaptureSessionManager(
         return true
     }
 
+    /**
+     * CV 자동촬영 경로 (메인 스레드) — 두 번 탭과 같은 셔터지만, 판정 시점의 세션이
+     * 아직 조준 중일 때만 동작한다. 판정(분석 스레드)과 셔터 사이에 세션이 취소·교체될
+     * 수 있어 세션 ID 를 함께 검사한다. 발동했으면 true.
+     *
+     * 자동촬영은 [AUTO_CAPTURE_BURST_COUNT]장 연사 후 가장 선명한 한 장만 저장한다
+     * (손이 계속 움직이는 조준 중에 터지는 셔터라 흔들린 컷 확률이 높다, 2026-08-24).
+     * 수동 두 번 탭은 기존처럼 1장이다.
+     */
+    fun autoShutter(expectedSessionId: String): Boolean {
+        if (state != SessionState.AIMING) return false
+        if (activeToken?.sessionId != expectedSessionId) return false
+        shutter(burstCount = AUTO_CAPTURE_BURST_COUNT)
+        return true
+    }
+
     /** 볼륨 버튼 길게 누름 = 세션 취소. */
     fun cancel() {
         if (state == SessionState.LISTENING || state == SessionState.PARSING) speechRecognizer.cancel()
@@ -316,7 +332,7 @@ class CaptureSessionManager(
         parsingTimeout = null
     }
 
-    private fun shutter() {
+    private fun shutter(burstCount: Int = 1) {
         val token = activeToken ?: return
         bundleAssembler.begin(token)
         moveTo(SessionState.CAPTURING)
@@ -334,7 +350,7 @@ class CaptureSessionManager(
             handleCaptureError(token, IllegalStateException("후보 프레임 요청이 이미 진행 중임"))
             return
         }
-        cameraController.takePhoto(token.sessionId)
+        cameraController.takePhoto(token.sessionId, burstCount)
     }
 
     // ---- CaptureEventListener (CameraController 가 메인 스레드에서 호출) ----
@@ -438,6 +454,9 @@ class CaptureSessionManager(
 
     private companion object {
         const val TAG = "CaptureSession"
+
+        /** 자동촬영 연사 장수 — 이 중 가장 선명한 한 장만 저장된다 ([CameraController.takePhoto]). */
+        const val AUTO_CAPTURE_BURST_COUNT = 3
 
         // 발화 종료 후 인식 결과를 기다리는 최대 시간. 정상 인식은 1~3초 내 도착하고,
         // 이 시간을 넘기면 기기 인식 서비스가 응답하지 않는 상태로 본다 (실측: S24 무한대기 관측).
