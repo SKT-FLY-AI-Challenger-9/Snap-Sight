@@ -328,7 +328,8 @@ internal class GuidancePolicy(
         readySpokenAtMs = nowMs
         readySpokenThisEpisode = true
         lastSpokenAtMs = nowMs
-        return listOf(GuidanceAction.Speak(readyUtterance))
+        // 스크립트 5-1: READY 는 음성 + 확정 진동 1회를 함께 낸다
+        return listOf(GuidanceAction.Speak(readyUtterance), GuidanceAction.Vibrate)
     }
 
     companion object {

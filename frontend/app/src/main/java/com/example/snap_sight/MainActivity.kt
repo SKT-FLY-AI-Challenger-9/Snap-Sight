@@ -483,8 +483,14 @@ class MainActivity : ComponentActivity() {
         // 셀카 모드: 구도가 맞아도 시선이 카메라를 벗어나 있으면 "지금 촬영하세요"를 보류하고 사유를 말한다
         guidanceFeedback.readyGate = { selfieGaze.readyBlockReason() }
         guidanceFeedback.applySettings(settingsUiState) // 저장된 설정값을 시작부터 반영
-        // 동적 문장(촬영 요약·사진 설명)도 프리셋 보이스로 — 백엔드 SKT 프록시 즉석 합성 연결
+        // 동적 문장(촬영 요약·사진 설명)도 프리셋 보이스로 — 백엔드 SKT 프록시 즉석 합성 연결.
+        // 등록 이름이 든 문장은 서버로 보내지 않는다(프라이버시 계약) — 그 문장만 내장 TTS.
         guidanceFeedback.dynamicSpeechFetcher = { text, voice -> speechSynthClient.fetch(text, voice) }
+        guidanceFeedback.dynamicSpeechGate = { text ->
+            (registeredPeople + registeredObjects).none { name ->
+                name.isNotBlank() && text.contains(name)
+            }
+        }
 
         // 첫 화면(온보딩) 사용법 안내 — 탭 문법을 모르는 최초 사용자를 위한 1회 멘트.
         // TTS 초기화 전이면 GuidanceFeedback 이 보관했다가 준비되는 즉시 말한다.
