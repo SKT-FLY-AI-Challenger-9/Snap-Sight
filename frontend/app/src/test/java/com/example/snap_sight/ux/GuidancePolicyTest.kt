@@ -54,7 +54,7 @@ class GuidancePolicyTest {
         val policy = GuidancePolicy()
         policy.feed(result(x = 0.30f, size = 0f), now = 0)
         assertTrue(policy.feed(result(x = 0.30f, size = 0f), now = 500).isEmpty())
-        assertTrue(policy.feed(result(x = 0.30f, size = 0f), now = 2_000).isEmpty())
+        assertTrue(nonPresence(policy.feed(result(x = 0.30f, size = 0f), now = 2_000)).isEmpty())
         val again = policy.feed(result(x = 0.30f, size = 0f), now = GuidancePolicy.DIRECTION_REPEAT_MS)
         assertEquals(listOf(GuidanceDirection.RIGHT.utterance), speech(again))
         assertTrue(again.contains(GuidanceAction.Vibrate))
@@ -137,7 +137,7 @@ class GuidancePolicyTest {
         assertTrue(policy.feed(result(0f, 0f), now = 0).isEmpty()) // 아직 안정화 전
         assertEquals(listOf(GuidancePolicy.READY_UTTERANCE), speech(policy.feed(result(0f, 0f), now = 300)))
         assertTrue(policy.feed(result(0f, 0f), now = 600).isEmpty())
-        assertTrue(policy.feed(result(0f, 0f), now = 10_000).isEmpty())
+        assertTrue(nonPresence(policy.feed(result(0f, 0f), now = 10_000)).isEmpty())
     }
 
     @Test
@@ -186,14 +186,16 @@ class GuidancePolicyTest {
 
         val hardExitAt = GuidancePolicy.READY_RESPEAK_MS + 500L
         assertTrue(
-            policy.feed(
-                result(
-                    x = 0.8f,
-                    size = 0f,
-                    freshness = ObservationFreshness.PREDICTED,
-                    ageMs = 100L,
+            nonPresence(
+                policy.feed(
+                    result(
+                        x = 0.8f,
+                        size = 0f,
+                        freshness = ObservationFreshness.PREDICTED,
+                        ageMs = 100L,
+                    ),
+                    now = hardExitAt,
                 ),
-                now = hardExitAt,
             ).isEmpty(),
         )
         assertTrue(policy.feed(result(0f, 0f), now = hardExitAt + 100L).isEmpty())
@@ -257,7 +259,7 @@ class GuidancePolicyTest {
     }
 
     @Test
-    fun `sustained loss beeps at intervals and speaks only once much later`() {
+    fun `sustained loss beeps at intervals and speaks disappeared once`() {
         val policy = GuidancePolicy()
         policy.feed(result(0.3f, 0f), now = 0) // 검출 후 이탈이어야 LOST 정책
         val lostAt = 100L
@@ -265,21 +267,42 @@ class GuidancePolicyTest {
         val first = policy.feed(lostResult, now = lostAt + GuidancePolicy.LOST_DEBOUNCE_MS)
         assertEquals(listOf(GuidanceAction.WarningTone), first)
         assertTrue(policy.feed(lostResult, now = lostAt + GuidancePolicy.LOST_DEBOUNCE_MS + 1_000).isEmpty())
-        val second = policy.feed(
-            lostResult,
-            now = lostAt + GuidancePolicy.LOST_DEBOUNCE_MS + GuidancePolicy.LOST_TONE_INTERVAL_MS,
-        )
-        assertEquals(listOf(GuidanceAction.WarningTone), second)
 
+        // 2초 시점: "사라졌어요" 1회 (톤 간격은 아직이라 음성만)
         val spoken = policy.feed(lostResult, now = lostAt + GuidancePolicy.LOST_SPEAK_AFTER_MS)
         assertTrue(spoken.contains(GuidanceAction.Speak(GuidancePolicy.LOST_UTTERANCE)))
         // 이후 같은 에피소드에서는 음성 반복 없음 (톤만)
         val later = policy.feed(
             lostResult,
-            now = lostAt + GuidancePolicy.LOST_SPEAK_AFTER_MS + GuidancePolicy.LOST_TONE_INTERVAL_MS,
+            now = lostAt + GuidancePolicy.LOST_DEBOUNCE_MS + GuidancePolicy.LOST_TONE_INTERVAL_MS,
         )
         assertEquals(listOf(GuidanceAction.WarningTone), later)
     }
+
+    // ---- 존재 확인 진동 (사용자 요청 2026-08-24) ----
+
+    @Test
+    fun `presence vibration starts after sustained detection and stops immediately on loss`() {
+        val policy = GuidancePolicy()
+        assertTrue(
+            policy.feed(result(0.3f, 0f), now = 0)
+                .none { it == GuidanceAction.PresenceVibrationStart },
+        )
+        val start = policy.feed(
+            result(0.3f, 0f),
+            now = GuidancePolicy.PRESENCE_VIBRATION_AFTER_MS,
+        )
+        assertTrue(start.contains(GuidanceAction.PresenceVibrationStart))
+        // 벗어나는 순간 즉시 정지 — LOST 디바운스를 기다리지 않는다
+        val stop = policy.feed(lostResult, now = GuidancePolicy.PRESENCE_VIBRATION_AFTER_MS + 100)
+        assertTrue(stop.contains(GuidanceAction.PresenceVibrationStop))
+    }
+
+    /** 존재 진동 시작/정지 액션을 뺀 나머지 — 오래 잡혀 있는 시나리오의 "그 외 침묵" 단언용. */
+    private fun nonPresence(actions: List<GuidanceAction>): List<GuidanceAction> =
+        actions.filterNot {
+            it == GuidanceAction.PresenceVibrationStart || it == GuidanceAction.PresenceVibrationStop
+        }
 
     // ---- 탐색 안내 (노션 스크립트 상태 3, 2026-08-24) ----
 
@@ -411,7 +434,7 @@ class GuidancePolicyTest {
         )
         // t=1s 부터 잘림 상태 — 상태 지속 4s 와 음성 공백 4s 를 모두 채워야 말한다
         assertTrue(policy.feed(cropped, now = 1_000).isEmpty())
-        assertTrue(policy.feed(cropped, now = 4_500).isEmpty())
+        assertTrue(nonPresence(policy.feed(cropped, now = 4_500)).isEmpty())
         assertEquals(
             listOf(GuidancePolicy.VISIBILITY_HEARTBEAT),
             speech(policy.feed(cropped, now = 5_000)),

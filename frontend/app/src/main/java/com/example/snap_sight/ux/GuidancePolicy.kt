@@ -32,6 +32,9 @@ import kotlin.math.abs
  */
 internal sealed interface GuidanceAction {
     data class Speak(val text: String) : GuidanceAction
+    /** 지정 피사체가 화면에 잡혀 있는 동안의 연속 진동 시작/정지 (사용자 요청 2026-08-24). */
+    object PresenceVibrationStart : GuidanceAction
+    object PresenceVibrationStop : GuidanceAction
     object Vibrate : GuidanceAction
     object WarningTone : GuidanceAction
 }
@@ -90,6 +93,10 @@ internal class GuidancePolicy(
     /** 안내 문장에 넣을 피사체 이름 (예: "강아지") — 세션마다 [setSubject]로 갱신. */
     private var subjectWord: String = DEFAULT_SUBJECT
 
+    // ---- 존재 확인 진동 — 피사체가 잡혀 있는 동안 연속 햅틱 (사용자 요청 2026-08-24) ----
+    private var presenceSinceMs: Long? = null
+    private var presenceVibrationOn = false
+
     /** 새 세션 시작 — 이전 세션의 "이미 말했음" 상태를 지운다. */
     @Synchronized
     fun reset() {
@@ -109,6 +116,9 @@ internal class GuidancePolicy(
         searchHintSpoken = false
         searchFailSpoken = false
         subjectWord = DEFAULT_SUBJECT
+        // 진동 정지는 액션으로 못 내보내므로 GuidanceFeedback.resetSession 이 직접 끈다
+        presenceSinceMs = null
+        presenceVibrationOn = false
     }
 
     /** 이번 세션의 피사체 이름 — 발화·스펙이 해석되는 대로 호출한다 (null/공백이면 "피사체"). */
@@ -146,10 +156,44 @@ internal class GuidancePolicy(
         readyBlockedReason: String? = null,
     ): GuidanceDecision {
         val readiness = readinessEvaluator.evaluate(result, nowMs)
-        fun decision(actions: List<GuidanceAction>) = GuidanceDecision(readiness, actions)
+        // 존재 확인 진동 — 어떤 안내 분기든 상관없이 매 판정마다 갱신한다
+        val presence = presenceActions(state.detected, nowMs)
+        val actions = judge(state, result, readiness, nowMs, zoomHandlesDistance, readyBlockedReason)
+        return GuidanceDecision(readiness, presence + actions)
+    }
+
+    /**
+     * 지정 피사체가 [PRESENCE_VIBRATION_AFTER_MS] 이상 연속으로 화면에 잡혀 있으면 연속 진동을
+     * 켜고, 화면에서 벗어나는 순간 끈다 — "지금 잡혀 있다"를 손으로 느끼는 채널.
+     */
+    private fun presenceActions(detected: Boolean, nowMs: Long): List<GuidanceAction> {
+        if (!detected) {
+            presenceSinceMs = null
+            if (presenceVibrationOn) {
+                presenceVibrationOn = false
+                return listOf(GuidanceAction.PresenceVibrationStop)
+            }
+            return emptyList()
+        }
+        val since = presenceSinceMs ?: nowMs.also { presenceSinceMs = it }
+        if (!presenceVibrationOn && nowMs - since >= PRESENCE_VIBRATION_AFTER_MS) {
+            presenceVibrationOn = true
+            return listOf(GuidanceAction.PresenceVibrationStart)
+        }
+        return emptyList()
+    }
+
+    private fun judge(
+        state: GuidanceState,
+        result: DeviationResult,
+        readiness: ReadinessVerdict,
+        nowMs: Long,
+        zoomHandlesDistance: Boolean,
+        readyBlockedReason: String?,
+    ): List<GuidanceAction> {
         if (!state.detected) {
-            // 첫 검출 전에는 "벗어났어요"(LOST)가 아니라 탐색 안내(t2/t3)를 쓴다 — 비프 없음
-            return decision(if (subjectEverDetected) onLost(nowMs) else onSearching(nowMs))
+            // 첫 검출 전에는 "사라졌어요"(LOST)가 아니라 탐색 안내(t2/t3)를 쓴다 — 비프 없음
+            return if (subjectEverDetected) onLost(nowMs) else onSearching(nowMs)
         }
 
         // 첫 검출 — 탐색 단계가 실제로 있었을 때만 "찾았어요"를 말한다 (스크립트 3-1).
@@ -160,29 +204,29 @@ internal class GuidancePolicy(
             searchingSinceMs = null
             if (searched) {
                 lastSpokenAtMs = nowMs
-                return decision(listOf(GuidanceAction.Speak(subjectFoundUtterance())))
+                return listOf(GuidanceAction.Speak(subjectFoundUtterance()))
             }
         }
 
-        // 재탐지 — 이탈 안내(f6)까지 나갔던 긴 LOST 에서 돌아오면 1회 알린다 (스크립트 4-10)
+        // 재탐지 — 이탈 안내까지 나갔던 긴 LOST 에서 돌아오면 1회 알린다 (스크립트 4-10)
         val refound = lostSpoken
         // 다시 찾음 — LOST 에피소드 종료
         lostSinceMs = null
         lostSpoken = false
         if (refound) {
             lastSpokenAtMs = nowMs
-            return decision(listOf(GuidanceAction.Speak(REFIND_UTTERANCE)))
+            return listOf(GuidanceAction.Speak(REFIND_UTTERANCE))
         }
 
         if (readiness.ready) {
             if (readyBlockedReason != null) {
-                return decision(onReadyBlocked(readyBlockedReason, nowMs))
+                return onReadyBlocked(readyBlockedReason, nowMs)
             }
-            return decision(onReady(nowMs))
+            return onReady(nowMs)
         }
         // 추가 게이트(시선 등)는 구도 안정화 중에도 즉시 알려준다.
         if (readiness.candidateReady && readyBlockedReason != null) {
-            return decision(onReadyBlocked(readyBlockedReason, nowMs))
+            return onReadyBlocked(readyBlockedReason, nowMs)
         }
 
         // 추정 bbox나 오래된 관측으로 사용자에게 이동을 요구하지 않는다. 이 출력은 오버레이를
@@ -202,22 +246,22 @@ internal class GuidancePolicy(
                 readySpokenThisEpisode = false
                 lastDirection = null
             }
-            return decision(emptyList())
+            return emptyList()
         }
         readySpokenThisEpisode = false
         val direction = pickDirection(state, result, zoomHandlesDistance)
         if (direction == null) {
-            return decision(heartbeat(readiness, zoomHandlesDistance, nowMs))
+            return heartbeat(readiness, zoomHandlesDistance, nowMs)
         }
         heartbeatStateSinceMs = null
         val changed = direction != lastDirection
         val elapsed = nowMs - lastDirectionAtMs
         val due = if (changed) elapsed >= DIRECTION_MIN_GAP_MS else elapsed >= DIRECTION_REPEAT_MS
-        if (!due) return decision(emptyList())
+        if (!due) return emptyList()
         lastDirection = direction
         lastDirectionAtMs = nowMs
         lastSpokenAtMs = nowMs
-        return decision(listOf(GuidanceAction.Speak(direction.utterance), GuidanceAction.Vibrate))
+        return listOf(GuidanceAction.Speak(direction.utterance), GuidanceAction.Vibrate)
     }
 
     /**
@@ -276,7 +320,7 @@ internal class GuidancePolicy(
     private fun subjectNotFoundUtterance() =
         "$subjectWord${josa("을", "를")} 못 찾았어요. 더 찾을까요, 다른 대상을 고를까요?"
     private fun subjectLostUtterance() =
-        "$subjectWord${josa("이", "가")} 화면에서 벗어났어요. 다시 찾을게요."
+        "$subjectWord${josa("이", "가")} 화면에서 사라졌어요."
 
     /** 받침 유무로 조사 선택 — 한글이 아니면 받침 없는 쪽(를/가)을 쓴다. */
     private fun josa(withBatchim: String, withoutBatchim: String): String {
@@ -333,9 +377,9 @@ internal class GuidancePolicy(
     }
 
     companion object {
-        // 노션 확정 스크립트 문장 (5-1 READY / 4-9 이탈 / 4-10 재탐지) — SpeechCatalog 음원과 일치
+        // 확정 문장 (5-1 READY / 이탈은 사용자 요청 2026-08-24 문구 / 4-10 재탐지) — 음원과 일치
         const val READY_UTTERANCE = "좋아요. 촬영할 수 있어요."
-        const val LOST_UTTERANCE = "피사체가 화면에서 벗어났어요. 다시 찾을게요."
+        const val LOST_UTTERANCE = "피사체가 화면에서 사라졌어요."
         const val REFIND_UTTERANCE = "다시 찾았어요."
         const val DEFAULT_SUBJECT = "피사체"
 
@@ -347,7 +391,11 @@ internal class GuidancePolicy(
         const val DIRECTION_MIN_GAP_MS = 1_000L
         const val LOST_DEBOUNCE_MS = 800L
         const val LOST_TONE_INTERVAL_MS = 3_000L
-        const val LOST_SPEAK_AFTER_MS = 6_000L
+        /** 이탈 2초 뒤 "사라졌어요" 발화 (사용자 요청 2026-08-24 — 기존 6초에서 단축). */
+        const val LOST_SPEAK_AFTER_MS = 2_000L
+
+        /** 피사체가 이만큼 연속으로 잡혀 있으면 존재 확인 연속 진동 시작. */
+        const val PRESENCE_VIBRATION_AFTER_MS = 1_500L
         const val READY_DEBOUNCE_MS = 300L
         const val READY_RESPEAK_MS = 3_000L
 
