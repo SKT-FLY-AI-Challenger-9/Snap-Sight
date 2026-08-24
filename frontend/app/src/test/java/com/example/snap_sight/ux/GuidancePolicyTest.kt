@@ -261,6 +261,7 @@ class GuidancePolicyTest {
     @Test
     fun `sustained loss beeps at intervals and speaks disappeared once`() {
         val policy = GuidancePolicy()
+        policy.setSubject("피사체") // 지정된 세션만 "사라졌어요"를 말한다
         policy.feed(result(0.3f, 0f), now = 0) // 검출 후 이탈이어야 LOST 정책
         val lostAt = 100L
         policy.feed(lostResult, now = lostAt)
@@ -284,6 +285,7 @@ class GuidancePolicyTest {
     @Test
     fun `presence vibration starts after sustained detection and stops immediately on loss`() {
         val policy = GuidancePolicy()
+        policy.setSubject("강아지") // 존재 진동은 지정한 피사체 전용
         assertTrue(
             policy.feed(result(0.3f, 0f), now = 0)
                 .none { it == GuidanceAction.PresenceVibrationStart },
@@ -298,6 +300,26 @@ class GuidancePolicyTest {
         assertTrue(stop.contains(GuidanceAction.PresenceVibrationStop))
     }
 
+    @Test
+    fun `undesignated session never announces found or disappeared and never buzzes`() {
+        val policy = GuidancePolicy() // setSubject 없음 = 일반 촬영 (아무 물체나 잡힘)
+        assertTrue(policy.feed(lostResult, now = 0).isEmpty())
+        assertTrue(policy.feed(lostResult, now = GuidancePolicy.SEARCH_HINT_AFTER_MS).isEmpty())
+        // 아무 물체가 잡혀도 "찾았어요" 없이 방향 안내로 직행
+        val found = policy.feed(result(0.3f, 0f), now = GuidancePolicy.SEARCH_HINT_AFTER_MS + 1_100)
+        assertEquals(listOf(GuidanceDirection.RIGHT.utterance), speech(found))
+        // 오래 잡혀 있어도 존재 진동 없음
+        val held = policy.feed(
+            result(0.3f, 0f),
+            now = GuidancePolicy.SEARCH_HINT_AFTER_MS + 1_100 + GuidancePolicy.PRESENCE_VIBRATION_AFTER_MS,
+        )
+        assertTrue(held.none { it == GuidanceAction.PresenceVibrationStart })
+        // 이탈해도 "사라졌어요" 없음 (경고음만)
+        val lost = policy.feed(lostResult, now = 10_000)
+        val lostLater = policy.feed(lostResult, now = 10_000 + GuidancePolicy.LOST_SPEAK_AFTER_MS)
+        assertTrue((lost + lostLater).none { it is GuidanceAction.Speak })
+    }
+
     /** 존재 진동 시작/정지 액션을 뺀 나머지 — 오래 잡혀 있는 시나리오의 "그 외 침묵" 단언용. */
     private fun nonPresence(actions: List<GuidanceAction>): List<GuidanceAction> =
         actions.filterNot {
@@ -309,6 +331,7 @@ class GuidancePolicyTest {
     @Test
     fun `initial searching hints then announces found without any tones`() {
         val policy = GuidancePolicy()
+        policy.setSubject("피사체") // 발화로 대상이 지정된 세션
         assertTrue(policy.feed(lostResult, now = 0).isEmpty())
         assertTrue(policy.feed(lostResult, now = 1_000).isEmpty())
         val hint = policy.feed(lostResult, now = GuidancePolicy.SEARCH_HINT_AFTER_MS)
@@ -334,6 +357,7 @@ class GuidancePolicyTest {
     @Test
     fun `refind after spoken lost announces once and immediate detection start skips found`() {
         val policy = GuidancePolicy()
+        policy.setSubject("피사체")
         // 시작부터 보이면 "찾았어요" 없이 방향 안내로 직행 (탐색 단계가 없었음)
         val direct = policy.feed(result(0.3f, 0f), now = 0)
         assertEquals(listOf(GuidanceDirection.RIGHT.utterance), speech(direct))

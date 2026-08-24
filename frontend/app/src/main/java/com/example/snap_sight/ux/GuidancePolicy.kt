@@ -93,6 +93,12 @@ internal class GuidancePolicy(
     /** 안내 문장에 넣을 피사체 이름 (예: "강아지") — 세션마다 [setSubject]로 갱신. */
     private var subjectWord: String = DEFAULT_SUBJECT
 
+    /**
+     * 발화로 대상이 실제 지정됐는가 — 지정 없이는 "찾았어요"류 안내와 존재 진동을 내지 않는다
+     * (사용자 요청 2026-08-24: 아무 물체나 잡혔다고 "찾았다"고 말하지 않기).
+     */
+    private var subjectDesignated = false
+
     // ---- 존재 확인 진동 — 피사체가 잡혀 있는 동안 연속 햅틱 (사용자 요청 2026-08-24) ----
     private var presenceSinceMs: Long? = null
     private var presenceVibrationOn = false
@@ -116,15 +122,21 @@ internal class GuidancePolicy(
         searchHintSpoken = false
         searchFailSpoken = false
         subjectWord = DEFAULT_SUBJECT
+        subjectDesignated = false
         // 진동 정지는 액션으로 못 내보내므로 GuidanceFeedback.resetSession 이 직접 끈다
         presenceSinceMs = null
         presenceVibrationOn = false
     }
 
-    /** 이번 세션의 피사체 이름 — 발화·스펙이 해석되는 대로 호출한다 (null/공백이면 "피사체"). */
+    /**
+     * 이번 세션의 피사체 이름 — 발화·스펙이 해석되는 대로 호출한다.
+     * null/공백이면 "지정 없음"으로 보고 찾았어요류 안내·존재 진동을 잠근다.
+     */
     @Synchronized
     fun setSubject(word: String?) {
-        subjectWord = word?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_SUBJECT
+        val trimmed = word?.trim()?.takeIf { it.isNotEmpty() }
+        subjectDesignated = trimmed != null
+        subjectWord = trimmed ?: DEFAULT_SUBJECT
     }
 
     /**
@@ -167,6 +179,15 @@ internal class GuidancePolicy(
      * 켜고, 화면에서 벗어나는 순간 끈다 — "지금 잡혀 있다"를 손으로 느끼는 채널.
      */
     private fun presenceActions(detected: Boolean, nowMs: Long): List<GuidanceAction> {
+        // 지정된 대상이 없으면 존재 진동을 켜지 않는다 — "지정한 피사체" 전용 채널
+        if (!subjectDesignated) {
+            presenceSinceMs = null
+            if (presenceVibrationOn) {
+                presenceVibrationOn = false
+                return listOf(GuidanceAction.PresenceVibrationStop)
+            }
+            return emptyList()
+        }
         if (!detected) {
             presenceSinceMs = null
             if (presenceVibrationOn) {
@@ -202,7 +223,8 @@ internal class GuidancePolicy(
             subjectEverDetected = true
             val searched = searchingSinceMs != null
             searchingSinceMs = null
-            if (searched) {
+            // "찾았어요"는 지정된 대상이 있을 때만 — 아무 물체나 잡힌 것을 찾았다고 하지 않는다
+            if (searched && subjectDesignated) {
                 lastSpokenAtMs = nowMs
                 return listOf(GuidanceAction.Speak(subjectFoundUtterance()))
             }
@@ -213,7 +235,7 @@ internal class GuidancePolicy(
         // 다시 찾음 — LOST 에피소드 종료
         lostSinceMs = null
         lostSpoken = false
-        if (refound) {
+        if (refound && subjectDesignated) {
             lastSpokenAtMs = nowMs
             return listOf(GuidanceAction.Speak(REFIND_UTTERANCE))
         }
@@ -299,6 +321,8 @@ internal class GuidancePolicy(
         readySpokenThisEpisode = false
         lastDirection = null
         heartbeatStateSinceMs = null
+        // 지정 대상이 없으면 탐색 문장(안 보여요/못 찾았어요)도 내지 않는다
+        if (!subjectDesignated) return emptyList()
         val since = searchingSinceMs ?: run { searchingSinceMs = nowMs; return emptyList() }
         if (!searchHintSpoken && nowMs - since >= SEARCH_HINT_AFTER_MS) {
             searchHintSpoken = true
@@ -341,7 +365,7 @@ internal class GuidancePolicy(
             lastLostToneMs = nowMs
             actions.add(GuidanceAction.WarningTone)
         }
-        if (!lostSpoken && nowMs - since >= LOST_SPEAK_AFTER_MS) {
+        if (!lostSpoken && subjectDesignated && nowMs - since >= LOST_SPEAK_AFTER_MS) {
             lostSpoken = true
             lastSpokenAtMs = nowMs
             // 커스텀 lostUtterance 를 넘긴 호출자(테스트)는 존중, 기본값이면 피사체 이름을 넣는다

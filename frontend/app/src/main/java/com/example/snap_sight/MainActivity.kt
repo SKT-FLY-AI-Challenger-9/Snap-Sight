@@ -2161,10 +2161,13 @@ class MainActivity : ComponentActivity() {
             targetSpecPending = false
             generation
         }
-        // 탐색·이탈 안내 문장의 피사체 이름 (스크립트 상태 3) — 등록 이름 > 발화 라벨 한글명 > "피사체"
+        // 탐색·이탈 안내 문장의 피사체 이름 (스크립트 상태 3) — 등록 이름 > 사람 > 라벨 한글명 > 라벨.
+        // null 이면 "지정 없음"으로 취급돼 찾았어요류 안내·존재 진동이 나가지 않는다 (2026-08-24).
         val subjectKorean = when {
             effectiveSpec?.subjectType == TargetSpec.SubjectType.PERSON -> "사람"
-            else -> effectiveSpec?.objectLabel?.let { KOREAN_LABELS[it.trim().lowercase()] }
+            else -> effectiveSpec?.objectLabel?.let { label ->
+                KOREAN_LABELS[label.trim().lowercase()] ?: label
+            }
         }
         guidanceFeedback.setSessionSubject(identityName ?: subjectKorean)
         synchronized(targetIntentLock) {
