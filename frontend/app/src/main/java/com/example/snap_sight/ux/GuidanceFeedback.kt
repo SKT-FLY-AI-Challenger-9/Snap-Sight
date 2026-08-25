@@ -98,6 +98,15 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     @Volatile
     var pitchDeviation: (() -> Float?)? = null
 
+    /**
+     * 현재 폰 피치(도, [TiltSensorMonitor] 규약: 양수 = 카메라가 아래를 봄)를 돌려주는 훅 (2026-08-25).
+     * 일반 세션의 수직 이동 안내("위로/아래로")가 폰 기울기 때문일 때 "폰 윗부분을 … 기울여 주세요"로
+     * 바꾸는 데 쓴다 ([GuidancePolicy.refineVerticalWithPitch]). null 이면 항상 이동 문구.
+     * MainActivity 가 TiltSensorMonitor 로 연결한다. 분석 스레드에서 호출된다.
+     */
+    @Volatile
+    var phonePitch: (() -> Float?)? = null
+
     @Volatile
     private var ttsReady = false
 
@@ -270,6 +279,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
             zoomHandlesDistance = zoomHandles,
             readyBlockedReason = readyGate?.invoke(),
             pitchDeviationDeg = pitchDeviation?.invoke(),
+            phonePitchDeg = phonePitch?.invoke(),
         )
         for (action in decision.actions) {
             when (action) {

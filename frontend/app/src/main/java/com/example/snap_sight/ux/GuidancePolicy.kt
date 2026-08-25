@@ -53,6 +53,12 @@ internal enum class GuidanceDirection(val utterance: String) {
     // 기울기 센서에서 오므로 pickDirection 이 아닌 judge() 의 피치 분기가 고른다.
     TILT_LAY("폰을 조금 더 눕혀 주세요."),
     TILT_RAISE("폰을 조금 세워 주세요."),
+
+    // 일반 세션 수직 안내의 기울기 문구 (2026-08-25) — 피사체가 위/아래로 벗어난 원인이
+    // 폰 피치로 보이면 UP/DOWN 대신 이 문구를 쓴다 ([GuidancePolicy.refineVerticalWithPitch]).
+    // TODO: 노션 스크립트 미확정 임시 문구 — 확정되면 SpeechCatalog 음원과 함께 갱신 (그 전까지 TTS 폴백).
+    TILT_TOP_TOWARD("폰 윗부분을 몸 쪽으로 기울여 주세요."),
+    TILT_TOP_AWAY("폰 윗부분을 바깥쪽으로 기울여 주세요."),
 }
 
 /** 한 번의 canonical 평가에서 나온 최종 verdict와 렌더링 액션. */
@@ -156,6 +162,7 @@ internal class GuidancePolicy(
         zoomHandlesDistance: Boolean = false,
         readyBlockedReason: String? = null,
         pitchDeviationDeg: Float? = null,
+        phonePitchDeg: Float? = null,
     ): List<GuidanceAction> = processJudgment(
         state = state,
         result = result,
@@ -163,6 +170,7 @@ internal class GuidancePolicy(
         zoomHandlesDistance = zoomHandlesDistance,
         readyBlockedReason = readyBlockedReason,
         pitchDeviationDeg = pitchDeviationDeg,
+        phonePitchDeg = phonePitchDeg,
     ).actions
 
     /**
@@ -170,6 +178,8 @@ internal class GuidancePolicy(
      *
      * @param pitchDeviationDeg 음식 세션의 폰 각도 편차 (목표각 - 현재각, 도 단위) — null 이면
      *        피치 안내 없음. 양수 = 더 눕혀야 함, 음수 = 세워야 함.
+     * @param phonePitchDeg 현재 폰 피치 (TiltSensorMonitor 규약: 양수 = 카메라가 아래를 봄) —
+     *        일반 세션의 수직 이동 안내를 기울기 문구로 바꾸는 데만 쓴다. null 이면 항상 이동 문구.
      */
     @Synchronized
     fun processJudgment(
@@ -179,13 +189,14 @@ internal class GuidancePolicy(
         zoomHandlesDistance: Boolean = false,
         readyBlockedReason: String? = null,
         pitchDeviationDeg: Float? = null,
+        phonePitchDeg: Float? = null,
     ): GuidanceDecision {
         val readiness = readinessEvaluator.evaluate(result, nowMs)
         // 존재 확인 진동 — 어떤 안내 분기든 상관없이 매 판정마다 갱신한다
         val presence = presenceActions(state.detected, nowMs)
         val actions = judge(
             state, result, readiness, nowMs, zoomHandlesDistance, readyBlockedReason,
-            pitchDeviationDeg,
+            pitchDeviationDeg, phonePitchDeg,
         )
         return GuidanceDecision(readiness, presence + actions)
     }
@@ -228,6 +239,7 @@ internal class GuidancePolicy(
         zoomHandlesDistance: Boolean,
         readyBlockedReason: String?,
         pitchDeviationDeg: Float? = null,
+        phonePitchDeg: Float? = null,
     ): List<GuidanceAction> {
         if (!state.detected) {
             // 첫 검출 전에는 "사라졌어요"(LOST)가 아니라 탐색 안내(t2/t3)를 쓴다 — 비프 없음
@@ -305,7 +317,7 @@ internal class GuidancePolicy(
         if (direction == null) {
             return heartbeat(readiness, zoomHandlesDistance, nowMs)
         }
-        return speakDirectionIfDue(direction, nowMs)
+        return speakDirectionIfDue(refineVerticalWithPitch(direction, phonePitchDeg), nowMs)
     }
 
     /** 방향 단어 공통 게이팅 — 같은 방향은 [DIRECTION_REPEAT_MS], 바뀐 방향도 [DIRECTION_MIN_GAP_MS] 간격. */
@@ -458,6 +470,12 @@ internal class GuidancePolicy(
 
         /** 음식 피치 목표각 허용 오차 — 이 안이면 각도 안내를 멈추고 구도 안내로 넘어간다. */
         const val PITCH_TOLERANCE_DEG = 12f
+
+        /**
+         * 일반 세션에서 수직 이동 안내를 기울기 문구로 바꾸는 최소 폰 피치 (2026-08-25).
+         * 이보다 덜 기울었으면 위치 문제로 보고 기존 "위로/아래로"를 유지한다.
+         */
+        const val PITCH_WORDING_SWAP_DEG = 15f
         const val READY_DEBOUNCE_MS = 300L
         const val READY_RESPEAK_MS = 3_000L
 
@@ -466,6 +484,30 @@ internal class GuidancePolicy(
         const val VISIBILITY_HEARTBEAT = "피사체 전체가 화면 안에 들어오게 비춰주세요"
         const val AUTO_ZOOM_HEARTBEAT = "구도를 자동으로 맞추는 중이에요"
         const val HOLD_STEADY_HEARTBEAT = "좋아요, 그대로 유지해주세요"
+
+        /**
+         * 수직 이동 안내를 기울기 문구로 바꿀지 결정 (2026-08-25).
+         *
+         * 피사체가 프레임 위(UP)인데 폰이 이미 [PITCH_WORDING_SWAP_DEG] 이상 앞으로 기울어
+         * 카메라가 아래를 보고 있으면(양수 피치), 원인은 위치가 아니라 기울기다 — "위로 이동"
+         * 대신 "윗부분을 몸 쪽으로 기울이기"가 더 실행하기 쉬운 지시다(손목 > 팔 전체).
+         * 반대(DOWN + 음수 피치)도 동일. 교정이 수평(0°)에서 **멀어지는** 조합(피사체가 정말
+         * 높은 선반 위에 있는 경우 등)은 바꾸지 않는다 — 그땐 이동 안내가 맞다.
+         * 발화 슬롯은 하나뿐이라 이동 문구와 기울기 문구가 동시에 나가는 일은 없다.
+         */
+        fun refineVerticalWithPitch(
+            direction: GuidanceDirection,
+            phonePitchDeg: Float?,
+        ): GuidanceDirection {
+            if (phonePitchDeg == null) return direction
+            return when {
+                direction == GuidanceDirection.UP && phonePitchDeg > PITCH_WORDING_SWAP_DEG ->
+                    GuidanceDirection.TILT_TOP_TOWARD
+                direction == GuidanceDirection.DOWN && phonePitchDeg < -PITCH_WORDING_SWAP_DEG ->
+                    GuidanceDirection.TILT_TOP_AWAY
+                else -> direction
+            }
+        }
 
         /**
          * 벗어난 축 중 "임계값 대비 비율"이 가장 큰 축 하나를 고른다.

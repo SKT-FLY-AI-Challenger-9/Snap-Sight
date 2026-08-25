@@ -69,6 +69,7 @@ import com.example.snap_sight.face.TfLiteFaceEmbedder
 import com.example.snap_sight.face.TfLiteObjectEmbedder
 import com.example.snap_sight.cv.DeviationResult
 import com.example.snap_sight.cv.DeviationJudgment
+import com.example.snap_sight.cv.ObservationFreshness
 import com.example.snap_sight.cv.AnalysisMode
 import com.example.snap_sight.cv.FrameProcessorConfig
 import com.example.snap_sight.cv.SnapSightFrameProcessor
@@ -516,6 +517,12 @@ class MainActivity : ComponentActivity() {
             } else {
                 null
             }
+        }
+        // 일반 세션 기울기 문구 (2026-08-25): 수직 "위로/아래로"의 원인이 폰 기울기일 때
+        // "폰 윗부분을 … 기울여 주세요"로 바꿔 말한다. 음식 세션은 45° 목표의 전용 피치
+        // 분기가 이미 있으므로 null 을 줘 두 각도 안내가 겹치지 않게 한다.
+        guidanceFeedback.phonePitch = {
+            if (foodPitchSession) null else sessionManager.tiltMonitor.pitchDegrees
         }
         // 인물 세션의 자동촬영 승자 컷은 얼굴 3분할 크롭으로 마무리한다 (연사 채점 스레드에서 호출)
         cameraController.burstFinisher = { file ->
@@ -2396,6 +2403,11 @@ class MainActivity : ComponentActivity() {
                 detected = deviation?.subjectDetected == true &&
                     selfieGaze.readyBlockReason() == null &&
                     foodPitchSatisfied(),
+                // 유지 시간은 실관측으로만 쌓는다 — tracker 예측(PREDICTED)·편차 hold(HELD)·
+                // stride 재방출(analyzed=false)은 끊김만 막고 시간을 보태지 않는다
+                // (잠깐 스친 피사체가 coasting+hold 사슬로 1.5초를 채워 발동하던 문제).
+                fresh = output.analyzed &&
+                    deviation?.observationFreshness == ObservationFreshness.FRESH,
                 nowMs = output.timestampMs,
             )
             if (fire) {
@@ -2403,8 +2415,9 @@ class MainActivity : ComponentActivity() {
                 val generation = output.targetIntentGeneration
                 Log.i(
                     TAG,
-                    "자동촬영 발동 [$expectedSessionId] — 대상 검출 " +
-                        "${AutoCaptureArbiter.AUTO_CAPTURE_HOLD_MS}ms 유지",
+                    "자동촬영 발동 [$expectedSessionId] — 실관측 " +
+                        "${AutoCaptureArbiter.AUTO_CAPTURE_HOLD_MS}ms 이상 · " +
+                        "${AutoCaptureArbiter.MIN_FRESH_OBSERVATIONS}회 이상 유지",
                 )
                 runOnUiThread {
                     // 판정(분석 스레드)과 셔터 사이에 타겟 세대·세션이 바뀌었으면 무효 —
