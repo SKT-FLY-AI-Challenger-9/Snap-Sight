@@ -67,7 +67,7 @@ fun CaptureScreen(
     // 3x3 구도 그리드 (2026-08-23) — 미리보기 전용 오버레이, 찍힌 사진에는 남지 않는다
     gridEnabled: Boolean = false,
     gridColorArgb: Int = DEFAULT_GRID_COLOR,
-    gridThicknessDp: Float = 1.5f,
+    gridThicknessDp: Float = GridThickness.DEFAULT.dp,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current

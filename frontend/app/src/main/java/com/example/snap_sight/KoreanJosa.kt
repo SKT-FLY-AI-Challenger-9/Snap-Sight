@@ -19,6 +19,13 @@ object KoreanJosa {
         }
     }
 
+    /**
+     * "OO가 OO로 변경되었어요"류 설정 변경 알림 문장을 받침에 맞게 조립한다
+     * (설정 화면 음성 안내, 2026-08-25).
+     */
+    fun changedAnnouncement(label: String, value: String): String =
+        "$label${correctedJosa(label, "가")} $value${correctedJosa(value, "로")} 변경되었어요"
+
     /** 이름의 받침에 맞는 조사 형태. 판단 불가(비한글 끝)면 원래 조사 유지. */
     internal fun correctedJosa(name: String, josa: String): String {
         val pair = JOSA_PAIRS.firstOrNull { josa == it.first || josa == it.second } ?: return josa

@@ -2,10 +2,11 @@
 // 예시 발화 + 사진 찾기. 듣는 중에는 마이크가 파랗게 차오르고 인식된 발화·"이해하는 중…"을 보여준다.
 package com.example.snap_sight.ux
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -24,6 +25,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
@@ -32,11 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-
-private val EXAMPLES = listOf(
-    "“앞에 있는 두 사람 같이 찍어줘”",
-    "“바다를 배경으로 친구 전신을 찍어줘”",
-)
+import com.example.snap_sight.R
 
 /**
  * @param isListening    세션이 발화 청취/해석 중 — 시안처럼 홈 위에서 마이크가 파랗게 활성화된다
@@ -63,10 +63,20 @@ fun HomeScreen(
                 .fillMaxWidth()
                 .padding(top = 12.dp),
         ) {
+            // 카멜레온 로고 (배경 제거) — 화면 왼쪽 위 (사용자 요청 2026-08-25)
+            Image(
+                painter = painterResource(R.drawable.logo_chameleon),
+                contentDescription = null,
+                contentScale = ContentScale.FillHeight,
+                modifier = Modifier.height(40.dp),
+            )
             Spacer(Modifier.weight(1f))
+            // 위치는 그대로, 크기만 약 3배로 키웠다 (사용자 요청 2026-08-25).
+            // 테두리가 배경(카드색)에 묻히지 않고 항상 보이도록 흰색 보더라인을 그린다.
             Surface(
-                shape = RoundedCornerShape(10.dp),
+                shape = RoundedCornerShape(30.dp),
                 color = SnapPalette.Card,
+                border = BorderStroke(1.5.dp, Color.White),
                 modifier = Modifier
                     .clickable(onClick = onOpenSettings)
                     .semantics { contentDescription = "설정 화면 열기" },
@@ -74,8 +84,8 @@ fun HomeScreen(
                 Text(
                     text = "⚙ 설정",
                     color = SnapPalette.TextPrimary,
-                    fontSize = 13.sp,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    fontSize = 39.sp,
+                    modifier = Modifier.padding(horizontal = 36.dp, vertical = 24.dp),
                 )
             }
         }
@@ -108,9 +118,10 @@ fun HomeScreen(
                     .border(6.dp, SnapPalette.AccentSoft, CircleShape)
                     .background(SnapPalette.Accent, CircleShape)
             } else {
+                // 테두리가 배경에 묻히지 않고 항상 보이도록 흰색 보더라인 (사용자 요청 2026-08-25).
                 Modifier
                     .size(160.dp)
-                    .border(1.dp, SnapPalette.CardBorder, CircleShape)
+                    .border(1.5.dp, Color.White, CircleShape)
                     .background(SnapPalette.Card, CircleShape)
             }
             Box(
@@ -135,10 +146,11 @@ fun HomeScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             when {
+                // 글자 크기 50% 확대 (17sp → 25.5sp, 사용자 요청 2026-08-25)
                 !isListening -> Text(
                     text = "말해서 시작하기",
                     fontWeight = FontWeight.Bold,
-                    fontSize = 17.sp,
+                    fontSize = 25.5.sp,
                     color = SnapPalette.TextPrimary,
                     textAlign = TextAlign.Center,
                 )
@@ -169,46 +181,31 @@ fun HomeScreen(
         }
 
         Spacer(Modifier.height(24.dp))
-        Text(
-            text = "이렇게 말해보세요",
-            color = SnapPalette.Accent,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold,
-        )
-        Column(
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-            modifier = Modifier.padding(top = 14.dp),
-        ) {
-            EXAMPLES.forEach { example ->
-                Text(
-                    text = example,
-                    color = SnapPalette.TextTertiary,
-                    fontSize = 14.sp,
-                )
-            }
-        }
-
-        Spacer(Modifier.weight(1f))
         // 설정 칩과 같은 clickable 패턴 — Surface(onClick) + 🖼 이모지 조합이 일부 기기에서
         // 글자가 안 보이는 문제(실사용 피드백 2026-08-22)가 있어 교체했다
+        // grammarClickable — 빠르게 두 번 탭하면 갤러리로 넘어가지 않고 화면의 전역
+        // 두 번 탭 문법(홈: 말해서 시작하기)으로 위임된다. 한 번 탭만 갤러리를 연다.
+        // 시작 위치는 그대로 두고 화면 맨 아래까지 채우도록 키웠다 (사용자 요청 2026-08-25).
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
                 .fillMaxWidth()
+                .weight(1f)
+                .padding(bottom = 16.dp)
                 .background(SnapPalette.Card, RoundedCornerShape(14.dp))
-                .border(1.dp, SnapPalette.CardBorder, RoundedCornerShape(14.dp))
-                .clickable(onClick = onOpenGallery)
+                // 테두리가 배경에 묻히지 않고 항상 보이도록 흰색 보더라인 (사용자 요청 2026-08-25).
+                .border(1.5.dp, Color.White, RoundedCornerShape(14.dp))
+                .grammarClickable(onClick = onOpenGallery)
                 .semantics { contentDescription = "갤러리 열기" },
         ) {
+            // 설정 글씨 크기(39sp)와 맞췄다 (사용자 요청 2026-08-25)
             Text(
                 text = "갤러리",
                 color = SnapPalette.TextPrimary,
-                fontSize = 15.sp,
+                fontSize = 39.sp,
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.padding(vertical = 16.dp),
             )
         }
-        Spacer(Modifier.height(16.dp))
     }
 }
