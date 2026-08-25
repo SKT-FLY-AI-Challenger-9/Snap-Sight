@@ -3,6 +3,7 @@
 // 백엔드 서버 주소 입력(시연장 Wi-Fi 대비)은 앱 전용 기능이라 시안에 없지만 같은 카드 스타일로 둔다.
 package com.example.snap_sight.ux
 
+import com.example.snap_sight.KoreanJosa
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -108,17 +109,17 @@ fun SettingsScreen(
         ) {
             SectionLabel("안내 피드백")
 
-            SliderCard(
+            ChoiceCard(
                 label = "진동 강도",
                 description = "방향 안내 햅틱의 세기",
-                valueText = "${(state.vibrationIntensity * 100).roundToInt()}%",
-                value = state.vibrationIntensity,
-                valueRange = 0f..1f,
-                steps = 19,
-                lowLabel = "약하게",
-                highLabel = "강하게",
-                onValueChange = onVibrationIntensityChange,
-                onAnnounce = onAnnounceValue,
+                options = VibrationIntensity.entries.map { it.label },
+                selectedIndex = VibrationIntensity.entries
+                    .indexOf(VibrationIntensity.fromValue(state.vibrationIntensity)),
+                onSelect = { index ->
+                    val intensity = VibrationIntensity.entries[index]
+                    onVibrationIntensityChange(intensity.value)
+                    onAnnounceValue(KoreanJosa.changedAnnouncement("진동 강도", intensity.label))
+                },
             )
             Spacer(Modifier.height(12.dp))
             SliderCard(
@@ -159,7 +160,7 @@ fun SettingsScreen(
                 onSelect = { index ->
                     val speed = SpeechSpeed.entries[index]
                     onSpeechRateChange(speed.rate)
-                    onAnnounceValue("음성 속도 ${speed.label}")
+                    onAnnounceValue(KoreanJosa.changedAnnouncement("음성 속도", speed.label))
                 },
             )
 
@@ -276,7 +277,7 @@ fun SettingsScreen(
                                             )
                                             .clickable {
                                                 onGridColorChange(argb)
-                                                onAnnounceValue("그리드 색 $name")
+                                                onAnnounceValue(KoreanJosa.changedAnnouncement("그리드 색", name))
                                             }
                                             .semantics {
                                                 contentDescription = if (selected) {
@@ -304,7 +305,7 @@ fun SettingsScreen(
                                 onSelect = { index ->
                                     val thickness = GridThickness.entries[index]
                                     onGridThicknessChange(thickness.dp)
-                                    onAnnounceValue("그리드 굵기 ${thickness.label}")
+                                    onAnnounceValue(KoreanJosa.changedAnnouncement("그리드 굵기", thickness.label))
                                 },
                                 modifier = Modifier.padding(top = 8.dp),
                             )
@@ -626,7 +627,9 @@ private fun SliderCard(
             Slider(
                 value = value,
                 onValueChange = onValueChange,
-                onValueChangeFinished = onAnnounce?.let { announce -> { announce("$label $valueText") } },
+                onValueChangeFinished = onAnnounce?.let { announce ->
+                    { announce(KoreanJosa.changedAnnouncement(label, valueText)) }
+                },
                 valueRange = valueRange,
                 steps = steps,
                 colors = SliderDefaults.colors(
@@ -826,6 +829,24 @@ enum class SpeechSpeed(val label: String, val rate: Float) {
 }
 
 /**
+ * 방향 안내 햅틱 진동 강도 3단계 (2026-08-25) — 0~100% 연속 슬라이더는 화면을 보지 않고
+ * 조작할 때 "몇 퍼센트인지"가 감이 안 와 3단계 선택으로 바꿨다. 저장은 계속 Float(0f..1f)라
+ * 예전에 슬라이더로 저장된 값도 [fromValue]가 가장 가까운 단계로 받아준다.
+ */
+enum class VibrationIntensity(val label: String, val value: Float) {
+    WEAK("약하게", 0.35f),
+    MEDIUM("중간", 0.65f),
+    STRONG("강하게", 1f),
+    ;
+
+    companion object {
+        val DEFAULT = STRONG
+
+        fun fromValue(value: Float): VibrationIntensity = entries.minBy { abs(it.value - value) }
+    }
+}
+
+/**
  * 3×3 그리드 선 굵기 3단계.
  *
  * [dp]는 그대로 [SettingsUiState.gridThicknessDp]에 저장되므로, 예전 슬라이더로 저장된
@@ -838,7 +859,8 @@ enum class GridThickness(val label: String, val dp: Float) {
     ;
 
     companion object {
-        val DEFAULT = THIN
+        // 기본값은 THIN(1.5)의 2배인 MEDIUM(3) (2026-08-24).
+        val DEFAULT = MEDIUM
 
         fun fromDp(dp: Float): GridThickness = entries.minBy { abs(it.dp - dp) }
     }

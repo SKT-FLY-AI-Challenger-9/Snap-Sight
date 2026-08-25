@@ -118,6 +118,10 @@ import com.example.snap_sight.ux.SettingsRepository
 import com.example.snap_sight.ux.SettingsScreen
 import com.example.snap_sight.ux.SettingsUiState
 import com.example.snap_sight.ux.SpeechSpeed
+import com.example.snap_sight.ux.VibrationIntensity
+import com.example.snap_sight.ux.VoicePreset
+import com.example.snap_sight.ux.GridThickness
+import com.example.snap_sight.ux.GRID_COLOR_CHOICES
 import com.example.snap_sight.ux.AppVoiceCommand
 import com.example.snap_sight.ux.VoiceCommands
 import com.example.snap_sight.ux.LocalTapGrammarActions
@@ -915,15 +919,20 @@ class MainActivity : ComponentActivity() {
                                     else -> onHomeBackPressed()
                                 }
                             }
+                            val mainGrammar = TapGrammarActions(
+                                onDoubleTap = { onMainMainAction() },
+                                onTripleTap = { onMainSubAction() },
+                                onLongPress = { onMainBackAction() },
+                            )
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     // #84: 두 번 탭=메인(시작/발화 종료/셔터/다시 촬영), 길게=뒤로,
                                     // 세 번 탭=서브(홈: 사진 찾기 / 세션: 상태 낭독 / 결과: 설명 듣기).
                                     .appTapGrammar(
-                                        onDoubleTap = { onMainMainAction() },
-                                        onTripleTap = { onMainSubAction() },
-                                        onLongPress = { onMainBackAction() },
+                                        onDoubleTap = mainGrammar.onDoubleTap,
+                                        onTripleTap = mainGrammar.onTripleTap,
+                                        onLongPress = mainGrammar.onLongPress,
                                     ),
                             ) {
                                 if (cameraNeeded) {
@@ -948,6 +957,9 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
                                 if (homeVisible) {
+                                    // 갤러리 카드는 화면 대부분을 덮는 클릭 요소라 grammarClickable을
+                                    // 쓴다 — 이 위임이 없으면 일반 clickable로 그대로 동작한다.
+                                    CompositionLocalProvider(LocalTapGrammarActions provides mainGrammar) {
                                     HomeScreen(
                                         onStartSession = { sessionManager.onVolumePressed() },
                                         onOpenGallery = { openGallery() },
@@ -956,6 +968,7 @@ class MainActivity : ComponentActivity() {
                                             sessionState == SessionState.PARSING,
                                         recognizedText = sessionRawText,
                                     )
+                                    }
                                 }
                                 if (showResult) {
                                     ResultScreen(
@@ -1016,12 +1029,7 @@ class MainActivity : ComponentActivity() {
                             onSpeechRateChange = {
                                 updateSettings(settingsUiState.copy(speechRate = it))
                             },
-                            onGridEnabledChange = { enabled ->
-                                updateSettings(settingsUiState.copy(gridEnabled = enabled))
-                                guidanceFeedback.announce(
-                                    if (enabled) "촬영 그리드를 켰어요" else "촬영 그리드를 껐어요"
-                                )
-                            },
+                            onGridEnabledChange = { enabled -> applyGridEnabled(enabled) },
                             onGridColorChange = {
                                 updateSettings(settingsUiState.copy(gridColorArgb = it))
                             },
@@ -1029,19 +1037,10 @@ class MainActivity : ComponentActivity() {
                                 updateSettings(settingsUiState.copy(gridThicknessDp = it))
                             },
                             onAnnounceValue = { guidanceFeedback.announce(it) },
-                            onVoicePresetChange = { key ->
-                                updateSettings(settingsUiState.copy(voicePreset = key))
-                                // 미리듣기 (기획: 실사용 문구를 새 목소리로 바로 재생) —
-                                // 카탈로그 문장이라 프리셋 음원으로, 기본 프리셋이면 내장 TTS 로 나온다
-                                guidanceFeedback.announce("조금 왼쪽으로 이동해 주세요.")
-                            },
+                            onVoicePresetChange = { key -> applyVoicePreset(key) },
                             serverAiDescriptionEnabled = settingsUiState.serverAiDescriptionEnabled,
-                            onServerAiDescriptionEnabledChange = {
-                                updateSettings(settingsUiState.copy(serverAiDescriptionEnabled = it))
-                                guidanceFeedback.announce(
-                                    if (it) "서버 AI 사진 설명을 켰어요"
-                                    else "서버 AI 사진 설명을 껐어요. 촬영 사진은 서버로 보내지 않아요"
-                                )
+                            onServerAiDescriptionEnabledChange = { enabled ->
+                                applyServerAiDescription(enabled)
                             },
                             serverUrl = backendUrlInput,
                             onServerUrlChange = { backendUrlInput = it },
@@ -1336,11 +1335,16 @@ class MainActivity : ComponentActivity() {
         currentScreen = screen
         guidanceFeedback.playScreenEnter()
         val firstVisit = visitedScreens.add(screen)
-        val message = when (screen) {
-            // 설정은 매 진입마다 무엇을 바꿀 수 있는지 알려준다 (사용자 요청 2026-08-24)
-            AppScreen.SETTINGS ->
-                "설정 화면입니다. 이곳에서 음성 가이드, 속도, 진동 강도를 변경할 수 있어요"
-            AppScreen.GALLERY ->
+        when (screen) {
+            // 설정은 매 진입마다 무엇을 바꿀 수 있는지 알려준다 (사용자 요청 2026-08-24).
+            // 안내가 끝나면 바로 듣기 시작해 "목소리 바꿔줘"처럼 말로도 설정을 바꿀 수 있게 한다
+            // (사용자 요청 2026-08-25).
+            AppScreen.SETTINGS -> guidanceFeedback.announce(
+                "설정 화면입니다. 이곳에서 음성 가이드, 속도, 진동 강도를 변경할 수 있어요. " +
+                    "무엇을 바꿀까요?",
+                onDone = { startSettingsVoiceCommand() },
+            )
+            AppScreen.GALLERY -> guidanceFeedback.announce(
                 if (firstVisit) {
                     "갤러리입니다. 사진이 분류별 폴더로 정리돼 있고, " +
                         "말해서 찾기 버튼으로 음성 검색도 할 수 있어요. " +
@@ -1348,9 +1352,9 @@ class MainActivity : ComponentActivity() {
                 } else {
                     "갤러리입니다"
                 }
-            else -> null
+            )
+            else -> {}
         }
-        message?.let { guidanceFeedback.announce(it) }
     }
 
     /** 홈 복귀 — 하강 earcon + "홈입니다" 1회. */
@@ -1444,7 +1448,7 @@ class MainActivity : ComponentActivity() {
     private fun announceSettingsSummary() {
         val s = settingsUiState
         guidanceFeedback.announce(
-            "진동 강도 ${(s.vibrationIntensity * 100).roundToInt()}퍼센트, " +
+            "진동 강도 ${VibrationIntensity.fromValue(s.vibrationIntensity).label}, " +
                 "사운드 강도 ${(s.soundVolume * 100).roundToInt()}퍼센트, " +
                 "음성 속도 ${SpeechSpeed.fromRate(s.speechRate).label}, " +
                 "서버 AI 사진 설명 ${if (s.serverAiDescriptionEnabled) "켜짐" else "꺼짐"}, " +
@@ -1458,6 +1462,200 @@ class MainActivity : ComponentActivity() {
             "촬영 중 방향과 거리는 사운드와 진동으로 안내하고, " +
                 "대상을 찾았을 때와 촬영 순간에만 짧은 음성을 사용합니다"
         )
+    }
+
+    /** 안내 목소리 프리셋 적용 — 터치(선택 카드)와 음성("목소리 바꿔줘") 두 경로가 공유한다. */
+    private fun applyVoicePreset(key: String) {
+        updateSettings(settingsUiState.copy(voicePreset = key))
+        val label = VoicePreset.fromKey(key).label
+        // 변경 알림 자체가 이미 바뀐 프리셋으로 나가 확인+미리듣기를 겸한다. 알림이 끝나면
+        // 카탈로그 문장으로 한 번 더 미리듣기(기획: 실사용 문구를 새 목소리로 재생) — 카탈로그
+        // 문장이라 프리셋 음원으로 즉시 재생되고, 기본 프리셋이면 내장 TTS 로 나온다.
+        guidanceFeedback.announce(KoreanJosa.changedAnnouncement("안내 목소리", label), onDone = {
+            guidanceFeedback.announce("조금 왼쪽으로 이동해 주세요.")
+        })
+    }
+
+    /** 진동 강도 적용 — 터치(선택 카드)와 음성 두 경로가 같은 확인 문구를 쓴다. */
+    private fun applyVibrationIntensity(level: VibrationIntensity) {
+        updateSettings(settingsUiState.copy(vibrationIntensity = level.value))
+        guidanceFeedback.announce(KoreanJosa.changedAnnouncement("진동 강도", level.label))
+    }
+
+    /** 음성 속도 적용 — 터치(선택 카드)와 음성 두 경로가 같은 확인 문구를 쓴다. */
+    private fun applySpeechSpeed(speed: SpeechSpeed) {
+        updateSettings(settingsUiState.copy(speechRate = speed.rate))
+        guidanceFeedback.announce(KoreanJosa.changedAnnouncement("음성 속도", speed.label))
+    }
+
+    /** 3×3 그리드 켜기/끄기 적용 — 터치(스위치)와 음성 두 경로가 공유한다. */
+    private fun applyGridEnabled(enabled: Boolean) {
+        updateSettings(settingsUiState.copy(gridEnabled = enabled))
+        guidanceFeedback.announce(
+            KoreanJosa.changedAnnouncement("3×3 그리드", if (enabled) "켜짐" else "꺼짐")
+        )
+    }
+
+    /** 그리드 굵기 적용 — 터치(선택 버튼)와 음성 두 경로가 같은 확인 문구를 쓴다. */
+    private fun applyGridThickness(thickness: GridThickness) {
+        updateSettings(settingsUiState.copy(gridThicknessDp = thickness.dp))
+        guidanceFeedback.announce(KoreanJosa.changedAnnouncement("그리드 굵기", thickness.label))
+    }
+
+    /** 그리드 색 적용 — 터치(색상 스와치)와 음성 두 경로가 같은 확인 문구를 쓴다. */
+    private fun applyGridColor(name: String, argb: Int) {
+        updateSettings(settingsUiState.copy(gridColorArgb = argb))
+        guidanceFeedback.announce(KoreanJosa.changedAnnouncement("그리드 색", name))
+    }
+
+    /** 서버 AI 사진 설명 켜기/끄기 적용 — 터치(스위치)와 음성 두 경로가 공유한다. */
+    private fun applyServerAiDescription(enabled: Boolean) {
+        updateSettings(settingsUiState.copy(serverAiDescriptionEnabled = enabled))
+        val base = KoreanJosa.changedAnnouncement("서버 AI 사진 설명", if (enabled) "켜짐" else "꺼짐")
+        guidanceFeedback.announce(
+            if (enabled) base else "$base. 촬영 사진은 서버로 보내지 않아요"
+        )
+    }
+
+    /**
+     * 설정 화면 진입 안내("무엇을 바꿀까요?")가 끝나면 바로 듣기 시작한다 (사용자 요청
+     * 2026-08-25). 마이크 권한이 없거나 못 들었으면 조용히 화면 조작으로 넘어간다 — 매번
+     * 재시도를 강요하면 터치로만 쓰려는 사람에게는 방해가 된다.
+     */
+    private fun startSettingsVoiceCommand() {
+        if (currentScreen != AppScreen.SETTINGS) return // 안내 도중 다른 화면으로 나갔으면 취소
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED || !searchRecognizer.isAvailable
+        ) {
+            return
+        }
+        searchRecognizer.start(object : SpeechToTextRecognizer.Listener {
+            override fun onRecognized(text: String) = handleSettingsVoiceCommand(text)
+            override fun onError(message: String) {}
+        })
+    }
+
+    /**
+     * 설정 화면 첫 발화 해석 — 어떤 항목을 바꾸고 싶은지 키워드로 잡아 [listenForSettingsChoice]나
+     * [listenForToggleChoice]로 넘긴다. 진입 안내가 "음성 가이드, 속도, 진동 강도"라고 말하는
+     * 항목들이라 그 표현을 그대로 알아듣게 했고, 화면에 있는 나머지 항목(그리드 굵기·색·켜기,
+     * 서버 AI 사진 설명)도 같은 방식으로 잡는다 (사용자 요청 2026-08-25).
+     *
+     * 그리드 굵기·색은 "그리드"라는 말을 함께 쓰기 쉬워 그리드 켜기/끄기보다 먼저 검사한다 —
+     * "그리드 굵기 바꿔줘"가 굵기가 아니라 켜기/끄기로 잘못 잡히면 안 된다.
+     */
+    private fun handleSettingsVoiceCommand(utterance: String) {
+        val compact = utterance.replace(" ", "")
+        when {
+            VOICE_PRESET_COMMAND_WORDS.any(compact::contains) -> listenForSettingsChoice(
+                VoicePreset.entries.map { preset ->
+                    SettingsVoiceOption(preset.label) { applyVoicePreset(preset.key) }
+                },
+            )
+            VIBRATION_COMMAND_WORDS.any(compact::contains) -> listenForSettingsChoice(
+                VibrationIntensity.entries.map { level ->
+                    SettingsVoiceOption(level.label) { applyVibrationIntensity(level) }
+                },
+            )
+            SPEED_COMMAND_WORDS.any(compact::contains) -> listenForSettingsChoice(
+                SpeechSpeed.entries.map { speed ->
+                    SettingsVoiceOption(speed.label) { applySpeechSpeed(speed) }
+                },
+            )
+            GRID_THICKNESS_COMMAND_WORDS.any(compact::contains) -> listenForSettingsChoice(
+                GridThickness.entries.map { thickness ->
+                    SettingsVoiceOption(thickness.label) { applyGridThickness(thickness) }
+                },
+            )
+            GRID_COLOR_COMMAND_WORDS.any(compact::contains) -> listenForSettingsChoice(
+                GRID_COLOR_CHOICES.map { (name, argb) ->
+                    SettingsVoiceOption(name) { applyGridColor(name, argb) }
+                },
+            )
+            GRID_COMMAND_WORDS.any(compact::contains) -> when {
+                DISABLE_WORDS.any(compact::contains) -> applyGridEnabled(false)
+                ENABLE_WORDS.any(compact::contains) -> applyGridEnabled(true)
+                else -> listenForToggleChoice("3×3 그리드를 켤까요, 끌까요?", ::applyGridEnabled)
+            }
+            SERVER_AI_COMMAND_WORDS.any(compact::contains) -> when {
+                DISABLE_WORDS.any(compact::contains) -> applyServerAiDescription(false)
+                ENABLE_WORDS.any(compact::contains) -> applyServerAiDescription(true)
+                else -> listenForToggleChoice(
+                    "서버 AI 사진 설명을 켤까요, 끌까요?", ::applyServerAiDescription,
+                )
+            }
+        }
+    }
+
+    /** 설정 화면 다중 턴 음성 대화의 선택지 하나 — 발화가 [label]을 포함하면 [apply]를 실행한다. */
+    private class SettingsVoiceOption(val label: String, val apply: () -> Unit)
+
+    /**
+     * 선택지를 말해주고 다음 발화를 듣는다. 못 알아들으면 [SETTINGS_VOICE_MAX_ATTEMPTS]번까지
+     * 다시 물어본다(사용자 요청 2026-08-25) — 한 번 실패했다고 화면 조작으로 돌리면 대화가
+     * 뚝뚝 끊긴다. 그래도 안 되면 화면 조작을 권하고 멈춘다(끝없이 듣지 않는다).
+     */
+    private fun listenForSettingsChoice(options: List<SettingsVoiceOption>, attempt: Int = 1) {
+        val names = options.joinToString(", ") { it.label }
+        val prompt = if (attempt == 1) {
+            "$names 가 있어요. 무엇으로 바꿀까요?"
+        } else {
+            "다시 말씀해 주세요. $names 중에서 무엇으로 바꿀까요?"
+        }
+        guidanceFeedback.announce(prompt, onDone = {
+            searchRecognizer.start(object : SpeechToTextRecognizer.Listener {
+                override fun onRecognized(text: String) {
+                    val compact = text.replace(" ", "")
+                    val chosen = options.firstOrNull { compact.contains(it.label) }
+                    if (chosen != null) {
+                        chosen.apply()
+                    } else if (attempt < SETTINGS_VOICE_MAX_ATTEMPTS) {
+                        listenForSettingsChoice(options, attempt + 1)
+                    } else {
+                        speak("잘 못 알아들었어요. 화면에서 직접 골라 주세요")
+                    }
+                }
+
+                override fun onError(message: String) {
+                    if (attempt < SETTINGS_VOICE_MAX_ATTEMPTS) {
+                        listenForSettingsChoice(options, attempt + 1)
+                    } else {
+                        speak("잘 못 들었어요. 화면에서 직접 골라 주세요")
+                    }
+                }
+            })
+        })
+    }
+
+    /**
+     * 켜기/끄기 두 갈래뿐인 항목을 묻는다 — "켜줘/꺼줘"처럼 답이 고정 라벨과 다르게 나올 수
+     * 있어 [listenForSettingsChoice]의 라벨 포함 매칭 대신 [ENABLE_WORDS]/[DISABLE_WORDS]로
+     * 직접 판정한다. 여기도 [SETTINGS_VOICE_MAX_ATTEMPTS]번까지 다시 물어본다.
+     */
+    private fun listenForToggleChoice(prompt: String, apply: (Boolean) -> Unit, attempt: Int = 1) {
+        val question = if (attempt == 1) prompt else "다시 말씀해 주세요. $prompt"
+        guidanceFeedback.announce(question, onDone = {
+            searchRecognizer.start(object : SpeechToTextRecognizer.Listener {
+                override fun onRecognized(text: String) {
+                    val compact = text.replace(" ", "")
+                    when {
+                        DISABLE_WORDS.any(compact::contains) -> apply(false)
+                        ENABLE_WORDS.any(compact::contains) -> apply(true)
+                        attempt < SETTINGS_VOICE_MAX_ATTEMPTS ->
+                            listenForToggleChoice(prompt, apply, attempt + 1)
+                        else -> speak("잘 못 알아들었어요. 화면에서 직접 켜고 꺼주세요")
+                    }
+                }
+
+                override fun onError(message: String) {
+                    if (attempt < SETTINGS_VOICE_MAX_ATTEMPTS) {
+                        listenForToggleChoice(prompt, apply, attempt + 1)
+                    } else {
+                        speak("잘 못 들었어요. 화면에서 직접 켜고 꺼주세요")
+                    }
+                }
+            })
+        })
     }
 
     /** 홈에서 시스템 뒤로가기 — 1회차는 예고만, 2초 안에 다시 누르면 종료. */
@@ -2995,6 +3193,25 @@ class MainActivity : ComponentActivity() {
 
         // "지금 목록에 뭐가 있는지 읽어줘" 명령 (공백 제거 후 포함 비교)
         private val LIST_COMMANDS = listOf("목록", "뭐있어", "뭐가있", "어떤사진", "읽어줘", "훑어")
+
+        // 설정 화면 진입 후 첫 발화 — 진입 안내 문장("음성 가이드, 속도, 진동 강도를 변경할
+        // 수 있어요")이 부르는 이름과, 화면에 있는 나머지 항목의 이름을 그대로 알아듣게 맞췄다
+        // (공백 제거 후 포함 비교, 2026-08-25).
+        private val VOICE_PRESET_COMMAND_WORDS = listOf("목소리", "보이스", "음성가이드", "음성안내")
+        private val VIBRATION_COMMAND_WORDS = listOf("진동", "햅틱")
+        private val SPEED_COMMAND_WORDS = listOf("속도")
+        // 그리드 굵기·색은 "그리드"를 포함하기 쉬워 [GRID_COMMAND_WORDS]보다 먼저 검사한다
+        private val GRID_THICKNESS_COMMAND_WORDS = listOf("굵기", "두께")
+        private val GRID_COLOR_COMMAND_WORDS = listOf("그리드색", "격자색", "색깔", "컬러", "색")
+        private val GRID_COMMAND_WORDS = listOf("그리드", "격자")
+        private val SERVER_AI_COMMAND_WORDS = listOf("사진설명", "서버AI", "AI설명")
+
+        // 켜기/끄기류 항목의 발화 판정 — VoiceCommands.kt의 그리드 토글 판정과 같은 단어 묶음
+        private val ENABLE_WORDS = listOf("켜", "보여", "표시", "사용")
+        private val DISABLE_WORDS = listOf("꺼", "끄", "숨겨", "없애")
+
+        // 설정 음성 대화에서 선택지를 못 알아들었을 때 다시 물어보는 최대 횟수(첫 시도 포함)
+        private const val SETTINGS_VOICE_MAX_ATTEMPTS = 3
 
         // 얼굴 등록 흐름 타이밍 (기능 2) — 안내 음성이 마이크에 섞이지 않을 정도의 지연
         /**
