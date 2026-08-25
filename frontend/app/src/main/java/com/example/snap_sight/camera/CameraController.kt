@@ -21,6 +21,9 @@ import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
@@ -215,9 +218,23 @@ class CameraController(private val context: Context) {
             null
         } else {
             // 저해상도 분석 스트림은 Preview/원본 촬영과 분리한다. 느리면 최신 프레임만 유지한다.
+            // 반드시 4:3 로 고정한다 (2026-08-25): 예전 setTargetResolution(640x480) 은 세로
+            // targetRotation 기준으로 해석돼 기기가 1:1 스트림을 고르는 일이 있었고, ViewPort(FIT)가
+            // 세 use case 버퍼의 교집합을 공통 크롭으로 삼기 때문에 **사진까지 3060x3060 정사각**으로
+            // 잘려 저장됐다. 분석 버퍼가 4:3 이면 교집합 = 센서 전체(4:3)라 사진이 원본 비율로 나온다.
             ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .setTargetResolution(ANALYSIS_RESOLUTION)
+                .setResolutionSelector(
+                    ResolutionSelector.Builder()
+                        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                        .setResolutionStrategy(
+                            ResolutionStrategy(
+                                ANALYSIS_RESOLUTION,
+                                ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
+                            )
+                        )
+                        .build()
+                )
                 .build()
         }
         frameAnalysisAdapter.setEnabled(analysisMode == AnalysisMode.ACTIVE)
@@ -234,6 +251,14 @@ class CameraController(private val context: Context) {
         if (viewPort != null) groupBuilder.setViewPort(viewPort)
         boundWithViewPort = viewPort != null
         camera = provider.bindToLifecycle(lifecycleOwner, selector, groupBuilder.build())
+        // 사진 정사각 크롭 회귀 감시용 — cropRect 가 resolution 전체와 다르면 ViewPort 교집합이
+        // 다시 좁아진 것이다 (위 4:3 고정 주석 참고).
+        Log.i(
+            TAG,
+            "바인딩 완료: capture=${imageCapture?.resolutionInfo?.resolution}" +
+                " crop=${imageCapture?.resolutionInfo?.cropRect}" +
+                ", analysis=${imageAnalysis?.resolutionInfo?.resolution}",
+        )
         // 기본 상태: 연속 AF (CameraX 기본값). 별도 호출 불필요.
     }
 
@@ -678,6 +703,7 @@ class CameraController(private val context: Context) {
 
         /** 보존할 최근 세션 폴더 수 — 초과분은 오래된 것부터 삭제. */
         const val BURST_DEBUG_KEEP = 20
+        /** 분석 스트림 목표 크기 — 센서(가로) 좌표 기준. AspectRatioStrategy 4:3 과 짝. */
         val ANALYSIS_RESOLUTION = Size(640, 480)
     }
 }
