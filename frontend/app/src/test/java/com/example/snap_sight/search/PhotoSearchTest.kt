@@ -19,7 +19,7 @@ class PhotoSearchTest {
           "version": 3,
           "labels": [
             {"id": "food", "name": "음식", "synonyms": ["먹을 거", "밥", "요리"]},
-            {"id": "nature", "name": "자연", "synonyms": ["바다", "바닷가", "산"]},
+            {"id": "nature", "name": "자연", "synonyms": ["바다", "바닷가", "산", "나무"]},
             {"id": "birthday", "name": "생일", "synonyms": ["생파", "케이크"]},
             {"id": "indoor", "name": "실내", "synonyms": ["집", "방"]},
             {"id": "night", "name": "밤", "synonyms": ["야경", "저녁", "밤에"]}
@@ -57,6 +57,32 @@ class PhotoSearchTest {
         // 단어로 말했을 때는 정상 매칭 — 조사가 붙어도 뗀 뒤 비교한다
         assertEquals(setOf("indoor"), dictionary.matchUtterance("방 사진 보여줘"))
         assertEquals(setOf("indoor"), dictionary.matchUtterance("집에서 찍은 사진"))
+    }
+
+    @Test
+    fun customLabelWordDoesNotAlsoTriggerUnrelatedFixedLabel() {
+        // 실사용 버그 2026-08-27: "우리 나무"로 저장한 사진은 fixed_labels가 비어 있는데(아직
+        // 자동 분석 전), "나무"가 자연 라벨의 동의어이기도 해서 검색 시 자연 라벨까지 요구돼
+        // 버렸다 — 커스텀 라벨로 이미 잡힌 구간은 고정 라벨 매칭에서 제외해야 한다.
+        val query = parser(custom = listOf("우리 나무")).parse("우리 나무 사진 찾아줘", nowMs)
+        assertEquals(setOf("우리 나무"), query.customLabels)
+        assertTrue(query.labelIds.isEmpty())
+        assertTrue(query.freeTerms.isEmpty())
+        assertTrue(
+            PhotoSearchEngine.matches(
+                entry(fixedLabels = emptySet(), customUser = setOf("우리 나무"), longDesc = null), query,
+            )
+        )
+    }
+
+    @Test
+    fun possessivePronounDoesNotBlockLabelMatch() {
+        // "우리"는 필러 취급 — "나무"만 라벨(자연)로 매칭되고 "우리"가 남아 AND 조건을
+        // 깨면 안 된다 (실사용 버그 2026-08-27 — "우리 나무"라고 말했는데 검색 안 됨)
+        val query = parser().parse("우리 나무 사진 찾아줘", nowMs)
+        assertEquals(setOf("nature"), query.labelIds)
+        assertTrue(query.freeTerms.isEmpty())
+        assertTrue(PhotoSearchEngine.matches(entry(fixedLabels = setOf("nature")), query))
     }
 
     @Test

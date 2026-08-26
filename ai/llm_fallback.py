@@ -80,9 +80,18 @@ def resolve_target_spec(
         return rule_based
 
     llm_result = resolve_with_llm(text, session_id, source)
-    if llm_result is None or llm_result.status is TargetSpecStatus.NEEDS_CLARIFICATION:
+    if llm_result is None:
         return rule_based
-    return llm_result
+    if llm_result.status is not TargetSpecStatus.NEEDS_CLARIFICATION:
+        return llm_result
+    # 둘 다 확신이 낮아도, LLM이 "사물"이라고는 판단했으면(정확한 라벨은 몰라도) 그 판단은
+    # 살려서 돌려준다 — 규칙 기반의 기본값(person)은 "몰라서 사람으로 찍은" 게 아니라 그냥
+    # 아무 신호도 못 잡은 것이라, "사물인데 지원 목록에 없다"는 정보를 덮어써버린다. 앱은 이
+    # subject_type=object/object_label=None 신호로 "아직 지원되지 않는 사물이에요" 안내를
+    # 낸다 (사용자 요청 2026-08-27).
+    if llm_result.subject_type is SubjectType.OBJECT:
+        return llm_result
+    return rule_based
 
 
 def resolve_with_llm(

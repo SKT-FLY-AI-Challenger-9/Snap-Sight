@@ -68,13 +68,28 @@ class PhotoQueryParser(
         val timePhrase = listOfNotNull(datePhrase, hourPhrase)
             .joinToString(" ")
             .ifBlank { null }
+        // "skt", "타워", "skt 타워"처럼 같은 대상에 조각난 커스텀 라벨이 여러 개 등록돼 있으면
+        // 전부 substring으로 매칭돼 AND 조건이 돼버려, 그 셋을 동시에 가진 사진이 없으면 영영
+        // 못 찾는다 (실사용 버그 2026-08-26 — "SKT타워라고 분명히 저장했는데 왜 못 찾을까").
+        // 다른 매칭 후보에 포함되는(=부분집합인) 라벨은 버리고 가장 구체적인 것만 남긴다.
+        val candidateCustom = customLabels.filter { normalized.contains(PhotoLabelDictionary.normalize(it)) }
+        val matchedCustom = candidateCustom.filterNot { candidate ->
+            candidateCustom.any { other ->
+                other != candidate &&
+                    PhotoLabelDictionary.normalize(other).contains(PhotoLabelDictionary.normalize(candidate))
+            }
+        }.toSet()
         // 시각으로 이미 해석된 단어("저녁 6시"의 저녁)가 라벨 동의어(밤←저녁)로 이중 매칭돼
         // 엉뚱한 라벨 조건을 만들지 않게, 시각 표현을 지운 발화로 라벨을 매칭한다 (2026-08-23).
-        val labelSource = if (hourPhrase == null) utterance else stripHourWords(utterance)
+        // 커스텀 라벨 문구 속 단어가 고정 사전 동의어와 우연히 겹치는 경우도 마찬가지로 지운다
+        // — 예: "우리 나무"로 저장한 사진은 그 문구 자체가 커스텀 라벨인데, "나무"가 자연
+        // 라벨의 동의어이기도 해서 자연 라벨까지 조건에 끼어들면, 자연으로 분류된 적 없는
+        // (이 사진처럼 아직 자동 분석이 안 된) 사진은 AND 조건에 걸려 검색에서 빠진다
+        // (실사용 버그 2026-08-27 — "우리 나무라고 말했는데 검색이 안 됨").
+        val labelSource = matchedCustom.fold(
+            if (hourPhrase == null) utterance else stripHourWords(utterance)
+        ) { source, custom -> source.replace(custom, " ", ignoreCase = true) }
         val labelIds = dictionary.matchUtterance(labelSource)
-        val matchedCustom = customLabels
-            .filter { normalized.contains(PhotoLabelDictionary.normalize(it)) }
-            .toSet()
         val matchedPeople = peopleNames
             .filter { normalized.contains(PhotoLabelDictionary.normalize(it)) }
             .toSet()
@@ -278,6 +293,10 @@ class PhotoQueryParser(
             "사진", "찍은", "찍었던", "촬영한", "찾아줘", "찾아", "보여줘", "보여",
             "검색", "검색해줘", "그중에", "중에", "중에서", "나온", "나오는", "있는",
             "들어간", "거", "것", "때",
+            // 소유격 대명사 — "우리 나무"처럼 뒤에 오는 명사만 사전/설명과 매칭시켜야 하는데,
+            // "우리"가 필러가 아니면 설명 본문에 그대로 없어서 AND 조건에 걸려 통째로 검색이
+            // 실패한다 (실사용 버그 2026-08-27 — "우리 나무" 촬영 후 검색 안 됨).
+            "우리", "저희", "내", "제",
         )
     }
 }
