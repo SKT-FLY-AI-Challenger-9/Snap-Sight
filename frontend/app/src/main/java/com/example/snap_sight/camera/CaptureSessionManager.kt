@@ -154,6 +154,14 @@ class CaptureSessionManager(
     var state: SessionState = SessionState.IDLE
         private set
 
+    /**
+     * 방금 완료된(또는 진행 중인) 촬영이 CV 자동촬영([autoShutter])이었는지 — 수동 두 번 탭이면
+     * false. SAVED 진입 시점에 ⑥이 안내 경로(온디바이스 즉시 요약 vs LLM 설명)를 가르는 데 쓴다
+     * (사용자 요청 2026-08-26).
+     */
+    var lastCaptureWasAuto: Boolean = false
+        private set
+
     /** 현재 세션 식별자. 백엔드 API 의 session_id 로 그대로 사용한다. */
     var sessionId: String = ""
         private set
@@ -202,7 +210,7 @@ class CaptureSessionManager(
     fun autoShutter(expectedSessionId: String): Boolean {
         if (state != SessionState.AIMING) return false
         if (activeToken?.sessionId != expectedSessionId) return false
-        shutter(burstCount = AUTO_CAPTURE_BURST_COUNT)
+        shutter(burstCount = AUTO_CAPTURE_BURST_COUNT, isAuto = true)
         return true
     }
 
@@ -332,8 +340,9 @@ class CaptureSessionManager(
         parsingTimeout = null
     }
 
-    private fun shutter(burstCount: Int = 1) {
+    private fun shutter(burstCount: Int = 1, isAuto: Boolean = false) {
         val token = activeToken ?: return
+        lastCaptureWasAuto = isAuto
         bundleAssembler.begin(token)
         moveTo(SessionState.CAPTURING)
         val accepted = ringBuffer.requestCandidates(SystemClock.elapsedRealtime()) { candidates ->

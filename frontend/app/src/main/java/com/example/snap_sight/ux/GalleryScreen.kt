@@ -32,14 +32,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,6 +43,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.snap_sight.camera.GalleryPhoto
@@ -88,16 +83,12 @@ fun GalleryScreen(
     onPhotoClick: (GalleryPhoto) -> Unit = {},
     onReadResults: () -> Unit = {},
 ) {
-    var query by rememberSaveable { mutableStateOf("") }
-    // 기본은 갤럭시 갤러리처럼 라벨 폴더 화면 — 폴더를 고르거나, 음성 필터·검색어가 생기면 목록.
-    val listMode = selectedFolder != null || filterSummaries.isNotEmpty() || query.isNotBlank()
+    // 기본은 갤럭시 갤러리처럼 라벨 폴더 화면 — 폴더를 고르거나 음성 필터가 생기면 목록.
+    // 키보드 직접 입력 검색창은 없앴다(사용자 요청 2026-08-26) — 이 화면은 "말해서 찾기" 음성
+    // 검색이 기본 경로다.
+    val listMode = selectedFolder != null || filterSummaries.isNotEmpty()
     val filtered = photos?.filter { photo ->
-        val matchesQuery = query.isBlank() || photo.title.contains(query) ||
-            photo.description.contains(query) || photo.dateText.contains(query) ||
-            photo.labels.any { it.contains(query) } // 라벨·인물 이름으로도 찾아지게
-        val matchesFolder = selectedFolder == null || selectedFolder == GALLERY_ALL_FOLDER ||
-            selectedFolder in photo.labels
-        matchesQuery && matchesFolder
+        selectedFolder == null || selectedFolder == GALLERY_ALL_FOLDER || selectedFolder in photo.labels
     }
 
     Column(
@@ -131,12 +122,16 @@ fun GalleryScreen(
                 .padding(top = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            // 글자 크기 2배(2026-08-25) + 높이는 50% 축소(2026-08-26) — heightScale=1f는
+            // scale=1f일 때(원래 높이)의 절반: scale=2f였던 세로 여백(32dp)의 절반인 16dp.
             VoiceActionButton(
                 emoji = "🎤",
                 label = "말해서 찾기",
                 description = "말해서 찾기. 음성으로 사진을 검색합니다",
                 onClick = onVoiceSearch,
                 modifier = Modifier.weight(1f),
+                scale = 2f,
+                heightScale = 1f,
             )
             VoiceActionButton(
                 emoji = "🔊",
@@ -144,33 +139,10 @@ fun GalleryScreen(
                 description = "결과 듣기. 지금 목록에 있는 사진들을 순서대로 읽어드립니다",
                 onClick = onReadResults,
                 modifier = Modifier.weight(1f),
+                scale = 2f,
+                heightScale = 1f,
             )
         }
-
-        OutlinedTextField(
-            value = query,
-            onValueChange = { query = it },
-            placeholder = { Text("예: 바닷가에서 찍은 사진", color = GalleryTextSecondary) },
-            singleLine = true,
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedTextColor = GalleryTextPrimary,
-                unfocusedTextColor = GalleryTextPrimary,
-                focusedBorderColor = GalleryAccent,
-                unfocusedBorderColor = GalleryCard,
-            ),
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 10.dp)
-                .semantics { contentDescription = "사진 검색어 입력" },
-        )
-
-        Text(
-            text = "AI가 사진 속 사람·장소·상황을 기준으로 자동 정리했어요.",
-            style = MaterialTheme.typography.bodySmall,
-            color = GalleryTextSecondary,
-            modifier = Modifier.padding(top = 8.dp, bottom = 10.dp),
-        )
 
         // 음성 필터 스택 (점진 좁히기) — 누적된 조건과 해제 버튼 (기능 3-C)
         if (filterSummaries.isNotEmpty()) {
@@ -237,8 +209,7 @@ fun GalleryScreen(
                 !listMode -> FolderGrid(photos, onFolderSelect)
 
                 filtered.isNullOrEmpty() -> Text(
-                    text = if (query.isBlank()) "이 조건에 맞는 사진을 못 찾았어요."
-                    else "\"$query\"에 맞는 사진을 못 찾았어요.",
+                    text = "이 조건에 맞는 사진을 못 찾았어요.",
                     color = GalleryTextSecondary,
                     modifier = Modifier.padding(top = 24.dp),
                 )
@@ -251,9 +222,11 @@ fun GalleryScreen(
             }
         }
 
+        // 크기 2배 (사용자 요청 2026-08-25)
         HomeReturnButton(
             onClick = onBack,
             modifier = Modifier.padding(vertical = 12.dp),
+            scale = 2f,
         )
     }
 }
@@ -458,7 +431,14 @@ private fun categoryOf(photo: GalleryPhoto): String {
     }
 }
 
-/** 시안(v31)의 파란 테두리 음성 버튼 — 짙은 파랑 배경, 마이크/스피커 + 라벨. */
+/**
+ * 시안(v31)의 파란 테두리 음성 버튼 — 짙은 파랑 배경, 마이크/스피커 + 라벨.
+ *
+ * @param scale 글자 크기를 키우는 배율 — "말해서 찾기"·"결과 듣기"는 2배로 쓴다
+ * (사용자 요청 2026-08-25).
+ * @param heightScale 위아래 여백(버튼 높이)만 따로 조절하는 배율 — 기본은 [scale]과 같이
+ * 가지만, 글자는 크게 두고 높이만 줄이고 싶을 때(사용자 요청 2026-08-26) 별도로 준다.
+ */
 @Composable
 private fun VoiceActionButton(
     emoji: String,
@@ -466,23 +446,49 @@ private fun VoiceActionButton(
     description: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    scale: Float = 1f,
+    heightScale: Float = scale,
 ) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Center,
-        modifier = modifier
-            .background(GalleryVoiceBg, RoundedCornerShape(16.dp))
-            .border(2.dp, GalleryAccent, RoundedCornerShape(16.dp))
-            .grammarClickable(onClick)
-            .padding(horizontal = 12.dp, vertical = 16.dp)
-            .semantics { contentDescription = description },
-    ) {
-        Text(text = emoji, color = GalleryAccent)
-        Text(
-            text = "  $label",
-            color = GalleryTextPrimary,
-            fontWeight = FontWeight.Bold,
-        )
+    val buttonModifier = modifier
+        .background(GalleryVoiceBg, RoundedCornerShape(16.dp))
+        .border(2.dp, GalleryAccent, RoundedCornerShape(16.dp))
+        .grammarClickable(onClick)
+        .padding(horizontal = (12 * scale).dp, vertical = (16 * heightScale).dp)
+        .semantics { contentDescription = description }
+    // scale이 1보다 크면(갤러리 화면) 반쪽 너비에 "🔊 결과 듣기" 같은 문구가 한 줄에 안 들어가
+    // 줄바꿈되는데, 커진 글자 크기에 맞는 lineHeight 없이 Row로 나란히 두면 두 번째 줄이 첫
+    // 줄과 겹쳐 글씨가 깨져 보였다(실기기 확인 2026-08-25). 아이콘·글자를 세로로 쌓고
+    // lineHeight를 글자 크기에 맞춰 넉넉히 줘서 줄바꿈이 나도 겹치지 않게 한다.
+    if (scale == 1f) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+            modifier = buttonModifier,
+        ) {
+            Text(text = emoji, color = GalleryAccent, fontSize = (16 * scale).sp)
+            Text(
+                text = "  $label",
+                color = GalleryTextPrimary,
+                fontWeight = FontWeight.Bold,
+                fontSize = (16 * scale).sp,
+            )
+        }
+    } else {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = buttonModifier,
+        ) {
+            Text(text = emoji, color = GalleryAccent, fontSize = (16 * scale).sp)
+            Text(
+                text = label,
+                color = GalleryTextPrimary,
+                fontWeight = FontWeight.Bold,
+                fontSize = (16 * scale).sp,
+                lineHeight = (16 * scale * 1.3f).sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = (4 * heightScale).dp),
+            )
+        }
     }
 }
 

@@ -676,6 +676,26 @@ class GuidanceFeedback(context: Context) : DeviationListener {
             .also { toneGenerator = it }
     }
 
+    /**
+     * 진행 중이거나 곧 이어질 안내 음성을 전부 즉시 멈춘다 — 화면 전환 시 이전 화면의
+     * 음성이 새 화면까지 새어 나가는 문제 대책 (사용자 요청 2026-08-25: "yolo 설명에서
+     * 바로 홈으로 갔을 때 음성이 나오는 문제"). 화면 전환 함수(enterScreen·returnHome 등)
+     * 맨 앞에서 호출한다.
+     *
+     * [stopPrecached]·`tts.stop()`은 "완료 콜백은 반드시 호출된다"는 계약이라(다른 발화가
+     * 끼어들 때 대기 중인 호출부가 막히지 않게 하려는 것) 그대로 두면 "저장했어요→요약→
+     * 버튼 안내" 같은 onDone 체인이 화면이 바뀐 뒤에도 이어져 버린다. 콜백을 먼저 비워서
+     * 그 체인 자체를 끊은 뒤에 멈춘다.
+     */
+    fun stopSpeaking() {
+        utteranceCallbacks.clear()
+        utterancePriorities.clear()
+        activeUtteranceId = null
+        activeSpeechPriority = null
+        stopPrecached()
+        runCatching { tts.stop() }
+    }
+
     /** Activity onDestroy 등에서 호출 — TTS/톤/음원 리소스 해제. */
     fun release() {
         accessibilityManager?.removeTouchExplorationStateChangeListener(touchExplorationListener)

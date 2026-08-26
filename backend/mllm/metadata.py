@@ -32,8 +32,9 @@ load_dotenv()
 
 logger = load_logger("mllm_metadata.log")
 
-# 지연 허용(비동기 온디맨드)이므로 검색 품질을 위해 상위 모델을 쓴다 — 비교 판정과 동일.
-MODEL_ID = "claude-opus-5"
+# 수동 촬영 직후 즉시 낭독(brief_description)이 이 호출을 기다리므로 응답 속도를 우선한다
+# (사용자 요청 2026-08-26) — 검색용 상세 라벨·설명 품질은 다소 낮아질 수 있음을 감수한다.
+MODEL_ID = "claude-haiku-4-5-20251001"
 MAX_TOKENS = 2000
 METADATA_FILENAME = "metadata.json"
 
@@ -83,7 +84,15 @@ SYSTEM_PROMPT = (
     "단, 이미지에서 그 대상을 확인할 수 없으면 주인공으로 단정하지 않고 보이는 대로 설명한다. "
     "'요청한 촬영 대상'으로만 표시된 대상(참조 토큰 없음)은 토큰 없이 보이는 대로 지칭하며 "
     "같은 규칙으로 그 중심으로 서술한다.\n"
-    "people_count 는 사진 속에 뚜렷이 보이는 사람 수다. 사람이 없으면 0."
+    "people_count 는 사진 속에 뚜렷이 보이는 사람 수다. 사람이 없으면 0.\n"
+    "4. has_text — 사진 안에 사용자가 읽고 싶어할 만한 의미 있는 텍스트(메뉴판, 안내문, "
+    "표지판, 문서, 라벨 등)가 있으면 true. 벽지 무늬나 흐려서 못 읽는 글자처럼 정보성이 "
+    "없으면 false.\n"
+    "5. text_topic — has_text가 true일 때만, 그 텍스트가 무엇에 관한 것인지 2~5어절로 "
+    "요약한다 (예: '카페 메뉴판', '지하철 안내문'). has_text가 false면 빈 문자열.\n"
+    "6. text_content — has_text가 true일 때만, 이미지에서 읽을 수 있는 텍스트 원문을 "
+    "줄바꿈으로 구분해 최대한 그대로 옮겨 적는다(OCR). 나중에 사용자의 질문에 이 텍스트만 "
+    "보고 답해야 하므로 빠짐없이 옮긴다. has_text가 false면 빈 문자열."
 )
 
 _USER_PROMPT_TEMPLATE = """## 고를 수 있는 라벨 목록 (labels 는 반드시 이 id 중에서만)
@@ -112,6 +121,9 @@ class PhotoMetadataOutput(BaseModel):
     labels: list[str] = Field(default_factory=list)
     custom_labels: list[str] = Field(default_factory=list)
     people_count: int | None = Field(default=None, ge=0)
+    has_text: bool = False
+    text_topic: str = ""
+    text_content: str = ""
 
     @field_validator("brief_description", "long_description")
     @classmethod
@@ -258,6 +270,9 @@ def save_metadata(
             "labels": [],
             "custom_labels": [],
             "people_count": None,
+            "has_text": False,
+            "text_topic": None,
+            "text_content": None,
         }
     else:
         allowed_custom = set(requested_custom_labels)
@@ -268,6 +283,7 @@ def save_metadata(
                 continue
             seen_custom.add(name)
             custom_labels.append(name)
+        has_text = result.has_text and bool(result.text_content.strip())
         payload = {
             "taxonomy_version": taxonomy.version,
             "brief_description": result.brief(),
@@ -275,6 +291,9 @@ def save_metadata(
             "labels": taxonomy.validate_label_ids(result.labels)[:MAX_AUTO_LABELS],
             "custom_labels": custom_labels,
             "people_count": result.people_count,
+            "has_text": has_text,
+            "text_topic": result.text_topic.strip() or None if has_text else None,
+            "text_content": result.text_content.strip() or None if has_text else None,
         }
 
     payload["capture_revision"] = capture_revision

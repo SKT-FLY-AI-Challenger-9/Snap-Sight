@@ -21,6 +21,12 @@ data class PhotoIndexEntry(
     val shortDescription: String? = null,
     val longDescription: String? = null,
     val taxonomyVersion: Int? = null,
+    /** 사진에서 읽을 만한 텍스트(메뉴판·안내문 등)를 감지했는가 — 텍스트 Q&A 안내의 트리거. */
+    val hasText: Boolean = false,
+    /** 감지된 텍스트가 무엇에 관한 것인지 짧은 요약 (예: "카페 메뉴판"). */
+    val textTopic: String? = null,
+    /** 감지된 텍스트 원문 — 결과 화면에서 후속 질문에 답할 근거. */
+    val textContent: String? = null,
 ) {
     val allCustomLabels: Set<String> get() = customAuto + customUser
 }
