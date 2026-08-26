@@ -1,5 +1,11 @@
 # backend/api/tts.py
-"""① 재질문·에러 안내 등에 쓰이는 TTS 프록시 엔드포인트 (ElevenLabs / SKT A.X)."""
+"""동적 문장(즉시 요약·사진 설명 등) TTS 프록시 엔드포인트 (SKT A.X 전용).
+
+일레븐랩스는 더 이상 쓰지 않는다 — 앱 보이스 프리셋(아리아/올리버)과 1:1로 맞물리는
+SKT A.X 로 일원화한다 (사용자 요청 2026-08-26).
+"""
+
+import time
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
@@ -12,38 +18,12 @@ from ai.skt_tts_client import (
     SktTtsClient,
     SktTtsError,
 )
-from ai.tts_client import ElevenLabsTTSClient, TTSError
 from backend.api.guards import require_api_access
 from backend.utils.logger import load_logger
 
 logger = load_logger("tts.log")
 
 router = APIRouter(dependencies=[Depends(require_api_access)])
-
-
-class TtsRequest(BaseModel):
-    """POST /api/tts 요청 스키마."""
-
-    text: str
-
-
-@router.post("/api/tts")
-async def synthesize_speech(request: TtsRequest) -> Response:
-    """텍스트를 mp3 오디오로 변환해 반환한다. Android는 이 응답을 그대로 재생하면 된다."""
-    if not request.text.strip():
-        raise HTTPException(status_code=400, detail="text는 비어 있을 수 없습니다.")
-
-    try:
-        client = ElevenLabsTTSClient()
-        audio = await run_in_threadpool(client.synthesize, request.text)
-    except RuntimeError as e:
-        logger.error(f"TTS 클라이언트 초기화 실패: {e}")
-        raise HTTPException(status_code=503, detail="TTS 서비스를 사용할 수 없습니다.") from e
-    except TTSError as e:
-        logger.warning(f"TTS 요청 실패: {e}")
-        raise HTTPException(status_code=502, detail=str(e)) from e
-
-    return Response(content=audio, media_type="audio/mpeg")
 
 
 class SktTtsRequest(BaseModel):
@@ -68,6 +48,9 @@ async def synthesize_skt_speech(request: SktTtsRequest) -> Response:
     if request.voice not in SKT_ALLOWED_VOICES:
         raise HTTPException(status_code=422, detail="지원하지 않는 voice 입니다.")
 
+    # 구간별 지연 계측(발표용, 사용자 요청 2026-08-26) — 텍스트 앞 12자만 남겨 개인정보 노출 최소화
+    preview = text[:12]
+    t0 = time.perf_counter()
     try:
         client = SktTtsClient()
         audio = await run_in_threadpool(client.synthesize, text, request.voice)
@@ -78,4 +61,6 @@ async def synthesize_skt_speech(request: SktTtsRequest) -> Response:
         logger.warning(f"SKT TTS 요청 실패: {e}")
         raise HTTPException(status_code=502, detail=str(e)) from e
 
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    logger.info(f"SKT TTS 합성 완료 — voice={request.voice}, {elapsed_ms:.0f}ms, text='{preview}...'")
     return Response(content=audio, media_type="audio/mpeg")

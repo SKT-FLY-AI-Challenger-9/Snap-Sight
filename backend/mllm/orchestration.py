@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from ai.photo_labels import default_photo_labels
 from backend.mllm.client import compare_candidate_frames
 from backend.mllm.description import save_description
+from backend.mllm.metadata import MODEL_ID as METADATA_MODEL_ID
 from backend.mllm.metadata import generate_metadata, save_metadata
 from backend.mllm.prompts import FrameComparisonResult
 from backend.mllm.target_requirements import build_requirements_from_text
@@ -42,6 +44,7 @@ def trigger_capture_pipeline(
     if update_capture_state(session_id, capture_revision, status="selecting") is None:
         return
 
+    _t_selecting = time.perf_counter()
     try:
         comparison = _run_comparison(
             session_id,
@@ -56,6 +59,10 @@ def trigger_capture_pipeline(
             selected_frame=None,
             reason=f"Frame comparison failed; kept representative: {exc}",
         )
+    logger.info(
+        f"Session {session_id}: frame comparison stage took "
+        f"{(time.perf_counter() - _t_selecting) * 1000:.0f}ms (improved={comparison.improved})"
+    )
 
     if not is_current_revision(session_id, capture_revision):
         return
@@ -83,6 +90,7 @@ def trigger_capture_pipeline(
     except Exception as exc:  # noqa: BLE001 - taxonomy is required for a valid output
         _mark_pipeline_failed(session_id, capture_revision, "taxonomy load", exc)
         return
+    _t_describing = time.perf_counter()
     try:
         representative, _ = load_session_frame_paths(session_id)
         understanding = generate_metadata(
@@ -96,6 +104,10 @@ def trigger_capture_pipeline(
     except Exception as exc:  # noqa: BLE001 - save explicit null output on any model failure
         logger.error(f"Session {session_id}: canonical image understanding failed: {exc}")
         understanding = None
+    logger.info(
+        f"Session {session_id}: description generation stage took "
+        f"{(time.perf_counter() - _t_describing) * 1000:.0f}ms (model={METADATA_MODEL_ID})"
+    )
 
     def _commit_understanding() -> None:
         save_description(

@@ -802,7 +802,8 @@ enum class VoicePreset(val key: String, val label: String, val assetDir: String?
     ;
 
     companion object {
-        val DEFAULT = SYSTEM
+        // 일레븐랩스 폐기 + SKT A.X 일원화에 맞춰 기본 안내 목소리를 아리아로 (사용자 요청 2026-08-26)
+        val DEFAULT = ARIA
 
         fun fromKey(key: String?): VoicePreset = entries.firstOrNull { it.key == key } ?: DEFAULT
     }
