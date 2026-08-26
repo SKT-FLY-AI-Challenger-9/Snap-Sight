@@ -409,11 +409,19 @@ class GuidanceFeedback(context: Context) : DeviationListener {
             return
         }
         val active = activeSpeechPriority
-        if (active != null && active.level > priority.level && onDone == null) {
+        if (active != null && active.level >= priority.level && onDone == null) {
             // 신원·상태 알림이 진행 중인 이동/READY/촬영 안내를 자르거나 뒤늦게 재생되지 않게 버린다.
+            // 같은 우선순위(예: 이동 안내가 이동 안내를)도 이제 자르지 않는다 — 말하는 도중에
+            // 판정이 또 와도 끊고 다시 말하지 않고, 끝날 때까지 기다렸다가 다음 판정을 따른다
+            // (실사용 피드백 2026-08-26 — "조금 오른쪽으로 이동해주세요"·"좋아요"가 너무 자주
+            // 끊기고 다시 시작함).
             return
         }
-        val flush = active == null || priority.level >= active.level
+        // 같은 우선순위끼리는(예: 갤러리 진입 안내 도중 "말해서 찾기"를 눌러 등 방금 안내를
+        // 명시적으로 요청한 onDone 호출도) 자르지 않고 끝날 때까지 기다렸다가 이어 말한다 —
+        // 엄격히 더 높은 우선순위일 때만 즉시 끼어든다 (사용자 요청 2026-08-27, "갤러리
+        // 들어가자마자 음성이 겹친다").
+        val flush = active == null || priority.level > active.level
 
         // 한 앱 한 목소리: ① 확정 문장은 프리캐싱 음원, ② 그 외 문장은 즉석 합성(캐시 우선),
         // ③ 프리셋이 기본이거나 합성 불가·실패면 내장 TTS. FLUSH 상황에서만 음원 경로를 탄다

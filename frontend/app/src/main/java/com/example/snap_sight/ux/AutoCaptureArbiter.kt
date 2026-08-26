@@ -2,41 +2,39 @@ package com.example.snap_sight.ux
 
 /**
  * 자동촬영 중재자 — "명확한 대상"이 지정된 세션(등록 인물·사물 이름 또는 taxonomy
- * objectLabel)에서 그 대상이 충분히 오래 **실제로 관측**되면 셔터를 세션당 1회 요청한다.
- * 구도 READY 까지는 요구하지 않는다 — "잡히면 찍는다"가 요구사항이고, READY 조건(중앙
- * 정렬·크기 목표·안정화)을 걸면 구도가 안 나오는 장면에서 영영 발동하지 않는다
- * (2026-08-24 실기기: 노트북 인식돼도 미발동). 예고 발화·카운트다운 없이 기존 셔터
- * 효과음만 낸다.
+ * objectLabel)에서 구도까지 READY(=화면 "지금이에요!" 문구·음성 "좋아요. 촬영할 수
+ * 있어요."와 같은 조건)인 판정이 [MIN_READY_HOLD_MS] 이상 끊기지 않고 이어지면 셔터를
+ * 세션당 1회 요청한다. 예고 발화·카운트다운 없이 기존 셔터 효과음만 낸다.
  *
- * 발동 조건 (2026-08-25 강화 — "잠깐 스친 피사체에 발동" 대책):
- *  1. 첫 실관측(fresh)부터 마지막 실관측까지 [AUTO_CAPTURE_HOLD_MS] 이상 —
- *     tracker coasting(PREDICTED, 0.7초) + 편차 hold(HELD, 0.6초)가 이어붙은 시간은
- *     끊김으로 치지 않지만 **유지 시간으로 쌓이지도 않는다**. 예전엔 detected 플래그가
- *     이 추정 관측까지 포함해, 실제로는 한두 프레임 스친 대상도 coasting+hold 사슬만으로
- *     1.5초를 채워 발동하는 일이 있었다.
- *  2. 그 사이 실관측이 [MIN_FRESH_OBSERVATIONS]번 이상 — 발열로 detector 주기가 길어져도
- *     "몇 번은 진짜로 봤다"를 보장한다.
- *  3. 발동하는 판정 자체가 실관측 — 예측 위치를 보고 찍지 않는다.
+ * 발동 조건 (2026-08-26 개편):
+ *  1. 첫 실관측(fresh) READY 판정부터 [MIN_READY_HOLD_MS] 이상 — "잠깐 노트북이
+ *     지나가서 READY가 한 번 뜨자마자 바로 찍힌다"는 문제 대책. READY 안내("좋아요")가
+ *     시작되고도 몇 초 더 자세를 유지해야 실제로 찍힌다.
+ *  2. 그 사이 실관측이 [MIN_CONSECUTIVE_READY_FRESH]번 이상 — detector 주기가 늘어져도
+ *     "몇 번은 진짜로 READY를 봤다"를 보장하는 하한선(보통은 1의 시간 조건이 훨씬 크다).
+ *  3. 욜로가 매 프레임 탐지하지 않아 끼는 추정 판정(PREDICTED/HELD, fresh=false)은
+ *     스트릭을 끊지도 시간에 보태지도 않고 그냥 건너뛴다. 대신 fresh 판정에서 READY가
+ *     아니면(진짜 구도 이탈·유실이 실관측으로 확인된 것) 스트릭을 처음부터 다시 시작한다.
+ *  4. eligible이 끊기면(세션·타겟 세대 교체 등) 스트릭도 무효.
  *
- * detected 가 한 판정이라도 false 면(추정 사슬까지 끊긴 진짜 유실) 처음부터 다시 시작한다.
- *
- * 풍경("풍경 찍을래")·일반 촬영("사진 찍을래")은 eligible=false 로 들어와 절대 발동하지
- * 않는다 — 그 모드들은 두 번 탭 수동 촬영 그대로다.
+ * 예전엔("잡히면 찍는다") 구도 READY를 요구하지 않았으나(2026-08-24: 노트북 인식돼도
+ * 구도가 안 잡혀 영영 미발동했던 사례), 이번엔 반대로 정밀도를 우선해 READY 유지 조건을
+ * 도입한다 — 구도가 전혀 안 잡히는 장면에서는 자동촬영이 발동하지 않을 수 있음을 감수한다.
  *
  * [GuidancePolicy] 처럼 android.* 의존이 없고 시각(nowMs)을 주입받아 단위 테스트한다.
  * 판정 스레드(분석)에서 호출되므로 @Synchronized 로 지킨다.
  */
 internal class AutoCaptureArbiter {
 
-    private var firstFreshMs: Long? = null
-    private var freshCount = 0
+    private var firstReadyMs: Long? = null
+    private var consecutiveReadyFresh = 0
     private var fired = false
 
-    /** 새 세션·새 타겟 세대 시작 — 유지 시간과 "이미 찍었음" 상태를 지운다. */
+    /** 새 세션·새 타겟 세대 시작 — 유지 시간·스트릭과 "이미 찍었음" 상태를 지운다. */
     @Synchronized
     fun reset() {
-        firstFreshMs = null
-        freshCount = 0
+        firstReadyMs = null
+        consecutiveReadyFresh = 0
         fired = false
     }
 
@@ -46,43 +44,50 @@ internal class AutoCaptureArbiter {
      *
      * @param eligible 자동촬영 대상 세션인가 — COMPOSITION 모드이고 등록 이름 또는
      *        objectLabel 로 대상이 명확히 지정된 경우에만 true.
-     * @param detected 이번 판정에서 지정 대상이 화면에 잡혀 있는가(추정 포함) — 호출부가
-     *        시선 게이트(셀카) 통과까지 합쳐서 넘긴다. false 면 유지 시간이 리셋된다.
+     * @param ready 이번 판정의 구도가 READY 인가 — [GuidanceFeedback.processDeviation]의
+     *        같은 판정. 피사체 미검출·중앙 정렬 실패·크기 미달 등은 모두 false 로 들어온다.
      * @param fresh 이번 판정이 **실제 픽셀 관측**(detector keyframe 의 FRESH)인가 —
-     *        tracker 예측(PREDICTED)·편차 hold(HELD)·held 재방출(analyzed=false)은 false.
-     *        유지 시간과 관측 횟수는 fresh 판정으로만 쌓인다.
+     *        tracker 예측(PREDICTED)·편차 hold(HELD)는 false. false 인 판정은 유지 시간과
+     *        스트릭 어느 쪽에도 영향을 주지 않고 그냥 건너뛴다(욜로가 매 프레임 탐지하지
+     *        않는 것을 흡수).
+     * @param nowMs 이번 판정 시각.
      */
     @Synchronized
-    fun onJudgment(eligible: Boolean, detected: Boolean, fresh: Boolean, nowMs: Long): Boolean {
-        if (!eligible || !detected) {
-            firstFreshMs = null
-            freshCount = 0
+    fun onJudgment(eligible: Boolean, ready: Boolean, fresh: Boolean, nowMs: Long): Boolean {
+        if (!eligible) {
+            firstReadyMs = null
+            consecutiveReadyFresh = 0
             return false
         }
         if (fired) return false
-        if (!fresh) return false
-        val since = firstFreshMs ?: nowMs.also { firstFreshMs = it }
-        freshCount++
-        if (nowMs - since < AUTO_CAPTURE_HOLD_MS) return false
-        if (freshCount < MIN_FRESH_OBSERVATIONS) return false
+        if (!fresh) return false // 추정 판정 — 유지 시간·스트릭 어느 쪽도 건드리지 않고 대기
+        if (!ready) {
+            firstReadyMs = null
+            consecutiveReadyFresh = 0
+            return false
+        }
+        val since = firstReadyMs ?: nowMs.also { firstReadyMs = it }
+        consecutiveReadyFresh++
+        if (nowMs - since < MIN_READY_HOLD_MS) return false
+        if (consecutiveReadyFresh < MIN_CONSECUTIVE_READY_FRESH) return false
         fired = true
         return true
     }
 
     companion object {
         /**
-         * 첫 실관측 → 발동 실관측 사이 최소 시간 — 존재 확인 진동의 유지 조건
-         * ([GuidancePolicy.PRESENCE_VIBRATION_AFTER_MS])과 같은 1.5초. 사용자 감각으로는
-         * "진동이 손에 느껴지는 순간 = 곧 찍힌다"로 이어진다. 단 진동과 달리 추정 관측은
-         * 시간으로 쳐주지 않으므로 실제 발동은 진동보다 늦거나 같다.
+         * 첫 실관측 READY 판정 → 발동 실관측 사이 최소 시간. "잠깐 노트북이 지나가서
+         * 좋아요가 뜨자마자 바로 찍힌다"는 문제 대책 — READY 안내가 시작되고도 이만큼 더
+         * 자세를 유지해야 찍힌다 (사용자 요청 2026-08-26 — "조금 한 4초간 기다리면 안 되냐").
+         * 추정 판정(coasting/hold)은 이 시간에 쌓이지 않으므로 실제 체감은 이보다 늦다.
          */
-        const val AUTO_CAPTURE_HOLD_MS = 1_500L
+        const val MIN_READY_HOLD_MS = 4_000L
 
         /**
-         * 유지 시간 안에 요구하는 최소 실관측 횟수. LOCKED cadence(기준 150ms×2=300ms)로
-         * 1.5초면 실관측 5~6회가 정상이라 4회는 여유가 있고, 발열로 주기가 1초까지 늘어나면
-         * 그만큼 발동이 늦어질 뿐 막히지는 않는다.
+         * 유지 시간 안에 요구하는 최소 "실관측 + READY" 횟수. 대개는 [MIN_READY_HOLD_MS]
+         * 쪽이 더 오래 걸려 이 조건은 하한선 역할만 한다 — detector 주기가 아주 길어져도
+         * "몇 번은 진짜로 READY를 봤다"를 보장한다.
          */
-        const val MIN_FRESH_OBSERVATIONS = 4
+        const val MIN_CONSECUTIVE_READY_FRESH = 5
     }
 }
