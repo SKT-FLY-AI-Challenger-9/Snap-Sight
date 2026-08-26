@@ -35,7 +35,8 @@ data class GalleryPhoto(
 object PhotoLibrary {
 
     private const val TAG = "PhotoLibrary"
-    private const val MAX_PHOTOS = 30
+    // 동물 샘플 사진 7종 x 7장(49장) 데모 데이터가 다 보이도록 상향 (사용자 요청 2026-08-26)
+    private const val MAX_PHOTOS = 60
     private const val MAX_SCAN_ROWS = MAX_PHOTOS * 4
     private val THUMBNAIL_SIZE = Size(256, 256)
 

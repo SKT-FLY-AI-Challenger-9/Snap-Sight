@@ -89,8 +89,10 @@ import com.example.snap_sight.network.FinalFrameClient
 import com.example.snap_sight.network.FrameUploader
 import com.example.snap_sight.network.LabelNormalizeClient
 import com.example.snap_sight.network.MetadataClient
+import com.example.snap_sight.network.PhotoDescriptionClient
 import com.example.snap_sight.network.MetadataLabelContract
 import com.example.snap_sight.network.SpeechSynthClient
+import com.example.snap_sight.network.TextQaClient
 import com.example.snap_sight.network.UtteranceClient
 import com.example.snap_sight.privacy.CloudTextRedactor
 import com.example.snap_sight.privacy.RegisteredIdentityMatcher
@@ -158,11 +160,16 @@ class MainActivity : ComponentActivity() {
     private val canonicalFrameStore by lazy { CanonicalFrameStore(this) }
     private val descriptionLookup by lazy { DescriptionLookup(this) }
     private val metadataClient = MetadataClient()
+    // 수동 촬영은 온디바이스 즉시 요약 대신 서버 LLM 한 줄 설명을 듣는다 (사용자 요청 2026-08-26)
+    private val photoDescriptionClient = PhotoDescriptionClient()
     // 동적 문장(촬영 요약·사진 설명)의 프리셋 보이스 즉석 합성 — 백엔드 SKT 프록시
     private val speechSynthClient = SpeechSynthClient()
 
     // 커스텀 라벨 등록 시 "내 개"/"내 강아지" 같은 동의어를 기존 라벨로 병합 (2026-08-22)
     private val labelNormalizeClient = LabelNormalizeClient()
+
+    // 사진에서 감지된 텍스트(메뉴판·안내문 등)에 대한 음성 질문 응답 (사용자 요청 2026-08-26)
+    private val textQaClient = TextQaClient()
 
     // 검색용 로컬 사진 인덱스 + 고정 라벨 사전 (기능 3) — DB 접근은 항상 백그라운드 스레드에서
     private val photoIndexStore by lazy { PhotoIndexStore(this) }
@@ -388,12 +395,15 @@ class MainActivity : ComponentActivity() {
     // 촬영 결과 화면(S4) 상태 — 대표 컷 저장 직후 표시, 새 세션 시작 시 해제
     private var showResult by mutableStateOf(false)
     private var resultPhoto by mutableStateOf<Bitmap?>(null)
-    private var lastResultDescription by mutableStateOf<String?>(null)
-    /** null이면 상세 설명 본문이 도착한 상태, 그 외에는 준비/실패/비활성 상태를 사용자에게 보여준다. */
-    private var lastResultDescriptionStatus by mutableStateOf<String?>(null)
     /** 서버 폐쇄형 사전에서 검증된 자동 라벨의 한글 표시명. */
     private var lastResultAutoLabels by mutableStateOf<List<String>>(emptyList())
     private var lastResultHasDetailedDescription = false
+    /**
+     * 수동 촬영에서 실제로 낭독된 서버 LLM 한 줄 설명 — "음성 다시 듣기"가 즉시 요약이 아니라
+     * 방금 들려준 그 문장을 그대로 재생하게 캐싱한다. null이면 (자동촬영이거나, LLM 설명이
+     * 아직 도착 전이거나 실패했으면) [captureHeadline]으로 대체한다 (사용자 요청 2026-08-26).
+     */
+    private var lastManualCaptureDescription: String? = null
 
     // 셔터 순간의 탐지 객체 스냅샷 — 즉시 상황 안내(instantCaptureSummary)의 입력 (#80)
     private var shutterObjects: List<TrackedObject> = emptyList()
@@ -687,17 +697,36 @@ class MainActivity : ComponentActivity() {
                         guidanceFeedback.playShutter()
                     }
                     SessionState.SAVED -> {
-                        // 스크립트 6-1(저장) → 6-2(짧은 결과 설명) 순서 — r1 음원이 나가는 동안
-                        // 온디바이스 요약을 프리셋 보이스로 미리 합성해 두 문장 다 같은 목소리로 나온다
-                        val headline = captureHeadline()
-                        guidanceFeedback.prefetchDynamic(headline)
+                        // 스크립트 6-1(저장) → 6-2(설명) → 결과 화면 버튼 안내 순서.
+                        // 자동촬영(CV)은 온디바이스 즉시 요약(사용자 요청 2026-08-25 — 서버 설명은
+                        // 더 이상 음성으로 읽지 않음)을, 수동 두 번 탭은 서버 LLM 한 줄 설명을
+                        // 한 번 거쳐 듣는다(사용자 요청 2026-08-26 — YOLO ID 기반 즉시 요약 대신).
+                        val captureSessionId = sessionManager.sessionId
+                        val isManualCapture = !sessionManager.lastCaptureWasAuto
+                        // 이전 세션 캐시가 이번 세션에 새어 들어가지 않게 — LLM 응답 도착 전 replay는
+                        // captureHeadline()으로 대체된다.
+                        lastManualCaptureDescription = null
+                        if (!isManualCapture) {
+                            val headline = captureHeadline()
+                            guidanceFeedback.prefetchDynamic(headline)
+                        }
                         guidanceFeedback.announce(
                             "사진을 저장했어요.",
                             onDone = {
-                                guidanceFeedback.announceDynamic(
-                                    headline,
-                                    priority = GuidanceFeedback.SpeechPriority.CAPTURE,
-                                )
+                                if (isManualCapture) {
+                                    announceManualCaptureDescription(captureSessionId)
+                                } else {
+                                    guidanceFeedback.announceDynamic(
+                                        captureHeadline(),
+                                        onDone = {
+                                            guidanceFeedback.announceDynamic(
+                                                RESULT_GUIDE_PROMPT,
+                                                priority = GuidanceFeedback.SpeechPriority.CAPTURE,
+                                            )
+                                        },
+                                        priority = GuidanceFeedback.SpeechPriority.CAPTURE,
+                                    )
+                                }
                             },
                             priority = GuidanceFeedback.SpeechPriority.CAPTURE,
                         )
@@ -974,16 +1003,16 @@ class MainActivity : ComponentActivity() {
                                     ResultScreen(
                                         photo = resultPhoto,
                                         rawText = sessionRawText,
-                                        description = lastResultDescription ?: lastResultDescriptionStatus,
                                         headline = captureHeadline(),
                                         details = if (lastResultAutoLabels.isEmpty()) emptyList() else listOf(
                                             "AI 라벨" to lastResultAutoLabels.joinToString(", ")
                                         ),
+                                        // 방금 들려준 그 문장을 그대로 다시 들려준다 — 수동 촬영은
+                                        // 서버 LLM 한 줄 설명(도착 전이면 즉시 요약으로 대체),
+                                        // 자동촬영은 온디바이스 즉시 요약 (사용자 요청 2026-08-25/26).
                                         onReplayDescription = {
                                             guidanceFeedback.announceDynamic(
-                                                lastResultDescription
-                                                    ?: lastResultDescriptionStatus
-                                                    ?: "사진 설명을 준비하고 있어요."
+                                                lastManualCaptureDescription ?: captureHeadline()
                                             )
                                         },
                                         onAddLabel = { startResultLabeling() },
@@ -1191,14 +1220,6 @@ class MainActivity : ComponentActivity() {
                 localizedBrief?.let { guidanceFeedback.prefetchDynamic(it) }
                 localizedDetail?.let { guidanceFeedback.prefetchDynamic(it) }
                 if (isCurrentVisibleResult(sessionId)) {
-                    val description = localizedDetail ?: localizedBrief
-                    lastResultDescription = description
-                    lastResultDescriptionStatus = if (description == null) {
-                        // 노션 확정 스크립트 문장 (6-4 설명 실패)
-                        "설명을 못 불러왔어요. 사진은 저장됐어요."
-                    } else {
-                        null
-                    }
                     lastResultHasDetailedDescription = localizedDetail != null
                     val fixedNames = labels.fixed.mapNotNull { labelId ->
                         photoLabelDictionary.labels.firstOrNull { it.id == labelId }?.name
@@ -1213,6 +1234,9 @@ class MainActivity : ComponentActivity() {
                         customAuto = labels.custom,
                         taxonomyVersion = metadata.taxonomyVersion,
                         shortDescription = localizedBrief,
+                        hasText = metadata.hasText,
+                        textTopic = metadata.textTopic,
+                        textContent = metadata.textContent,
                     )
                 }, "SnapSight-IndexUpdate").start()
 
@@ -1226,14 +1250,18 @@ class MainActivity : ComponentActivity() {
                         brief = localizedBrief,
                     )
                 }
+                if (metadata.hasText && !metadata.textContent.isNullOrBlank()) {
+                    announceDetectedText(
+                        sessionId = sessionId,
+                        serverRevision = serverRevision,
+                        textTopic = metadata.textTopic,
+                        textContent = metadata.textContent,
+                    )
+                }
             }
 
             override fun onGaveUp(reason: String) {
                 Log.w(TAG, "통합 사진 이해 폴링 중단 [$sessionId]: $reason")
-                if (isCurrentVisibleResult(sessionId)) {
-                    // 노션 확정 스크립트 문장 (6-4 설명 실패)
-                    lastResultDescriptionStatus = "설명을 못 불러왔어요. 사진은 저장됐어요."
-                }
             }
         })
     }
@@ -1289,16 +1317,78 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    /**
+     * 서버(Opus) 상세 설명은 더 이상 음성으로 읽지 않는다 (사용자 요청 2026-08-25) — 결과
+     * 화면의 음성 안내는 촬영 즉시 온디바이스 요약과 버튼 안내 멘트로 끝난다. 라벨·검색
+     * 인덱스용 설명 텍스트는 [pollCaptureUnderstanding]이 그대로 저장하므로 갤러리 검색·
+     * "음성 다시 듣기"에는 영향이 없다. 호출부(비동기 다운로드 콜백 체인)는 그대로 두고
+     * 여기서만 조용히 넘어간다.
+     */
     private fun announceUnderstandingBrief(
         sessionId: String,
         serverRevision: Long,
         brief: String?,
+    ) = Unit
+
+    /**
+     * 사진에서 텍스트(메뉴판·안내문 등)를 감지했을 때의 안내 + 후속 질문 흐름 (사용자 요청
+     * 2026-08-26). "텍스트가 감지됐어요. OO에 관련된 내용이에요." → "필요하신 정보 있으실까요?"
+     * → 바로 듣기 시작 → 인식된 질문을 감지된 텍스트와 함께 서버로 보내 답을 읽어준다.
+     */
+    private fun announceDetectedText(
+        sessionId: String,
+        serverRevision: Long,
+        textTopic: String?,
+        textContent: String?,
     ) {
         if (!isCurrentServerCapture(sessionId, serverRevision) ||
-            !isCurrentVisibleResult(sessionId) || brief.isNullOrBlank()
+            !isCurrentVisibleResult(sessionId) || textContent.isNullOrBlank()
         ) return
-        // 서버 설명도 프리셋 보이스로 — 카탈로그 밖 동적 문장이라 즉석 합성(캐시 우선) 경로
-        guidanceFeedback.announceDynamic(brief, priority = GuidanceFeedback.SpeechPriority.STATUS)
+        val topic = textTopic?.takeIf { it.isNotBlank() } ?: "텍스트"
+        guidanceFeedback.announce(
+            "텍스트가 사진에서 감지됐어요. ${topic}에 관련된 내용이에요.",
+            onDone = {
+                if (!isCurrentServerCapture(sessionId, serverRevision) ||
+                    !isCurrentVisibleResult(sessionId)
+                ) {
+                    return@announce
+                }
+                guidanceFeedback.announce(
+                    "텍스트에서 필요하신 정보 있으실까요?",
+                    onDone = { listenForTextQuestion(sessionId, serverRevision, textContent) },
+                )
+            },
+        )
+    }
+
+    /** 텍스트 Q&A 질문을 듣는다 — 못 들었거나 마이크 권한이 없으면 조용히 넘어간다. */
+    private fun listenForTextQuestion(sessionId: String, serverRevision: Long, textContent: String) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED || !searchRecognizer.isAvailable
+        ) {
+            return
+        }
+        searchRecognizer.start(object : SpeechToTextRecognizer.Listener {
+            override fun onRecognized(text: String) {
+                if (!isCurrentServerCapture(sessionId, serverRevision) ||
+                    !isCurrentVisibleResult(sessionId)
+                ) {
+                    return
+                }
+                textQaClient.ask(textContent, text) { answer ->
+                    if (!isCurrentServerCapture(sessionId, serverRevision) ||
+                        !isCurrentVisibleResult(sessionId)
+                    ) {
+                        return@ask
+                    }
+                    guidanceFeedback.announceDynamic(
+                        answer ?: "질문에 답하지 못했어요. 다시 시도해 주세요"
+                    )
+                }
+            }
+
+            override fun onError(message: String) = speak("잘 못 들었어요. 다시 시도해 주세요")
+        })
     }
 
     private fun isCurrentVisibleResult(sessionId: String): Boolean =
@@ -1315,6 +1405,7 @@ class MainActivity : ComponentActivity() {
         frameUploader.cancelAll()
         metadataClient.cancelAll()
         finalFrameClient.cancelAll()
+        photoDescriptionClient.cancelAll()
     }
 
     private var welcomed = false
@@ -1332,6 +1423,8 @@ class MainActivity : ComponentActivity() {
 
     /** 위성 화면 진입 — 상승 earcon + 진입 TTS 1회 (첫 진입에만 버튼 위치를 덧붙인다). */
     private fun enterScreen(screen: AppScreen) {
+        // 화면 전환 시 이전 화면 음성이 새 화면까지 새어 나가지 않게 먼저 멈춘다 (2026-08-25)
+        guidanceFeedback.stopSpeaking()
         currentScreen = screen
         guidanceFeedback.playScreenEnter()
         val firstVisit = visitedScreens.add(screen)
@@ -1359,6 +1452,8 @@ class MainActivity : ComponentActivity() {
 
     /** 홈 복귀 — 하강 earcon + "홈입니다" 1회. */
     private fun returnHome(prefix: String? = null) {
+        // 화면 전환 시 이전 화면 음성이 새 화면까지 새어 나가지 않게 먼저 멈춘다 (2026-08-25)
+        guidanceFeedback.stopSpeaking()
         currentScreen = AppScreen.MAIN
         guidanceFeedback.playScreenExit()
         guidanceFeedback.announce(if (prefix != null) "$prefix 홈입니다" else "홈입니다")
@@ -1383,6 +1478,8 @@ class MainActivity : ComponentActivity() {
 
     /** 결과 화면 닫기 — 자동으로 나타난 화면이라 사진이 저장돼 있음을 함께 말한다. */
     private fun closeResultToHome() {
+        // 화면 전환 시 이전 화면 음성이 새 화면까지 새어 나가지 않게 먼저 멈춘다 (2026-08-25)
+        guidanceFeedback.stopSpeaking()
         cancelCaptureNetworkWork()
         activeCaptureGeneration = 0L
         activeServerCaptureRevision = null
@@ -1397,6 +1494,8 @@ class MainActivity : ComponentActivity() {
      */
     private fun cancelSessionToHome() {
         if (sessionManager.state == SessionState.IDLE) return
+        // 화면 전환 시 이전 화면 음성이 새 화면까지 새어 나가지 않게 먼저 멈춘다 (2026-08-25)
+        guidanceFeedback.stopSpeaking()
         cancelCaptureNetworkWork()
         pendingCaptureUploads.clear()
         activeCaptureGeneration = 0L
@@ -1433,7 +1532,9 @@ class MainActivity : ComponentActivity() {
     private fun onMainSubAction() {
         if (enrollmentActive) return
         when {
-            showResult -> lastResultDescription?.let(::speak) ?: speak("사진 설명을 준비하고 있어요.")
+            // 버튼("음성 다시 듣기")과 동일 — 수동 촬영은 서버 LLM 설명, 자동촬영은
+            // 온디바이스 즉시 요약 (사용자 요청 2026-08-25/26).
+            showResult -> speak(lastManualCaptureDescription ?: captureHeadline())
             sessionManager.state != SessionState.IDLE -> {
                 val summary = listOf(statusText, guidanceText)
                     .filter { it.isNotBlank() }
@@ -2005,6 +2106,8 @@ class MainActivity : ComponentActivity() {
             speak("얼굴 등록에는 마이크 권한이 필요해요")
             return
         }
+        // 화면 전환 시 이전 화면 음성이 새 화면까지 새어 나가지 않게 먼저 멈춘다 (2026-08-25)
+        guidanceFeedback.stopSpeaking()
         currentScreen = AppScreen.MAIN // 카메라가 돌아야 프레임에서 얼굴을 딸 수 있다
         enrollmentActive = true // 홈 오버레이를 내려 미리보기·탐지 상자를 보여준다 (사물 등록과 동일)
         updateAnalysisMode()
@@ -2082,6 +2185,8 @@ class MainActivity : ComponentActivity() {
             speak("사물 등록에는 마이크 권한이 필요해요")
             return
         }
+        // 화면 전환 시 이전 화면 음성이 새 화면까지 새어 나가지 않게 먼저 멈춘다 (2026-08-25)
+        guidanceFeedback.stopSpeaking()
         currentScreen = AppScreen.MAIN // 카메라가 돌아야 프레임에서 사물을 딸 수 있다
         enrollmentActive = true // 홈 오버레이를 내려 미리보기·탐지 상자를 보여준다
         updateAnalysisMode()
@@ -2147,6 +2252,8 @@ class MainActivity : ComponentActivity() {
 
     /** 등록 흐름 취소 (길게 누르기·뒤로가기) — 진행 중인 스캔까지 중단하고 홈으로. */
     private fun cancelEnrollmentToHome() {
+        // 화면 전환 시 이전 화면 음성이 새 화면까지 새어 나가지 않게 먼저 멈춘다 (2026-08-25)
+        guidanceFeedback.stopSpeaking()
         searchRecognizer.cancel()
         val faceCancel = faceIdentifier.cancelEnrollment()
         val objectCancel = objectIdentifier.cancelEnrollment()
@@ -2865,10 +2972,6 @@ class MainActivity : ComponentActivity() {
                     if (!isCurrentCapture(sessionId, pending.localGeneration)) return
                     if (result.sessionId != sessionId) {
                         Log.w(TAG, "업로드 응답 session 불일치: $sessionId / ${result.sessionId}")
-                        if (isCurrentVisibleResult(sessionId)) {
-                            lastResultDescriptionStatus =
-                                "서버 응답을 확인하지 못해 상세 설명을 가져오지 못했어요."
-                        }
                         return
                     }
                     activeServerCaptureRevision = result.captureRevision
@@ -2887,9 +2990,6 @@ class MainActivity : ComponentActivity() {
                         val attemptNumber = UPLOAD_MAX_RETRIES - retriesLeft + 1
                         val delayMs = UPLOAD_RETRY_BASE_DELAY_MS * attemptNumber
                         Log.w(TAG, "업로드 실패 — ${delayMs}ms 후 재시도 (${retriesLeft}회 남음)", error)
-                        if (isCurrentVisibleResult(sessionId)) {
-                            lastResultDescriptionStatus = "서버 전송에 실패해 다시 시도하고 있어요…"
-                        }
                         uploadRetryHandler.postDelayed({
                             if (isCurrentCapture(sessionId, pending.localGeneration)) {
                                 attempt(retriesLeft - 1)
@@ -2898,10 +2998,6 @@ class MainActivity : ComponentActivity() {
                         return
                     }
                     Log.w(TAG, "업로드 최종 실패 (사진은 기기에 저장됨)", error)
-                    if (isCurrentVisibleResult(sessionId)) {
-                        lastResultDescriptionStatus =
-                            "서버에 사진을 보내지 못했어요. 서버 주소와 연결을 확인해 주세요."
-                    }
                 }
             },
             )
@@ -2981,12 +3077,6 @@ class MainActivity : ComponentActivity() {
      * 디코딩 실패해도 화면은 띄운다 (사진 없이 요약·설명만이라도 들려주는 게 낫다).
      */
     private fun showResultScreen(uri: Uri) {
-        lastResultDescription = null
-        lastResultDescriptionStatus = if (settingsUiState.serverAiDescriptionEnabled) {
-            "서버 AI 상세 설명을 준비하고 있어요."
-        } else {
-            "서버 AI 사진 설명이 꺼져 있어요."
-        }
         lastResultAutoLabels = emptyList()
         lastResultHasDetailedDescription = false
         showResult = true
@@ -3053,6 +3143,54 @@ class MainActivity : ComponentActivity() {
             sourceAgeMs = shutterSourceAgeMs,
         ))
         return text
+    }
+
+    /**
+     * 수동 촬영(두 번 탭) 전용 6-2 안내 — 온디바이스 즉시 요약 대신 서버 LLM(understanding)이
+     * 대표 컷을 한 번 보고 만든 한 줄 설명을 듣는다(사용자 요청 2026-08-26). 실패·시간 초과 시엔
+     * 온디바이스 즉시 요약으로 조용히 대체한다 — 수동 촬영이라고 해서 안내 자체가 끊기면 안 된다.
+     */
+    private fun announceManualCaptureDescription(sessionId: String) {
+        val fallbackToHeadline = {
+            if (isCurrentVisibleResult(sessionId)) {
+                guidanceFeedback.announceDynamic(
+                    captureHeadline(),
+                    onDone = {
+                        guidanceFeedback.announceDynamic(
+                            RESULT_GUIDE_PROMPT,
+                            priority = GuidanceFeedback.SpeechPriority.CAPTURE,
+                        )
+                    },
+                    priority = GuidanceFeedback.SpeechPriority.CAPTURE,
+                )
+            }
+        }
+        photoDescriptionClient.pollDescription(sessionId, object : PhotoDescriptionClient.Callback {
+            override fun onDone(description: String?) {
+                if (!isCurrentVisibleResult(sessionId)) return
+                val text = description?.takeIf { it.isNotBlank() }
+                if (text == null) {
+                    fallbackToHeadline()
+                    return
+                }
+                lastManualCaptureDescription = text
+                guidanceFeedback.announceDynamic(
+                    text,
+                    onDone = {
+                        guidanceFeedback.announceDynamic(
+                            RESULT_GUIDE_PROMPT,
+                            priority = GuidanceFeedback.SpeechPriority.CAPTURE,
+                        )
+                    },
+                    priority = GuidanceFeedback.SpeechPriority.CAPTURE,
+                )
+            }
+
+            override fun onGaveUp(reason: String) {
+                Log.w(TAG, "수동 촬영 설명 조회 실패 [$sessionId]: $reason")
+                fallbackToHeadline()
+            }
+        })
     }
 
     private fun checkOrRequestPermissions() {
@@ -3212,6 +3350,9 @@ class MainActivity : ComponentActivity() {
 
         // 설정 음성 대화에서 선택지를 못 알아들었을 때 다시 물어보는 최대 횟수(첫 시도 포함)
         private const val SETTINGS_VOICE_MAX_ATTEMPTS = 3
+
+        // 결과 화면 즉시 요약 뒤 버튼 안내 (사용자 요청 2026-08-25)
+        private const val RESULT_GUIDE_PROMPT = "음성을 다시 듣거나, 사진의 키워드를 설정하시겠어요?"
 
         // 얼굴 등록 흐름 타이밍 (기능 2) — 안내 음성이 마이크에 섞이지 않을 정도의 지연
         /**

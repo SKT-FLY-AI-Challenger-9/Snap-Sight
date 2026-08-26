@@ -1,11 +1,12 @@
 // 이 파일: 촬영 결과 화면 (S4, #80 — Make 시안 v31) — "✓ 촬영 완료" + 사진 + 한 줄 요약 +
-// 판정 표 + 접이식 상세 설명(서버 생성이 끝나는 대로 갱신) + 저장/다시 촬영.
+// 판정 표 + 음성 다시 듣기·라벨 붙이기 큰 버튼 두 개 (2026-08-25: 상세 설명 접이식과
+// "사진은 저장됐어요" 문구는 뺐다).
 package com.example.snap_sight.ux
 
 import android.graphics.Bitmap
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -17,17 +18,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,6 +33,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -48,7 +45,6 @@ import androidx.compose.ui.unit.sp
 fun ResultScreen(
     photo: Bitmap?,
     rawText: String,
-    description: String?,
     onReplayDescription: () -> Unit,
     /** TalkBack 전용 다시 촬영 경로 — 전역 탭 문법은 TalkBack이 가로채므로 접근성 액션으로 노출한다. */
     onRetake: (() -> Unit)? = null,
@@ -57,9 +53,6 @@ fun ResultScreen(
     /** "이 사진 라벨 붙이기" — 음성으로 커스텀 라벨을 부착한다 (기능 3). null 이면 버튼 숨김. */
     onAddLabel: (() -> Unit)? = null,
 ) {
-    // 시안의 "상세 설명" 접이식 — 기본 접힘. TalkBack 사용자는 즉시 요약·음성 안내가 우선이다.
-    var descriptionExpanded by remember { mutableStateOf(false) }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -67,7 +60,17 @@ fun ResultScreen(
             .statusBarsPadding()
             .navigationBarsPadding()
             .padding(horizontal = 24.dp)
-            .verticalScroll(rememberScrollState()),
+            .verticalScroll(rememberScrollState())
+            .semantics {
+                // TalkBack: 사진 저장 안내 문구를 없앤 자리를 대신해, 화면 전체에 다시 촬영
+                // 접근성 액션을 남긴다 (일반 터치에는 반응하지 않는다) — 2026-08-25.
+                if (onRetake != null) {
+                    onClick(label = "다시 촬영") {
+                        onRetake()
+                        true
+                    }
+                }
+            },
     ) {
         Row(
             modifier = Modifier.padding(top = 24.dp),
@@ -141,78 +144,63 @@ fun ResultScreen(
             }
         }
 
+        // 상세 설명 접이식과 "사진은 저장됐어요" 문구는 제거 (사용자 요청 2026-08-25) —
+        // 대신 음성 다시 듣기·라벨 붙이기를 큰 버튼 두 개로 남긴다.
         Row(
-            modifier = Modifier.padding(top = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(
-                text = if (descriptionExpanded) "상세 설명 ▲" else "상세 설명 ▼",
-                color = SnapPalette.TextSecondary,
-                fontSize = 14.sp,
-                modifier = Modifier
-                    .clickable { descriptionExpanded = !descriptionExpanded }
-                    .padding(vertical = 10.dp)
-                    .semantics {
-                        contentDescription = if (descriptionExpanded) "상세 설명 접기" else "상세 설명 보기"
-                    },
-            )
-            Spacer(Modifier.width(24.dp))
-            Text(
-                text = "🔊 음성 다시 듣기",
-                color = SnapPalette.TextSecondary,
-                fontSize = 14.sp,
-                modifier = Modifier
-                    .clickable(onClick = onReplayDescription)
-                    .padding(vertical = 10.dp)
-                    .semantics { contentDescription = "설명 다시 듣기" },
+            ResultActionButton(
+                emoji = "🔊",
+                label = "음성 다시 듣기",
+                description = "설명 다시 듣기",
+                onClick = onReplayDescription,
+                modifier = Modifier.weight(1f),
             )
             if (onAddLabel != null) {
-                Spacer(Modifier.width(24.dp))
-                Text(
-                    text = "🏷 라벨 붙이기",
-                    color = SnapPalette.TextSecondary,
-                    fontSize = 14.sp,
-                    modifier = Modifier
-                        .clickable(onClick = onAddLabel)
-                        .padding(vertical = 10.dp)
-                        .semantics {
-                            contentDescription = "이 사진에 음성으로 라벨 붙이기. 나중에 그 이름으로 찾을 수 있어요"
-                        },
+                ResultActionButton(
+                    emoji = "🏷",
+                    label = "라벨 붙이기",
+                    description = "이 사진에 음성으로 라벨 붙이기. 나중에 그 이름으로 찾을 수 있어요",
+                    onClick = onAddLabel,
+                    modifier = Modifier.weight(1f),
                 )
             }
         }
-        AnimatedVisibility(visible = descriptionExpanded) {
-            Text(
-                text = description ?: "설명을 만드는 중…",
-                color = SnapPalette.TextTertiary,
-                fontSize = 15.sp,
-                lineHeight = 23.sp,
-                modifier = Modifier.padding(bottom = 6.dp),
-            )
-        }
-
-        Spacer(Modifier.height(14.dp))
-        // 저장/다시 촬영 버튼은 제거 (2026-08-23) — 사진은 셔터 순간 이미 저장돼 있고
-        // ("먼저 저장, 나중에 개선"), 다시 촬영·홈 복귀는 전역 탭 문법이 이미 담당한다.
-        // 잔존시력 사용자를 위한 문법 힌트만 남긴다.
-        Text(
-            text = "✓ 사진은 저장됐어요 — 두 번 탭 다시 촬영 · 길게 눌러 홈",
-            color = SnapPalette.TextSecondary,
-            fontSize = 13.sp,
-            modifier = Modifier
-                .fillMaxWidth()
-                .semantics {
-                    contentDescription = "사진은 이미 저장돼 있어요. 화면을 두 번 탭하면 다시 촬영하고, " +
-                        "길게 누르면 홈으로 돌아갑니다"
-                    // TalkBack: 이 노드를 두 번 탭하면 다시 촬영 (일반 터치에는 반응하지 않는다)
-                    if (onRetake != null) {
-                        onClick(label = "다시 촬영") {
-                            onRetake()
-                            true
-                        }
-                    }
-                },
-        )
         Spacer(Modifier.height(16.dp))
+    }
+}
+
+/** 결과 화면의 큰 액션 버튼 — 아이콘 위, 글자 아래 (좁은 폭에서 줄바꿈돼도 겹치지 않게). */
+@Composable
+private fun ResultActionButton(
+    emoji: String,
+    label: String,
+    description: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    // 원래 크기로 복원 (사용자 요청 2026-08-26 — 줄여야 했던 건 갤러리의 "말해서 찾기" 쪽이었다)
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+            .background(SnapPalette.Card, RoundedCornerShape(16.dp))
+            .border(2.dp, SnapPalette.Accent, RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 20.dp)
+            .semantics { contentDescription = description },
+    ) {
+        Text(text = emoji, fontSize = 22.sp)
+        Text(
+            text = label,
+            color = SnapPalette.TextPrimary,
+            fontWeight = FontWeight.Bold,
+            fontSize = 18.sp,
+            lineHeight = 23.sp,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(top = 6.dp),
+        )
     }
 }

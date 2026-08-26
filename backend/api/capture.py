@@ -242,6 +242,9 @@ class CaptureMetadataResponse(BaseModel):
     labels: list[str] = Field(default_factory=list)
     custom_labels: list[str] = Field(default_factory=list)
     people_count: int | None = None
+    has_text: bool = False
+    text_topic: str | None = None
+    text_content: str | None = None
     retry_after_seconds: int | None = None
     capture_revision: int | None = None
     final_frame_id: str | None = None
@@ -259,6 +262,9 @@ async def get_capture_metadata(session_id: str) -> CaptureMetadataResponse:
             labels=payload.get("labels") or [],
             custom_labels=payload.get("custom_labels") or [],
             people_count=payload.get("people_count"),
+            has_text=bool(payload.get("has_text")),
+            text_topic=payload.get("text_topic"),
+            text_content=payload.get("text_content"),
             capture_revision=payload.get("capture_revision") or _revision(state),
             final_frame_id=payload.get("final_frame_id") or _final_frame(state),
         )

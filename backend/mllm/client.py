@@ -18,7 +18,7 @@ load_dotenv()
 
 logger = load_logger("mllm_client.log")
 
-MODEL_ID = "claude-opus-5"
+MODEL_ID = "claude-haiku-4-5-20251001"
 MAX_TOKENS = 1024
 # Anthropic 권장 최대 변(1568px) — 이보다 크면 서버가 어차피 축소하므로 원본 전송은 시간 낭비 (#76)
 MAX_IMAGE_DIM = 1568

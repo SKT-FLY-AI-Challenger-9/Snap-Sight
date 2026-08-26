@@ -34,7 +34,10 @@ class PhotoIndexStore(context: Context) : SQLiteOpenHelper(
                 people TEXT NOT NULL DEFAULT '[]',
                 short_desc TEXT,
                 long_desc TEXT,
-                taxonomy_version INTEGER
+                taxonomy_version INTEGER,
+                has_text INTEGER NOT NULL DEFAULT 0,
+                text_topic TEXT,
+                text_content TEXT
             )
             """.trimIndent()
         )
@@ -49,8 +52,13 @@ class PhotoIndexStore(context: Context) : SQLiteOpenHelper(
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // v1 이후 스키마 변경 시 마이그레이션 추가. 인덱스는 재생성 가능한 캐시성 데이터라
-        // 최악의 경우 drop-recreate 도 허용된다 (원본 사진·서버 메타데이터에서 backfill).
+        // 인덱스는 재생성 가능한 캐시성 데이터라 최악의 경우 drop-recreate 도 허용되지만,
+        // 컬럼 추가만으로 충분할 때는 기존 행(라벨·설명)을 지킨다.
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE photo_index ADD COLUMN has_text INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE photo_index ADD COLUMN text_topic TEXT")
+            db.execSQL("ALTER TABLE photo_index ADD COLUMN text_content TEXT")
+        }
     }
 
     /** 촬영 직후 기본 행 생성 — 메타데이터 도착 전에도 시간 검색이 되게 한다. */
@@ -73,6 +81,9 @@ class PhotoIndexStore(context: Context) : SQLiteOpenHelper(
         customAuto: List<String>,
         taxonomyVersion: Int?,
         shortDescription: String? = null,
+        hasText: Boolean = false,
+        textTopic: String? = null,
+        textContent: String? = null,
     ) {
         val values = ContentValues().apply {
             put("long_desc", longDescription)
@@ -80,6 +91,9 @@ class PhotoIndexStore(context: Context) : SQLiteOpenHelper(
             put("custom_auto", JSONArray(customAuto).toString())
             taxonomyVersion?.let { put("taxonomy_version", it) }
             shortDescription?.let { put("short_desc", it) }
+            put("has_text", if (hasText) 1 else 0)
+            put("text_topic", textTopic)
+            put("text_content", textContent)
         }
         writableDatabase.update("photo_index", values, "session_id = ?", arrayOf(sessionId))
     }
@@ -151,6 +165,9 @@ class PhotoIndexStore(context: Context) : SQLiteOpenHelper(
         taxonomyVersion = getColumnIndexOrThrow("taxonomy_version").let {
             if (isNull(it)) null else getInt(it)
         },
+        hasText = getInt(getColumnIndexOrThrow("has_text")) != 0,
+        textTopic = getStringOrNull("text_topic"),
+        textContent = getStringOrNull("text_content"),
     )
 
     private fun Cursor.getStringOrNull(column: String): String? =
@@ -168,6 +185,7 @@ class PhotoIndexStore(context: Context) : SQLiteOpenHelper(
 
     private companion object {
         const val DB_NAME = "snap_sight_photo_index.db"
-        const val DB_VERSION = 1
+        // v2: has_text/text_topic/text_content 컬럼 추가 (텍스트 감지 Q&A, 2026-08-26)
+        const val DB_VERSION = 2
     }
 }

@@ -32,6 +32,12 @@ class MetadataClient(
         val taxonomyVersion: Int?,
         val captureRevision: Long,
         val finalFrameId: String,
+        /** 사진에서 읽을 만한 텍스트(메뉴판·안내문 등)를 감지했는가 — 텍스트 Q&A 안내의 트리거. */
+        val hasText: Boolean = false,
+        /** 감지된 텍스트가 무엇에 관한 것인지 짧은 요약 (예: "카페 메뉴판"). */
+        val textTopic: String? = null,
+        /** 감지된 텍스트 원문 — 후속 질문에 답할 근거로 그대로 인덱스에 저장한다. */
+        val textContent: String? = null,
     )
 
     interface Callback {
@@ -157,6 +163,11 @@ class MetadataClient(
                     else obj.optInt("taxonomy_version"),
                     captureRevision = obj.optLong("capture_revision", -1L),
                     finalFrameId = obj.optString("final_frame_id"),
+                    hasText = obj.optBoolean("has_text", false),
+                    textTopic = if (obj.isNull("text_topic")) null
+                    else obj.optString("text_topic").takeIf { it.isNotBlank() },
+                    textContent = if (obj.isNull("text_content")) null
+                    else obj.optString("text_content").takeIf { it.isNotBlank() },
                 )
             )
         }

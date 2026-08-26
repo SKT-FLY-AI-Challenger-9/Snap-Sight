@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from backend.api.capture import router as capture_router
 from backend.api.labels import router as labels_router
 from backend.api.session import router as session_router
+from backend.api.text_qa import router as text_qa_router
 from backend.api.tts import router as tts_router
 from backend.config import load_server_host, load_server_port, validate_required_env
 from backend.lifecycle import app_lifespan
@@ -21,6 +22,7 @@ app = FastAPI(title="Snap-Sight Backend", lifespan=app_lifespan)
 app.include_router(capture_router)
 app.include_router(labels_router)
 app.include_router(session_router)
+app.include_router(text_qa_router)
 app.include_router(tts_router)
 
 logger.info("Snap-Sight 백엔드 앱을 초기화했습니다.")

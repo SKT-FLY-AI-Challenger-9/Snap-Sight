@@ -59,23 +59,26 @@ fun HomeScreen(
             .padding(horizontal = 24.dp),
     ) {
         Row(
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 12.dp),
         ) {
-            // 카멜레온 로고 (배경 제거) — 화면 왼쪽 위 (사용자 요청 2026-08-25)
+            // 카멜레온 로고 (배경 제거) — 화면 왼쪽 위 (사용자 요청 2026-08-25).
+            // 설정 버튼이 커서(3배) 로고까지 40dp면 한 줄에 다 안 들어가 서로 붙어버린다
+            // (실기기 확인 2026-08-25) — 24dp로 줄여 여유를 둔다.
             Image(
                 painter = painterResource(R.drawable.logo_chameleon),
                 contentDescription = null,
                 contentScale = ContentScale.FillHeight,
-                modifier = Modifier.height(40.dp),
+                modifier = Modifier.height(24.dp),
             )
             Spacer(Modifier.weight(1f))
             // 위치는 그대로, 크기만 약 3배로 키웠다 (사용자 요청 2026-08-25).
             // 테두리가 배경(카드색)에 묻히지 않고 항상 보이도록 흰색 보더라인을 그린다.
             Surface(
                 shape = RoundedCornerShape(30.dp),
-                color = SnapPalette.Card,
+                color = SnapPalette.Accent,
                 border = BorderStroke(1.5.dp, Color.White),
                 modifier = Modifier
                     .clickable(onClick = onOpenSettings)
@@ -192,7 +195,7 @@ fun HomeScreen(
                 .fillMaxWidth()
                 .weight(1f)
                 .padding(bottom = 16.dp)
-                .background(SnapPalette.Card, RoundedCornerShape(14.dp))
+                .background(SnapPalette.Accent, RoundedCornerShape(14.dp))
                 // 테두리가 배경에 묻히지 않고 항상 보이도록 흰색 보더라인 (사용자 요청 2026-08-25).
                 .border(1.5.dp, Color.White, RoundedCornerShape(14.dp))
                 .grammarClickable(onClick = onOpenGallery)

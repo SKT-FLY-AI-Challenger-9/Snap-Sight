@@ -64,12 +64,15 @@ fun SatelliteHeader(
 /**
  * 최하단 전폭 복귀 버튼 — 모든 위성 화면에서 같은 위치·같은 문구. 탭 문법(길게 누르기)을
  * 모르는 사용자의 대체 복귀 경로다. 호출부는 각 화면의 공통 복귀 경로(onBack)에 연결한다.
+ *
+ * @param scale 글자·안팎 여백을 함께 키우는 배율 — 갤러리 화면은 2배로 쓴다(사용자 요청 2026-08-25).
  */
 @Composable
 fun HomeReturnButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     label: String = "홈으로 돌아가기",
+    scale: Float = 1f,
 ) {
     Box(
         contentAlignment = Alignment.Center,
@@ -77,13 +80,13 @@ fun HomeReturnButton(
             .fillMaxWidth()
             .background(SnapPalette.Accent, RoundedCornerShape(16.dp))
             .grammarClickable(onClick)
-            .padding(vertical = 16.dp)
+            .padding(vertical = (16 * scale).dp)
             .semantics { contentDescription = label },
     ) {
         Text(
             text = label,
             color = SnapPalette.TextPrimary,
-            fontSize = 17.sp,
+            fontSize = (17 * scale).sp,
             fontWeight = FontWeight.Bold,
         )
     }
