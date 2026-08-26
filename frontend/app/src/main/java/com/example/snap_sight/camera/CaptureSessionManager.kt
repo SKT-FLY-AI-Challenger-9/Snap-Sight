@@ -240,8 +240,12 @@ class CaptureSessionManager(
             return
         }
         Log.w(TAG, "마이크 권한 없음 또는 음성 인식 미지원 — 발화 단계를 건너뜀")
-        // 발화 없이 조준으로 직행 (타겟 스펙 없는 일반 촬영 모드)
+        // 발화 없이 조준으로 직행 (타겟 스펙 없는 일반 촬영 모드). 재시도 소진 실패와 같은
+        // 콜백(text=null)을 태워 보내 안내 문구 결정이 항상 한 곳(MainActivity의 스펙 적용
+        // 지점)에서만 이뤄지게 한다 — 안 그러면 이 경로만 AIMING 진입 즉시 안내가 나가
+        // 뒤이은 판정 안내와 겹친다 (사용자 요청 2026-08-27).
         moveTo(SessionState.AIMING)
+        listener?.onUtteranceRecognized(sessionId, null)
     }
 
     /**
@@ -290,8 +294,9 @@ class CaptureSessionManager(
             override fun onRecognized(text: String) {
                 if (!isActive(token)) return
                 clearParsingTimeout()
-                moveTo(SessionState.AIMING)
-                listener?.onUtteranceRecognized(token.sessionId, text)
+                moveToAimingAfterRecognitionEndTone(token) {
+                    listener?.onUtteranceRecognized(token.sessionId, text)
+                }
             }
 
             override fun onError(message: String) {
@@ -305,10 +310,24 @@ class CaptureSessionManager(
                 }
                 Log.w(TAG, "재시도도 발화 인식 실패: $message")
                 // 인식 실패해도 타겟 스펙 없는 일반 촬영 모드로 계속 진행
-                moveTo(SessionState.AIMING)
-                listener?.onUtteranceRecognized(token.sessionId, null)
+                moveToAimingAfterRecognitionEndTone(token) {
+                    listener?.onUtteranceRecognized(token.sessionId, null)
+                }
             }
         })
+    }
+
+    /**
+     * AIMING 전환(및 뒤이은 화면 안내 음성)을 [RECOGNITION_END_TONE_GUARD_MS]만큼 늦춘다 —
+     * 인식 종료 신호음(SpeechToTextRecognizer의 onEndOfSpeech 톤)이 뒤따르는 안내 음성에
+     * 묻히지 않게 한 박자 쉬어준다 (사용자 요청 2026-08-27 — "음성인식 끝나는 소리가 묻혀").
+     */
+    private fun moveToAimingAfterRecognitionEndTone(token: CaptureSessionToken, onArmed: () -> Unit) {
+        mainHandler.postDelayed({
+            if (!isActive(token)) return@postDelayed
+            moveTo(SessionState.AIMING)
+            onArmed()
+        }, RECOGNITION_END_TONE_GUARD_MS)
     }
 
     private fun finishListening() {
@@ -471,5 +490,8 @@ class CaptureSessionManager(
         // 이 시간을 넘기면 기기 인식 서비스가 응답하지 않는 상태로 본다 (실측: S24 무한대기 관측).
         const val PARSING_TIMEOUT_MS = 8_000L
         const val SAVED_DISPLAY_MS = 2_000L
+        // 인식 종료 신호음이 다 들리도록 AIMING 전환(및 그 안내 음성)을 늦추는 시간
+        // (사용자 요청 2026-08-27)
+        const val RECOGNITION_END_TONE_GUARD_MS = 500L
     }
 }

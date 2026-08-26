@@ -3,6 +3,8 @@ package com.example.snap_sight.stt
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -32,6 +34,17 @@ class SpeechToTextRecognizer(private val context: Context) {
     }
 
     private var recognizer: SpeechRecognizer? = null
+
+    // 녹음 시작 신호(사용자 요청 2026-08-26) — 지금 듣고 있는지 알 방법이 없어서 추가.
+    // 지연 생성해 실제로 인식을 한 번도 안 쓰면 리소스를 만들지 않는다.
+    private val toneGenerator: ToneGenerator? by lazy {
+        // STREAM_NOTIFICATION은 기기별로 무음/저볼륨인 경우가 많아 안 들릴 수 있다 — 다른
+        // earcon(GuidanceFeedback)과 같은 STREAM_MUSIC으로 통일한다 (실사용 피드백 2026-08-26,
+        // "모든 STT 부분에서 띠링 안 나오잖아").
+        runCatching { ToneGenerator(AudioManager.STREAM_MUSIC, LISTENING_TONE_VOLUME) }
+            .onFailure { Log.w(TAG, "녹음 시작 신호음 생성 실패 — 신호음 없이 진행", it) }
+            .getOrNull()
+    }
 
     val isAvailable: Boolean get() = SpeechRecognizer.isRecognitionAvailable(context)
 
@@ -95,11 +108,19 @@ class SpeechToTextRecognizer(private val context: Context) {
             release()
         }
 
-        override fun onReadyForSpeech(params: Bundle?) {}
+        override fun onReadyForSpeech(params: Bundle?) {
+            // start() 호출 시점이 아니라 마이크가 실제로 열려 듣기 시작하는 시점 — 여기서
+            // 울려야 "지금부터 말하면 된다"는 신호로 정확하다.
+            runCatching { toneGenerator?.startTone(LISTENING_START_TONE, LISTENING_TONE_MS) }
+        }
         override fun onBeginningOfSpeech() {}
         override fun onRmsChanged(rmsdB: Float) {}
         override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() {}
+        override fun onEndOfSpeech() {
+            // 마이크가 닫히는 시점(결과 처리 시작 직전) — "이제 그만 들어요" 신호. 시작음과
+            // 다른 톤이라 시작/끝을 구분해서 들을 수 있다 (사용자 요청 2026-08-27).
+            runCatching { toneGenerator?.startTone(LISTENING_END_TONE, LISTENING_TONE_MS) }
+        }
         override fun onPartialResults(partialResults: Bundle?) {}
         override fun onEvent(eventType: Int, params: Bundle?) {}
     }
@@ -116,5 +137,13 @@ class SpeechToTextRecognizer(private val context: Context) {
 
     private companion object {
         const val TAG = "SpeechToTextRecognizer"
+        // ACK/BEEP는 카메라 등록 스캔 시작·종료음(GuidanceFeedback.SCAN_START_TONE/
+        // SCAN_END_TONE)과 완전히 같은 톤이라 헷갈렸다 — STT 전용으로 겹치지 않는 톤을 쓴다
+        // (사용자 요청 2026-08-27, "카메라에서 쓰이는 음성이랑 너무 똑같다").
+        val LISTENING_START_TONE = ToneGenerator.TONE_PROP_PROMPT
+        val LISTENING_END_TONE = ToneGenerator.TONE_SUP_RADIO_ACK
+        const val LISTENING_TONE_MS = 120
+        // 70 -> 90으로 키움 (사용자 요청 2026-08-27 — "소리 좀만 키워줘")
+        const val LISTENING_TONE_VOLUME = 90
     }
 }

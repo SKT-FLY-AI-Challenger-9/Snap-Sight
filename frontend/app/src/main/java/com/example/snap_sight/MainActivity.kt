@@ -358,6 +358,8 @@ class MainActivity : ComponentActivity() {
         val knownSubjects: List<FrameUploader.KnownSubject>,
         val peopleAtShutter: List<String>,
         val serverAiEnabled: Boolean,
+        /** 셔터 순간 지정 대상이 없던(일반 촬영) 수동 촬영인가 — 결과 화면 안내 분기용. */
+        val isGeneralModeManual: Boolean = false,
         var representative: Uri? = null,
         var candidates: List<RingFrameBuffer.Frame>? = null,
     )
@@ -404,6 +406,13 @@ class MainActivity : ComponentActivity() {
      * 아직 도착 전이거나 실패했으면) [captureHeadline]으로 대체한다 (사용자 요청 2026-08-26).
      */
     private var lastManualCaptureDescription: String? = null
+
+    /**
+     * 일반 촬영 모드 결과 안내가 "라벨 붙이기/재생" 선택 대기 중인가 (사용자 요청 2026-08-27).
+     * 켜져 있는 동안만 결과 화면의 두 번 탭=라벨 붙이기, 세 번 탭=재생으로 해석되고, 그 외에는
+     * 평소대로 두 번 탭=다시 촬영, 세 번 탭=설명 다시 듣기다. 선택하거나 화면을 벗어나면 꺼진다.
+     */
+    private var awaitingGeneralModeChoice = false
 
     // 셔터 순간의 탐지 객체 스냅샷 — 즉시 상황 안내(instantCaptureSummary)의 입력 (#80)
     private var shutterObjects: List<TrackedObject> = emptyList()
@@ -635,13 +644,10 @@ class MainActivity : ComponentActivity() {
                 when (state) {
                     // LISTENING 안내는 listeningPrompt 게이트가 담당 — 안내가 끝난 뒤에
                     // 인식이 시작되므로 안내 음성이 발화로 인식되지 않는다 (2026-08-22)
-                    // 탭 문법 안내(사용자 요청 2026-08-24) → 노션 확정 문장 (4-1 조정 시작) 순서로
-                    SessionState.AIMING -> guidanceFeedback.announce(
-                        "화면을 두 번 터치해 촬영하거나, 꾹 눌러 홈으로 이동해 주세요.",
-                        onDone = {
-                            guidanceFeedback.announce("소리와 진동을 따라 천천히 움직여 주세요.")
-                        },
-                    )
+                    // AIMING 진입 시 탭 문법 안내를 여기서 바로 말하지 않는다 — 자동이든 수동이든
+                    // 대상 판정(자동/수동, 지원 여부)이 끝난 뒤에 그 결과에 맞는 문구부터 말하고
+                    // 이어서 탭 문법을 말한다([applyTargetSpecIfStillAiming] 참고, 사용자 요청
+                    // 2026-08-27 — 판정 전에 먼저 말해버려서 뒤의 안내와 겹쳐 들렸다).
                     SessionState.CAPTURING -> {
                         val now = System.currentTimeMillis()
                         synchronized(cvSnapshotLock) {
@@ -673,6 +679,13 @@ class MainActivity : ComponentActivity() {
                             intentTargetName = cvProcessor.targetIdentityName,
                             aimedTargetTrackId = lastAimingTargetTrackId,
                         )
+                        // 셔터 순간이 일반 촬영(지정 대상 없음)이었는지 — 수동 촬영일 때만 의미가
+                        // 있는 결과 화면 안내 분기 근거다 (사용자 요청 2026-08-27).
+                        val shutterGuidanceMode = AimingGuidanceModeResolver.resolve(
+                            spec = cvProcessor.currentTargetSpec(),
+                            targetSpecPending = false,
+                            localIdentityName = cvProcessor.targetIdentityName,
+                        )
                         pendingCaptureUploads[captureSessionId] = PendingCaptureUpload(
                             sessionId = captureSessionId,
                             localGeneration = localGeneration,
@@ -685,6 +698,8 @@ class MainActivity : ComponentActivity() {
                             knownSubjects = knownSubjects,
                             peopleAtShutter = shutterIdentities,
                             serverAiEnabled = settingsUiState.serverAiDescriptionEnabled,
+                            isGeneralModeManual = !sessionManager.lastCaptureWasAuto &&
+                                shutterGuidanceMode == AimingGuidanceMode.GENERAL_WAITING,
                         )
                         // 요청한 피사체(예: 노트북)가 셔터 순간 화면에 없었는지 — 결과 안내에 쓴다
                         shutterMissingTarget = MissingSubjectNotice.targetNameIfMissing(
@@ -703,24 +718,35 @@ class MainActivity : ComponentActivity() {
                         // 한 번 거쳐 듣는다(사용자 요청 2026-08-26 — YOLO ID 기반 즉시 요약 대신).
                         val captureSessionId = sessionManager.sessionId
                         val isManualCapture = !sessionManager.lastCaptureWasAuto
+                        // 지정 대상 없이(일반 촬영) 수동으로 찍었는지 — 전용 결과 안내 분기
+                        // (사용자 요청 2026-08-27). CAPTURING 시점에 스냅샷돼 있다.
+                        val isGeneralModeManual =
+                            pendingCaptureUploads[captureSessionId]?.isGeneralModeManual == true
                         // 이전 세션 캐시가 이번 세션에 새어 들어가지 않게 — LLM 응답 도착 전 replay는
                         // captureHeadline()으로 대체된다.
                         lastManualCaptureDescription = null
+                        awaitingGeneralModeChoice = false
                         if (!isManualCapture) {
                             val headline = captureHeadline()
                             guidanceFeedback.prefetchDynamic(headline)
                         }
                         guidanceFeedback.announce(
-                            "사진을 저장했어요.",
+                            if (isGeneralModeManual) {
+                                "잠시만 기다려주세요. 사진을 분석 중이에요."
+                            } else {
+                                "사진을 저장했어요."
+                            },
                             onDone = {
-                                if (isManualCapture) {
-                                    announceManualCaptureDescription(captureSessionId)
-                                } else {
-                                    guidanceFeedback.announceDynamic(
+                                when {
+                                    // 결과는 pollCaptureUnderstanding -> announceGeneralModeCaptureResult가 이어받는다
+                                    isGeneralModeManual -> Unit
+                                    isManualCapture -> announceManualCaptureDescription(captureSessionId)
+                                    else -> guidanceFeedback.announceDynamic(
                                         captureHeadline(),
                                         onDone = {
                                             guidanceFeedback.announceDynamic(
                                                 RESULT_GUIDE_PROMPT,
+                                                onDone = { listenForResultGuideResponse(captureSessionId) },
                                                 priority = GuidanceFeedback.SpeechPriority.CAPTURE,
                                             )
                                         },
@@ -1099,8 +1125,17 @@ class MainActivity : ComponentActivity() {
                                         ?: startGalleryVoiceSearch()
                                 },
                                 onTripleTap = {
-                                    if (galleryViewerPhoto != null) closePhotoViewer()
-                                    else speakCurrentResults()
+                                    if (galleryViewerPhoto != null) {
+                                        closePhotoViewer()
+                                    } else {
+                                        // 화면 조작 설명을 다시 들려준 뒤 결과 듣기로 이어간다
+                                        // (사용자 요청 2026-08-27 — 처음 안내는 최초 진입에만
+                                        // 나가서 나중에 다시 들을 방법이 없었다).
+                                        guidanceFeedback.announce(
+                                            GALLERY_INTRO_GUIDANCE,
+                                            onDone = { speakCurrentResults() },
+                                        )
+                                    }
                                 },
                                 onLongPress = {
                                     if (galleryViewerPhoto != null) closePhotoViewer()
@@ -1203,6 +1238,7 @@ class MainActivity : ComponentActivity() {
         sessionId: String,
         serverRevision: Long,
         allowedCustomLabels: Set<String>,
+        isGeneralModeManual: Boolean = false,
     ) {
         metadataClient.pollMetadata(sessionId, serverRevision, object : MetadataClient.Callback {
             override fun onDone(metadata: MetadataClient.Metadata) {
@@ -1240,22 +1276,36 @@ class MainActivity : ComponentActivity() {
                     )
                 }, "SnapSight-IndexUpdate").start()
 
+                val onBriefReady: (String?) -> Unit = { brief ->
+                    if (isGeneralModeManual) {
+                        announceGeneralModeCaptureResult(
+                            sessionId = sessionId,
+                            serverRevision = serverRevision,
+                            description = brief,
+                            hasText = metadata.hasText,
+                            textContent = metadata.textContent,
+                        )
+                    } else {
+                        announceUnderstandingBrief(sessionId, serverRevision, brief)
+                        if (metadata.hasText && !metadata.textContent.isNullOrBlank()) {
+                            announceDetectedText(
+                                sessionId = sessionId,
+                                serverRevision = serverRevision,
+                                textTopic = metadata.textTopic,
+                                textContent = metadata.textContent,
+                            )
+                        }
+                    }
+                }
                 if (metadata.finalFrameId == "representative") {
-                    announceUnderstandingBrief(sessionId, serverRevision, localizedBrief)
+                    onBriefReady(localizedBrief)
                 } else {
                     downloadAndSaveCanonicalFrame(
                         sessionId = sessionId,
                         serverRevision = serverRevision,
                         finalFrameId = metadata.finalFrameId,
                         brief = localizedBrief,
-                    )
-                }
-                if (metadata.hasText && !metadata.textContent.isNullOrBlank()) {
-                    announceDetectedText(
-                        sessionId = sessionId,
-                        serverRevision = serverRevision,
-                        textTopic = metadata.textTopic,
-                        textContent = metadata.textContent,
+                        onBriefReady = onBriefReady,
                     )
                 }
             }
@@ -1271,6 +1321,7 @@ class MainActivity : ComponentActivity() {
         serverRevision: Long,
         finalFrameId: String,
         brief: String?,
+        onBriefReady: (String?) -> Unit,
     ) {
         finalFrameClient.download(
             sessionId = sessionId,
@@ -1290,11 +1341,7 @@ class MainActivity : ComponentActivity() {
                                     guidanceFeedback.announce(
                                         "촬영 순간 근처에서 더 나은 사진을 찾아 별도로 저장했어요. " +
                                             "고해상도 원본도 그대로 있어요.",
-                                        onDone = {
-                                            announceUnderstandingBrief(
-                                                sessionId, serverRevision, brief,
-                                            )
-                                        },
+                                        onDone = { onBriefReady(brief) },
                                         priority = GuidanceFeedback.SpeechPriority.CAPTURE,
                                     )
                                 }
@@ -1302,16 +1349,14 @@ class MainActivity : ComponentActivity() {
                             }
                         } catch (t: Throwable) {
                             Log.w(TAG, "선택 프레임 MediaStore 저장 실패 [$sessionId]", t)
-                            runOnUiThread {
-                                announceUnderstandingBrief(sessionId, serverRevision, brief)
-                            }
+                            runOnUiThread { onBriefReady(brief) }
                         }
                     }, "SnapSight-CanonicalSave").start()
                 }
 
                 override fun onFailure(error: Throwable) {
                     Log.w(TAG, "선택 프레임 다운로드 실패 [$sessionId]", error)
-                    announceUnderstandingBrief(sessionId, serverRevision, brief)
+                    onBriefReady(brief)
                 }
             }
         )
@@ -1331,6 +1376,47 @@ class MainActivity : ComponentActivity() {
     ) = Unit
 
     /**
+     * 일반 촬영 모드(지정 대상 없음) 수동 촬영 전용 결과 안내 (사용자 요청 2026-08-27).
+     * SAVED 진입 시 말한 "잠시만 기다려주세요, 사진을 분석 중이에요." 뒤를 이 함수가 받는다 —
+     * Haiku 설명을 들려준 뒤 텍스트 감지 여부로 두 갈래:
+     *  - 텍스트가 있으면 바로 질문을 듣고 감지된 텍스트와 함께 서버로 보내 답을 읽어준다.
+     *  - 없으면 라벨 붙이기/재생 선택을 제스처로 받는다(두 번 탭=라벨, 세 번 탭=재생) —
+     *    [awaitingGeneralModeChoice]가 켜져 있는 동안만 [onMainMainAction]/[onMainSubAction]이
+     *    이 의미로 해석한다.
+     */
+    private fun announceGeneralModeCaptureResult(
+        sessionId: String,
+        serverRevision: Long,
+        description: String?,
+        hasText: Boolean,
+        textContent: String?,
+    ) {
+        if (!isCurrentServerCapture(sessionId, serverRevision) || !isCurrentVisibleResult(sessionId)) return
+        val text = description?.takeIf { it.isNotBlank() } ?: captureHeadline()
+        lastManualCaptureDescription = text
+        guidanceFeedback.announceDynamic(
+            text,
+            onDone = {
+                if (!isCurrentServerCapture(sessionId, serverRevision) ||
+                    !isCurrentVisibleResult(sessionId)
+                ) {
+                    return@announceDynamic
+                }
+                if (hasText && !textContent.isNullOrBlank()) {
+                    guidanceFeedback.announce(
+                        "텍스트가 포함된 사진이에요. 더 궁금한 점 있으세요?",
+                        onDone = { listenForTextQuestion(sessionId, serverRevision, textContent) },
+                    )
+                } else {
+                    awaitingGeneralModeChoice = true
+                    guidanceFeedback.announce("사진에 라벨을 붙여 저장하거나 설명을 다시 들을 수 있어요")
+                }
+            },
+            priority = GuidanceFeedback.SpeechPriority.CAPTURE,
+        )
+    }
+
+    /**
      * 사진에서 텍스트(메뉴판·안내문 등)를 감지했을 때의 안내 + 후속 질문 흐름 (사용자 요청
      * 2026-08-26). "텍스트가 감지됐어요. OO에 관련된 내용이에요." → "필요하신 정보 있으실까요?"
      * → 바로 듣기 시작 → 인식된 질문을 감지된 텍스트와 함께 서버로 보내 답을 읽어준다.
@@ -1341,9 +1427,14 @@ class MainActivity : ComponentActivity() {
         textTopic: String?,
         textContent: String?,
     ) {
-        if (!isCurrentServerCapture(sessionId, serverRevision) ||
-            !isCurrentVisibleResult(sessionId) || textContent.isNullOrBlank()
-        ) return
+        if (!isCurrentServerCapture(sessionId, serverRevision) || textContent.isNullOrBlank()) return
+        // 텍스트 인식(서버 왕복)은 보통 결과 화면을 넘어갈 만큼 오래 걸린다 — 이미 다음 화면으로
+        // 넘어간 경우 실시간 Q&A는 의미가 없으니, 나중에라도 갤러리에서 찾아보라고만 짧게 안내한다
+        // (사용자 요청 2026-08-26 — "보통은 찍고 나가니까").
+        if (!isCurrentVisibleResult(sessionId)) {
+            guidanceFeedback.announce("방금 찍은 사진에 텍스트가 포함되었어요. 갤러리에서 확인 가능해요")
+            return
+        }
         val topic = textTopic?.takeIf { it.isNotBlank() } ?: "텍스트"
         guidanceFeedback.announce(
             "텍스트가 사진에서 감지됐어요. ${topic}에 관련된 내용이에요.",
@@ -1373,6 +1464,13 @@ class MainActivity : ComponentActivity() {
                 if (!isCurrentServerCapture(sessionId, serverRevision) ||
                     !isCurrentVisibleResult(sessionId)
                 ) {
+                    return
+                }
+                // "없어"/"아니" 류로 답하면 질문이 없다는 뜻 — AI 호출 없이 그냥 끝낸다
+                // (사용자 요청 2026-08-27).
+                val compact = text.replace(" ", "")
+                if (NO_QUESTION_WORDS.any(compact::contains)) {
+                    speak("네, 알겠어요")
                     return
                 }
                 textQaClient.ask(textContent, text) { answer ->
@@ -1438,13 +1536,7 @@ class MainActivity : ComponentActivity() {
                 onDone = { startSettingsVoiceCommand() },
             )
             AppScreen.GALLERY -> guidanceFeedback.announce(
-                if (firstVisit) {
-                    "갤러리입니다. 사진이 분류별 폴더로 정리돼 있고, " +
-                        "말해서 찾기 버튼으로 음성 검색도 할 수 있어요. " +
-                        "검색 조건은 처음부터라고 말하면 지워져요"
-                } else {
-                    "갤러리입니다"
-                }
+                if (firstVisit) GALLERY_INTRO_GUIDANCE else "갤러리입니다"
             )
             else -> {}
         }
@@ -1484,6 +1576,7 @@ class MainActivity : ComponentActivity() {
         activeCaptureGeneration = 0L
         activeServerCaptureRevision = null
         showResult = false
+        awaitingGeneralModeChoice = false
         guidanceFeedback.playScreenExit()
         guidanceFeedback.announce("사진은 저장됐어요. 홈입니다")
     }
@@ -1510,6 +1603,20 @@ class MainActivity : ComponentActivity() {
     private fun onMainMainAction() {
         if (enrollmentActive) return // 등록 스캔 중 오탭으로 세션이 시작되지 않게
         if (showResult) {
+            // 일반 촬영 모드 결과 안내가 라벨/재생 선택을 기다리는 동안만 두 번 탭=라벨 붙이기
+            // (사용자 요청 2026-08-27) — 선택 후에는 평소대로 다시 촬영으로 돌아간다.
+            if (awaitingGeneralModeChoice) {
+                awaitingGeneralModeChoice = false
+                val sessionId = lastCapturedSessionId
+                if (sessionId != null) {
+                    listenForResultLabel(
+                        sessionId,
+                        prompt = "사진에 단어를 붙여 저장하고 찾을 수 있어요. 어떻게 붙일까요?",
+                        allowFixedName = false,
+                    )
+                }
+                return
+            }
             // 결과 화면의 메인 기능 = 다시 촬영
             showResult = false
             if (sessionManager.state == SessionState.IDLE) sessionManager.onVolumePressed()
@@ -1532,6 +1639,14 @@ class MainActivity : ComponentActivity() {
     private fun onMainSubAction() {
         if (enrollmentActive) return
         when {
+            // 일반 촬영 모드 결과 안내가 라벨/재생 선택을 기다리는 동안만 세 번 탭=재생
+            // (사용자 요청 2026-08-27) — 재생 뒤에는 이 선택 대기 상태를 벗어난다.
+            showResult && awaitingGeneralModeChoice -> {
+                awaitingGeneralModeChoice = false
+                guidanceFeedback.announce("설명을 다시 들려 드릴게요", onDone = {
+                    guidanceFeedback.announceDynamic(lastManualCaptureDescription ?: captureHeadline())
+                })
+            }
             // 버튼("음성 다시 듣기")과 동일 — 수동 촬영은 서버 LLM 설명, 자동촬영은
             // 온디바이스 즉시 요약 (사용자 요청 2026-08-25/26).
             showResult -> speak(lastManualCaptureDescription ?: captureHeadline())
@@ -1546,6 +1661,11 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 설정 화면 두 번 탭(메인) — 현재 설정값을 음성으로 요약한다. */
+    /**
+     * 설정 화면 두 번 탭(메인) — 현재 값을 읽어준 뒤 바로 음성 인식을 시작해 말로 바로 바꿀
+     * 수 있게 한다 (사용자 요청 2026-08-26 — "설정에서 두 번 터치해도 음성인식해서 변경").
+     * 진입 시 자동으로 한 번 듣던 것과 같은 흐름을 원하는 시점에 다시 열 수 있게 한 것.
+     */
     private fun announceSettingsSummary() {
         val s = settingsUiState
         guidanceFeedback.announce(
@@ -1553,7 +1673,8 @@ class MainActivity : ComponentActivity() {
                 "사운드 강도 ${(s.soundVolume * 100).roundToInt()}퍼센트, " +
                 "음성 속도 ${SpeechSpeed.fromRate(s.speechRate).label}, " +
                 "서버 AI 사진 설명 ${if (s.serverAiDescriptionEnabled) "켜짐" else "꺼짐"}, " +
-                "촬영 그리드 ${if (s.gridEnabled) "켜짐" else "꺼짐"}입니다"
+                "촬영 그리드 ${if (s.gridEnabled) "켜짐" else "꺼짐"}입니다",
+            onDone = { startSettingsVoiceCommand() },
         )
     }
 
@@ -1874,14 +1995,20 @@ class MainActivity : ComponentActivity() {
             speak("이 기기는 음성 인식을 지원하지 않아요")
             return
         }
-        guidanceFeedback.announce("무엇을 찾을까요?")
-        // 안내 음성이 마이크에 섞이지 않도록 잠깐 기다렸다가 듣기 시작한다
-        window.decorView.postDelayed({
-            searchRecognizer.start(object : SpeechToTextRecognizer.Listener {
-                override fun onRecognized(text: String) = handleGalleryQuery(text)
-                override fun onError(message: String) = speak("잘 못 들었어요. 다시 눌러 말씀해 주세요")
-            })
-        }, 1_200L)
+        // "무엇을 찾을까요?"만으로는 무슨 말을 해야 하는지 몰랐다 — 예시를 준다
+        // (사용자 요청 2026-08-27).
+        // 안내가 길어져서(사용자 요청 2026-08-27) 고정 1.2초 대기로는 다 말하기 전에 듣기
+        // 시작해 안내 음성 뒷부분이 발화로 잘못 인식됐다 — 실제 재생이 끝난 뒤(onDone)에
+        // 듣기 시작하도록 고쳤다.
+        guidanceFeedback.announce(
+            "날짜나 저장한 라벨을 말해 사진들을 찾을 수 있어요",
+            onDone = {
+                searchRecognizer.start(object : SpeechToTextRecognizer.Listener {
+                    override fun onRecognized(text: String) = handleGalleryQuery(text)
+                    override fun onError(message: String) = speak("잘 못 들었어요. 다시 눌러 말씀해 주세요")
+                })
+            },
+        )
     }
 
     /** 검색 발화 처리 — 초기화/목록 명령을 먼저 보고, 아니면 질의를 쌓아 결과를 낭독한다. */
@@ -1948,6 +2075,51 @@ class MainActivity : ComponentActivity() {
             description = description,
             people = entry?.people?.toList().orEmpty(), // 등록 인물·사물 이름 — 서버 설명엔 없으니 여기서 덧붙인다
         )
+    }
+
+    /**
+     * [RESULT_GUIDE_PROMPT] 안내가 끝나자마자 버튼 없이도 바로 답할 수 있게 자동으로 듣는다
+     * (사용자 요청 2026-08-26). "다시"/"들려줘"류는 재생 요청으로, 그 외는 라벨 이름으로 본다.
+     * 응답이 없거나 못 알아들어도 사용자가 시킨 적 없는 마이크라 재촉하지 않고 조용히 넘어간다.
+     */
+    private fun listenForResultGuideResponse(sessionId: String) {
+        if (!isCurrentVisibleResult(sessionId)) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED || !searchRecognizer.isAvailable
+        ) {
+            return
+        }
+        searchRecognizer.start(object : SpeechToTextRecognizer.Listener {
+            override fun onRecognized(text: String) {
+                if (!isCurrentVisibleResult(sessionId)) return
+                if (REPLAY_COMMAND_WORDS.any(text::contains)) {
+                    guidanceFeedback.announceDynamic(lastManualCaptureDescription ?: captureHeadline())
+                    return
+                }
+                // "아니"/"괜찮아" 류는 둘 다 필요 없다는 뜻인데, 이걸 그대로 라벨 이름으로
+                // 삼아버렸다 — 안내만 하고 라벨 부착으로 넘어가지 않는다 (사용자 요청
+                // 2026-08-27 — "이 사진을 아니로 기억할게요"라고 해버리는 버그).
+                val compact = text.replace(" ", "")
+                if (NO_QUESTION_WORDS.any(compact::contains)) {
+                    guidanceFeedback.announce("알겠어요. 홈으로 돌아가려면 화면을 꾹 눌러주세요")
+                    return
+                }
+                val label = text.trim().removeSuffix("이라고 기억해줘").removeSuffix("로 기억해줘").trim()
+                if (label.isBlank()) return
+                if (clashesWithFixedLabel(label)) {
+                    listenForResultLabel(
+                        sessionId,
+                        prompt = "\"$label\"은 기본 분류 이름이라 검색이 섞일 수 있어요. " +
+                            "\"우리 $label\"처럼 나만의 이름을 권해요. 뭐라고 기억할까요?",
+                        allowFixedName = true,
+                    )
+                    return
+                }
+                resolveAndAttachLabel(sessionId, label)
+            }
+
+            override fun onError(message: String) {} // 자동으로 건 마이크 — 못 들었다고 재촉하지 않는다
+        })
     }
 
     /**
@@ -2574,10 +2746,46 @@ class MainActivity : ComponentActivity() {
                     priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT,
                 )
             } else if (appliedMode == AimingGuidanceMode.GENERAL_WAITING) {
-                guidanceText = GENERAL_CAPTURE_WAITING_GUIDANCE
+                // 사물 촬영 의도는 잡혔는데(subjectType=object) 그 사물을 모르는(objectLabel=null)
+                // 경우는 "일반 촬영 모드예요"라고만 하면 왜 그런지 알 수 없다 — 이유를 밝힌다
+                // (사용자 요청 2026-08-27).
+                val isUnsupportedObject = effectiveSpec?.subjectType == TargetSpec.SubjectType.OBJECT &&
+                    effectiveSpec.objectLabel == null
+                guidanceText = if (isUnsupportedObject) {
+                    UNSUPPORTED_OBJECT_GUIDANCE
+                } else {
+                    GENERAL_CAPTURE_WAITING_GUIDANCE
+                }
+                if (isUnsupportedObject) {
+                    // AIMING 진입 시 이미 "화면을 두 번 터치해 촬영하거나…"가 재생 중일 수 있다 —
+                    // 그걸 잘라먹지 말고, 이 안내를 먼저 다 말한 뒤에 그 문장을 이어서 다시
+                    // 들려준다(사용자 요청 2026-08-27 — 겹쳐 들리는 문제).
+                    guidanceFeedback.announce(
+                        guidanceText,
+                        onDone = {
+                            guidanceFeedback.announce(
+                                TAP_GRAMMAR_AIMING_GUIDANCE,
+                                priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT,
+                            )
+                        },
+                        priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT,
+                    )
+                } else {
+                    guidanceFeedback.announce(
+                        guidanceText,
+                        priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT,
+                    )
+                }
+            } else if (appliedMode == AimingGuidanceMode.COMPOSITION) {
+                // 자동이든 수동이든 대상 판정이 끝난 뒤에야 탭 문법 안내를 말한다 — 판정 전에
+                // 먼저 말해버리면 뒤이어 "아직 지원되지 않는 사물이에요" 류가 겹쳐 들렸다
+                // (사용자 요청 2026-08-27). AIMING 진입 즉시가 아니라 여기(스펙 확정 시점)로
+                // 옮겼다.
                 guidanceFeedback.announce(
-                    guidanceText,
-                    priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT,
+                    TAP_GRAMMAR_AIMING_GUIDANCE,
+                    onDone = {
+                        guidanceFeedback.announce("소리와 진동을 따라 천천히 움직여 주세요.")
+                    },
                 )
             }
         }
@@ -2693,24 +2901,23 @@ class MainActivity : ComponentActivity() {
             verdict
         }
 
-        // ⑤-b 자동촬영 (2026-08-24) — 등록 이름·objectLabel 로 대상이 명확한 세션에서만,
-        // 그 대상이 화면에 연속으로 잡혀 있으면 두 번 탭 없이 셔터를 요청한다. 구도 READY 는
-        // 요구하지 않는다("잡히면 찍는다" — READY 를 걸면 구도가 안 나올 때 영영 미발동).
-        // 예고 발화 없이 셔터 효과음만 낸다.
+        // ⑤-b 자동촬영 (2026-08-24, 2026-08-26 READY 유지 판정으로 개편) — 등록 이름·
+        // objectLabel 로 대상이 명확한 세션에서만, 화면 "지금이에요!" 문구와 같은 구도
+        // READY 판정이 [AutoCaptureArbiter.MIN_READY_HOLD_MS] 이상 이어지면 두 번 탭 없이
+        // 셔터를 요청한다. 예고 발화 없이 기존 셔터 효과음만 낸다.
         // 풍경(LANDSCAPE)·일반 촬영(GENERAL_WAITING)은 eligible=false 라 수동 촬영 그대로다.
         if (sessionManager.state == SessionState.AIMING) {
             val autoEligible = guidanceMode == AimingGuidanceMode.COMPOSITION &&
                 (output.targetIdentityName != null || output.targetSpec?.objectLabel != null)
             val fire = autoCapture.onJudgment(
                 eligible = autoEligible,
-                // 지정 대상 검출(존재 진동과 같은 신호) + 셀카 시선 게이트 + 음식 세션은
-                // 폰 각도까지 이번 판정에서 통과해야 유지 시간이 쌓인다
-                detected = deviation?.subjectDetected == true &&
-                    selfieGaze.readyBlockReason() == null &&
-                    foodPitchSatisfied(),
-                // 유지 시간은 실관측으로만 쌓는다 — tracker 예측(PREDICTED)·편차 hold(HELD)·
-                // stride 재방출(analyzed=false)은 끊김만 막고 시간을 보태지 않는다
-                // (잠깐 스친 피사체가 coasting+hold 사슬로 1.5초를 채워 발동하던 문제).
+                // 화면 "지금이에요!" 문구와 같은 조건(readiness.ready) + 음식 세션은 폰
+                // 각도까지 통과해야 READY 유지 시간이 쌓인다. 셀카 시선 게이트는 readyGate로
+                // 이미 readiness.ready 안에 반영돼 있다.
+                ready = readiness?.ready == true && foodPitchSatisfied(),
+                // 유지 시간·스트릭은 실관측으로만 쌓는다 — tracker 예측(PREDICTED)·편차
+                // hold(HELD)는 끊김으로 치지 않되(욜로가 매 프레임 탐지하지 않는 것을 흡수)
+                // 시간·스트릭 어느 쪽에도 보태지 않는다.
                 fresh = output.analyzed &&
                     deviation?.observationFreshness == ObservationFreshness.FRESH,
                 nowMs = output.timestampMs,
@@ -2720,9 +2927,8 @@ class MainActivity : ComponentActivity() {
                 val generation = output.targetIntentGeneration
                 Log.i(
                     TAG,
-                    "자동촬영 발동 [$expectedSessionId] — 실관측 " +
-                        "${AutoCaptureArbiter.AUTO_CAPTURE_HOLD_MS}ms 이상 · " +
-                        "${AutoCaptureArbiter.MIN_FRESH_OBSERVATIONS}회 이상 유지",
+                    "자동촬영 발동 [$expectedSessionId] — READY " +
+                        "${AutoCaptureArbiter.MIN_READY_HOLD_MS}ms 이상 유지",
                 )
                 runOnUiThread {
                     // 판정(분석 스레드)과 셔터 사이에 타겟 세대·세션이 바뀌었으면 무효 —
@@ -2980,6 +3186,7 @@ class MainActivity : ComponentActivity() {
                         result.sessionId,
                         result.captureRevision,
                         pending.customLabels.toSet(),
+                        isGeneralModeManual = pending.isGeneralModeManual,
                     )
                 }
 
@@ -3158,6 +3365,7 @@ class MainActivity : ComponentActivity() {
                     onDone = {
                         guidanceFeedback.announceDynamic(
                             RESULT_GUIDE_PROMPT,
+                            onDone = { listenForResultGuideResponse(sessionId) },
                             priority = GuidanceFeedback.SpeechPriority.CAPTURE,
                         )
                     },
@@ -3179,6 +3387,7 @@ class MainActivity : ComponentActivity() {
                     onDone = {
                         guidanceFeedback.announceDynamic(
                             RESULT_GUIDE_PROMPT,
+                            onDone = { listenForResultGuideResponse(sessionId) },
                             priority = GuidanceFeedback.SpeechPriority.CAPTURE,
                         )
                     },
@@ -3354,6 +3563,14 @@ class MainActivity : ComponentActivity() {
         // 결과 화면 즉시 요약 뒤 버튼 안내 (사용자 요청 2026-08-25)
         private const val RESULT_GUIDE_PROMPT = "음성을 다시 듣거나, 사진의 키워드를 설정하시겠어요?"
 
+        // RESULT_GUIDE_PROMPT 응답 중 "다시 듣기"로 볼 발화 — 그 외는 전부 라벨 이름으로 본다
+        // (사용자 요청 2026-08-26 — 버튼 없이 말만 해도 되게 자동으로 듣는다)
+        private val REPLAY_COMMAND_WORDS = listOf("다시", "들려줘", "재생", "반복")
+
+        // 텍스트 Q&A "더 궁금한 점 있으세요?"에 질문이 없다는 뜻으로 답한 것 — AI 호출 생략
+        // (사용자 요청 2026-08-27).
+        private val NO_QUESTION_WORDS = listOf("없어", "없습니다", "아니", "괜찮아", "됐어", "됐습니다")
+
         // 얼굴 등록 흐름 타이밍 (기능 2) — 안내 음성이 마이크에 섞이지 않을 정도의 지연
         /**
          * 등록 스캔 길이 — 10초 (2026-08-22). 샘플 수보다 각도 다양성이 중요해, 짧게 모든 프레임을
@@ -3382,6 +3599,18 @@ class MainActivity : ComponentActivity() {
         private const val CAPTURE_SNAPSHOT_HOLD_MS = 1_500L
         private const val GENERAL_CAPTURE_WAITING_GUIDANCE =
             "일반 촬영 모드예요. 화면을 두 번 탭하면 촬영합니다"
+        // subjectType=object인데 objectLabel을 못 잡았을 때(지원 목록 밖 사물) 전용 안내
+        // (사용자 요청 2026-08-27 — 이유 없이 "일반 촬영 모드"라고만 하지 말라는 것)
+        private const val UNSUPPORTED_OBJECT_GUIDANCE =
+            "아직 지원되지 않는 사물이에요. 일반 촬영 모드로 촬영할게요"
+        private const val TAP_GRAMMAR_AIMING_GUIDANCE =
+            "화면을 두 번 터치해 촬영하거나, 꾹 눌러 홈으로 이동해 주세요."
+        // 갤러리 화면 조작 설명 — 최초 진입 시 자동으로, 세 번 탭으로 언제든 다시 들을 수 있다
+        // (사용자 요청 2026-08-27).
+        private const val GALLERY_INTRO_GUIDANCE =
+            "갤러리입니다. 사진이 분류별 폴더로 정리돼 있고, " +
+                "말해서 찾기 버튼으로 음성 검색도 할 수 있어요. " +
+                "검색 조건은 처음부터라고 말하면 지워져요"
         private const val GENERIC_SERVER_UTTERANCE = "사진을 찍어줘"
 
         /** 타겟 편차 hold — 추론 간격의 4배 (관측 2~3회 공백까지 직전 편차 유지). */
