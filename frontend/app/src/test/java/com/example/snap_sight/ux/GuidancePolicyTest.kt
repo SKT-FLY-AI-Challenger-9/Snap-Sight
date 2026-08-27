@@ -93,12 +93,11 @@ class GuidancePolicyTest {
     }
 
     @Test
-    fun `vertical zone escalates from clock hour to tilt wording based on centroid position`() {
-        // 사용자 요청 2026-08-27 — 여백(margin) 대신 무게중심 위치로 판정한다(물체 크기가
-        // 다르면 여백 비율이 달라져 들쭉날쭉했음). 위쪽 칸(키패드 2번)의 중심 쪽 절반까지
-        // 왔으면 완만하게 12시, 바깥쪽 절반이면 "몸쪽으로 기울여 주세요".
+    fun `vertical deviation always speaks tilt wording regardless of centroid position`() {
+        // 사용자 요청 2026-08-27 — 12시·6시는 음성 목록에서 뺐다("3,2,1,11,10,9만 있어야
+        // 해"). 그래서 상하는 완만/급함 구분 없이 항상 "몸쪽으로/바깥쪽으로 기울여 주세요".
         val mildUp = result(x = 0f, size = 0f, y = -0.28f) // centerY=0.22, 안쪽 절반[1/6,1/3)
-        assertEquals(listOf(GuidanceDirection.Clock(12).utterance), speech(GuidancePolicy().feed(mildUp, now = 0)))
+        assertEquals(listOf(GuidanceDirection.TILT_TOP_TOWARD.utterance), speech(GuidancePolicy().feed(mildUp, now = 0)))
 
         val severeUp = result(x = 0f, size = 0f, y = -0.50f) // centerY=0.0, 바깥쪽 절반
         assertEquals(
@@ -182,9 +181,9 @@ class GuidancePolicyTest {
 
     @Test
     fun `vertical-only deviation is spoken instead of READY`() {
-        // x·size 는 CENTERED(계약상 isReady) 지만 위로 벗어남 → "촬영하세요" 대신 GuidanceDirection.Clock(12).utterance
+        // x·size 는 CENTERED(계약상 isReady) 지만 위로 벗어남 → "촬영하세요" 대신 TILT_TOP_TOWARD.utterance
         val policy = GuidancePolicy()
-        assertEquals(listOf(GuidanceDirection.Clock(12).utterance), speech(policy.feed(result(x = 0f, size = 0f, y = -0.30f), now = 0)))
+        assertEquals(listOf(GuidanceDirection.TILT_TOP_TOWARD.utterance), speech(policy.feed(result(x = 0f, size = 0f, y = -0.30f), now = 0)))
         assertTrue(policy.feed(result(x = 0f, size = 0f, y = -0.30f), now = 300).isEmpty())
     }
 

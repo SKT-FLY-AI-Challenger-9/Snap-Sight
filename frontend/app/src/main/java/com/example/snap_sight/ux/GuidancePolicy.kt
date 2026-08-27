@@ -505,7 +505,16 @@ internal class GuidancePolicy(
         val turnedRightSinceRad = lastYawRad - currentYawRad
         val nowRight = lastRight - turnedRightSinceRad
         if (nowRight == 0f) return null
-        return wrapHour((Math.toDegrees(nowRight.toDouble()) / 30.0).roundToInt())
+        val hour = wrapHour((Math.toDegrees(nowRight.toDouble()) / 30.0).roundToInt())
+        // 6시/12시는 음성 목록에서 뺐다 — 많이 지나쳐서 4~8시나 12시가 나올 상황이면
+        // 처음 놓쳤던 쪽(3시 또는 9시)의 가장 먼 경계에 고정한다(사용자 요청 2026-08-27).
+        return clampToSpokenHour(hour, cameFromRight = lastRight > 0f)
+    }
+
+    private fun clampToSpokenHour(hour: Int, cameFromRight: Boolean): Int = when (hour) {
+        in 4..8 -> if (cameFromRight) 3 else 9
+        12 -> if (cameFromRight) 1 else 11
+        else -> hour
     }
 
     /**
@@ -644,7 +653,7 @@ internal class GuidancePolicy(
                 val direction = when {
                     hSign != 0f && hScore >= vScore ->
                         GuidanceDirection.Clock(horizontalZoneHour(hSign, x + goal.anchorX))
-                    vSign != 0f -> verticalDirection(vSign, y + goal.anchorY)
+                    vSign != 0f -> verticalDirection(vSign)
                     else -> null
                 }
                 if (direction != null) {
@@ -677,19 +686,12 @@ internal class GuidancePolicy(
         }
 
         /**
-         * 수직 방향 — 키패드 2번(위)·8번(아래) 칸을 무게중심 위치로 반으로 나눠, 중심 쪽
-         * 절반이면 완만하게 12시/6시로, 바깥쪽 절반이면 "몸쪽으로/바깥쪽으로 기울여 주세요"로
-         * 말한다(사용자 요청 2026-08-27). 폰 실제 피치가 크게 기운 경우
-         * ([refineVerticalWithPitch])와는 별개의, 구도(편차) 자체의 급함을 보는 판단이라 둘 다
-         * 각자 이 문구를 낼 수 있다.
+         * 수직 방향 — 12시·6시는 음성 목록에서 뺐다(사용자 요청 2026-08-27: "3,2,1,11,10,9만
+         * 있어야 해"). 그래서 상하 편차는 완만/급함 구분 없이 항상 "몸쪽으로/바깥쪽으로
+         * 기울여 주세요"로 말한다 — 시계는 좌우 전용.
          */
-        private fun verticalDirection(vSign: Float, centerY: Float): GuidanceDirection {
-            return if (vSign < 0f) {
-                if (centerY < ZONE_OUTER_HALF_LEFT) GuidanceDirection.TILT_TOP_TOWARD else GuidanceDirection.Clock(12)
-            } else {
-                if (centerY > ZONE_OUTER_HALF_RIGHT) GuidanceDirection.TILT_TOP_AWAY else GuidanceDirection.Clock(6)
-            }
-        }
+        private fun verticalDirection(vSign: Float): GuidanceDirection =
+            if (vSign < 0f) GuidanceDirection.TILT_TOP_TOWARD else GuidanceDirection.TILT_TOP_AWAY
 
         /** 1~12 범위로 감는다 (0 또는 음수 → +12, 13 이상 → 12를 뺌을 반복). */
         private fun wrapHour(rawHour: Int): Int {

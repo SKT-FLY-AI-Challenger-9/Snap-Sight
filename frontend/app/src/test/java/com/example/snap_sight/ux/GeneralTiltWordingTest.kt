@@ -6,9 +6,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 일반 세션 기울기 문구 (2026-08-25) — 수직 이동 안내("위로/아래로")의 원인이 폰 피치로
- * 보이면([GuidancePolicy.PITCH_WORDING_SWAP_DEG] 초과, 교정이 수평 쪽) "폰 윗부분을 …
- * 기울여 주세요"로 바꿔 말하고, 아니면 기존 이동 문구를 유지하는지 검증.
+ * 일반 세션 기울기 문구 — 수직 편차는 12시·6시를 음성 목록에서 뺀 뒤(사용자 요청
+ * 2026-08-27: "3,2,1,11,10,9만 있어야 해") 항상 "폰 윗부분을 … 기울여 주세요"로 말한다.
+ * 폰 실제 피치([GuidancePolicy.PITCH_WORDING_SWAP_DEG])는 더 이상 문구를 바꾸지 않지만,
+ * 그 값을 넘겨도 결과가 그대로인지는 계속 검증한다.
  */
 class GeneralTiltWordingTest {
 
@@ -40,23 +41,23 @@ class GeneralTiltWordingTest {
     }
 
     @Test
-    fun `pitch below swap threshold keeps the move wording`() {
+    fun `pitch below swap threshold still speaks tilt wording`() {
         val actions = GuidancePolicy().feed(result(y = -0.28f), now = 0, phonePitch = 5f)
-        assertEquals(listOf(GuidanceDirection.Clock(12).utterance), speech(actions))
+        assertEquals(listOf(GuidanceDirection.TILT_TOP_TOWARD.utterance), speech(actions))
     }
 
     @Test
-    fun `correction away from level keeps the move wording`() {
-        // 피사체가 위인데 카메라도 이미 위를 봄(음수 피치) — 선반 위 물건 등. 기울기 탓이
-        // 아니므로 "위로 이동"을 유지한다 (더 기울이라고 하면 수평에서 멀어진다).
+    fun `correction away from level still speaks tilt wording`() {
+        // 피사체가 위인데 카메라도 이미 위를 봄(음수 피치) — 선반 위 물건 등. 이동 문구가
+        // 더는 없어(12시·6시 제거) 이 경우도 기울기 문구로 말한다.
         val actions = GuidancePolicy().feed(result(y = -0.28f), now = 0, phonePitch = -30f)
-        assertEquals(listOf(GuidanceDirection.Clock(12).utterance), speech(actions))
+        assertEquals(listOf(GuidanceDirection.TILT_TOP_TOWARD.utterance), speech(actions))
     }
 
     @Test
     fun `null pitch keeps existing behaviour untouched`() {
         val actions = GuidancePolicy().feed(result(y = -0.28f), now = 0, phonePitch = null)
-        assertEquals(listOf(GuidanceDirection.Clock(12).utterance), speech(actions))
+        assertEquals(listOf(GuidanceDirection.TILT_TOP_TOWARD.utterance), speech(actions))
     }
 
     @Test
@@ -92,15 +93,16 @@ class GeneralTiltWordingTest {
     }
 
     @Test
-    fun `leveling the phone switches back to the move wording after the gap`() {
+    fun `leveling the phone keeps speaking tilt wording`() {
         val policy = GuidancePolicy()
         policy.feed(result(y = -0.28f), now = 0, phonePitch = 30f)
-        // 사용자가 폰을 세웠지만 피사체가 아직 위 — 기울기 문구에서 이동 문구로 전환
+        // 사용자가 폰을 세워도 피사체가 아직 위면 문구는 바뀌지 않는다 — 이동 문구가 없어
+        // direction 자체가 안 바뀌므로 반복 간격([DIRECTION_REPEAT_MS])을 기다려야 다시 나온다.
         val leveled = policy.feed(
             result(y = -0.28f),
-            now = GuidancePolicy.DIRECTION_MIN_GAP_MS,
+            now = GuidancePolicy.DIRECTION_REPEAT_MS,
             phonePitch = 0f,
         )
-        assertEquals(listOf(GuidanceDirection.Clock(12).utterance), speech(leveled))
+        assertEquals(listOf(GuidanceDirection.TILT_TOP_TOWARD.utterance), speech(leveled))
     }
 }
