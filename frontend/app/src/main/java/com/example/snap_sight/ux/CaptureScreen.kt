@@ -68,6 +68,9 @@ fun CaptureScreen(
     gridEnabled: Boolean = false,
     gridColorArgb: Int = DEFAULT_GRID_COLOR,
     gridThicknessDp: Float = GridThickness.DEFAULT.dp,
+    /** 인물/사물/풍경 내부 판정 확인용 — 사용자에게는 말하지 않고 화면에만 작게 표시한다
+     *  (사용자 요청 2026-08-27). 빈 문자열이면 표시하지 않는다. */
+    modeDebugLabel: String = "",
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -151,6 +154,26 @@ fun CaptureScreen(
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             )
+        }
+
+        // 인물/사물/풍경 내부 판정 확인용 — 사용자에게는 말하지 않고 화면에만 작게 표시한다
+        // (사용자 요청 2026-08-27). showOverlays 와 무관하게 확인 가능해야 하므로 항상 노출.
+        if (modeDebugLabel.isNotBlank()) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = SnapPalette.Card.copy(alpha = 0.85f),
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .statusBarsPadding()
+                    .padding(top = 12.dp, start = 12.dp),
+            ) {
+                Text(
+                    text = modeDebugLabel,
+                    color = SnapPalette.TextSecondary,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+            }
         }
 
         if (showOverlays) {

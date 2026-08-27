@@ -547,6 +547,28 @@ class GuidancePolicyTest {
     }
 
     @Test
+    fun `person session speaks a safe tell-the-subject message instead of the generic visibility heartbeat`() {
+        // 사용자 요청 2026-08-27 — 인물 세션에서 머리·발이 잘릴 만큼 가까우면 "뒤로 가라"를
+        // 촬영자 본인이 아니라 피사체(상대방)에게 전달하라고 안내해야 안전하다.
+        val policy = GuidancePolicy()
+        val cropped = result(
+            x = 0f, size = 0f,
+            visibility = FrameVisibility(
+                leftMargin = 0.4f, topMargin = 0f, rightMargin = 0.4f, bottomMargin = 0.1f,
+            ),
+        )
+        assertTrue(
+            policy.onJudgment(GuidanceStateMapper.from(cropped), cropped, nowMs = 0, personSession = true)
+                .isEmpty(),
+        )
+        val actions = policy.onJudgment(
+            GuidanceStateMapper.from(cropped), cropped,
+            nowMs = GuidancePolicy.HEARTBEAT_AFTER_MS, personSession = true,
+        )
+        assertEquals(listOf(GuidancePolicy.PERSON_TOO_CLOSE_HEARTBEAT), speech(actions))
+    }
+
+    @Test
     fun `heartbeat waits for both state persistence and speech silence`() {
         val policy = GuidancePolicy()
         policy.feed(result(x = 0.3f, size = 0f), now = 0) // GuidanceDirection.Clock(1).utterance
