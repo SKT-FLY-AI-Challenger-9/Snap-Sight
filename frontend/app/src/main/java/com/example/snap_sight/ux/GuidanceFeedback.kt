@@ -187,10 +187,18 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     @Volatile private var activeUtteranceId: String? = null
     @Volatile private var activeSpeechPriority: SpeechPriority? = null
 
+    /**
+     * 재생이 실제로 시작되는 순간(내장 TTS·서버 합성 공통) 알림 — 지연 측정용 훅.
+     * MainActivity 가 [com.example.snap_sight.metrics.SessionLatencyTracker.onSpeechStart] 를 연결한다.
+     */
+    @Volatile
+    var speechStartListener: ((SpeechPriority) -> Unit)? = null
+
     private val utteranceListener = object : UtteranceProgressListener() {
         override fun onStart(utteranceId: String?) {
             activeUtteranceId = utteranceId
             activeSpeechPriority = utteranceId?.let(utterancePriorities::get)
+            activeSpeechPriority?.let { priority -> speechStartListener?.invoke(priority) }
         }
         override fun onDone(utteranceId: String?) = complete(utteranceId)
         @Deprecated("Deprecated in Java")
@@ -509,6 +517,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
                 // 재생 배속(0.8/1.0/1.5) — 합성은 1.0배 한 벌이고 재생 시점에 조절한다
                 player.playbackParams = PlaybackParams().setSpeed(pendingSpeechRate)
                 if (!player.isPlaying) player.start()
+                speechStartListener?.invoke(priority) // 서버 합성 경로의 재생 시작 (지연 측정 훅)
                 assetPlayer = player
                 assetUtteranceId = utteranceId
                 activeUtteranceId = utteranceId
