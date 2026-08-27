@@ -117,6 +117,14 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     @Volatile
     var cameraOrientationRad: (() -> Pair<Float, Float>?)? = null
 
+    /**
+     * 지금 세션이 인물(사람) 세션인가 — 머리·발이 잘릴 만큼 가까울 때 "뒤로 가라"를
+     * 촬영자가 아니라 피사체(상대방)에게 전달하라고 안내하는 데 쓴다(사용자 요청
+     * 2026-08-27). MainActivity가 portraitCropEligible로 연결한다. 분석 스레드에서 호출된다.
+     */
+    @Volatile
+    var personSession: (() -> Boolean)? = null
+
     @Volatile
     private var ttsReady = false
 
@@ -291,6 +299,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
             pitchDeviationDeg = pitchDeviation?.invoke(),
             phonePitchDeg = phonePitch?.invoke(),
             cameraOrientationRad = cameraOrientationRad?.invoke(),
+            personSession = personSession?.invoke() == true,
         )
         for (action in decision.actions) {
             when (action) {

@@ -190,6 +190,7 @@ internal class GuidancePolicy(
         pitchDeviationDeg: Float? = null,
         phonePitchDeg: Float? = null,
         cameraOrientationRad: Pair<Float, Float>? = null,
+        personSession: Boolean = false,
     ): List<GuidanceAction> = processJudgment(
         state = state,
         result = result,
@@ -199,6 +200,7 @@ internal class GuidancePolicy(
         pitchDeviationDeg = pitchDeviationDeg,
         phonePitchDeg = phonePitchDeg,
         cameraOrientationRad = cameraOrientationRad,
+        personSession = personSession,
     ).actions
 
     /**
@@ -222,13 +224,14 @@ internal class GuidancePolicy(
         pitchDeviationDeg: Float? = null,
         phonePitchDeg: Float? = null,
         cameraOrientationRad: Pair<Float, Float>? = null,
+        personSession: Boolean = false,
     ): GuidanceDecision {
         val readiness = readinessEvaluator.evaluate(result, nowMs)
         // 존재 확인 진동 — 어떤 안내 분기든 상관없이 매 판정마다 갱신한다
         val presence = presenceActions(state.detected, nowMs)
         val actions = judge(
             state, result, readiness, nowMs, zoomHandlesDistance, readyBlockedReason,
-            pitchDeviationDeg, phonePitchDeg, cameraOrientationRad,
+            pitchDeviationDeg, phonePitchDeg, cameraOrientationRad, personSession,
         )
         return GuidanceDecision(readiness, presence + actions)
     }
@@ -273,6 +276,7 @@ internal class GuidancePolicy(
         pitchDeviationDeg: Float? = null,
         phonePitchDeg: Float? = null,
         cameraOrientationRad: Pair<Float, Float>? = null,
+        personSession: Boolean = false,
     ): List<GuidanceAction> {
         if (!state.detected) {
             // 첫 검출 전에는 "사라졌어요"(LOST)가 아니라 탐색 안내(t2/t3)를 쓴다 — 비프 없음
@@ -364,7 +368,7 @@ internal class GuidancePolicy(
         readySpokenThisEpisode = false
         val direction = pickDirection(state, result, zoomHandlesDistance)
         if (direction == null) {
-            return heartbeat(readiness, zoomHandlesDistance, nowMs)
+            return heartbeat(readiness, zoomHandlesDistance, personSession, nowMs)
         }
         return speakDirectionIfDue(refineVerticalWithPitch(direction, phonePitchDeg), nowMs)
     }
@@ -392,6 +396,7 @@ internal class GuidancePolicy(
     private fun heartbeat(
         readiness: ReadinessVerdict,
         zoomHandlesDistance: Boolean,
+        personSession: Boolean,
         nowMs: Long,
     ): List<GuidanceAction> {
         val stateSince = heartbeatStateSinceMs ?: nowMs.also { heartbeatStateSinceMs = it }
@@ -400,6 +405,11 @@ internal class GuidancePolicy(
         if (nowMs - stateSince < HEARTBEAT_AFTER_MS) return emptyList()
         if (nowMs - lastSpokenAtMs < HEARTBEAT_AFTER_MS) return emptyList()
         val text = when {
+            // 인물 세션에서 머리·발이 잘릴 만큼 가까우면 "뒤로 가라"를 촬영자 본인이 아니라
+            // 피사체(상대방)에게 전달하라고 한다 — 시각장애 사용자 본인의 뒤로 이동은 위험하지만
+            // (GuidanceDirection FARTHER 미채택 사유와 동일), 상대방에게 말로 전달하는 건
+            // 안전하다(사용자 요청 2026-08-27).
+            ReadinessBlocker.VISIBILITY in readiness.blockers && personSession -> PERSON_TOO_CLOSE_HEARTBEAT
             ReadinessBlocker.VISIBILITY in readiness.blockers -> VISIBILITY_HEARTBEAT
             ReadinessBlocker.SIZE in readiness.blockers && zoomHandlesDistance -> AUTO_ZOOM_HEARTBEAT
             ReadinessBlocker.UNSTABLE in readiness.blockers -> HOLD_STEADY_HEARTBEAT
@@ -566,6 +576,8 @@ internal class GuidancePolicy(
         /** 어떤 음성도 없는 상태가 이만큼 이어지면 하트비트 상태 안내를 1회 말한다 (반복도 이 간격). */
         const val HEARTBEAT_AFTER_MS = 4_000L
         const val VISIBILITY_HEARTBEAT = "피사체 전체가 화면 안에 들어오게 비춰주세요"
+        /** 인물 세션에서 머리·발이 잘릴 만큼 가까울 때 — 촬영자가 아니라 피사체에게 전달하라는 문구. */
+        const val PERSON_TOO_CLOSE_HEARTBEAT = "대상이 너무 가까워요. 상대방에게 뒤로 가 달라고 말씀해주세요"
         const val AUTO_ZOOM_HEARTBEAT = "구도를 자동으로 맞추는 중이에요"
         const val HOLD_STEADY_HEARTBEAT = "좋아요, 그대로 유지해주세요"
 

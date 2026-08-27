@@ -391,6 +391,12 @@ class MainActivity : ComponentActivity() {
 
     // 조준 중 하단 안내 카드 문구 — 음성·햅틱(⑥)과 같은 판정을 화면 텍스트로도 보여준다 (#80)
     private var guidanceText by mutableStateOf("")
+    /**
+     * 인물/사물/풍경 내부 판정 — 사용자에게는 말하지 않고 화면에 작게만 표시해 개발 확인용으로
+     * 쓴다(사용자 요청 2026-08-27). 발화에서 인물로 판정되면 "인물", YOLO(Objects365) 라벨이
+     * 잡히면 "사물", 나머지는 전부 "풍경".
+     */
+    private var subjectModeDebugLabel by mutableStateOf("")
     /** predictOnly/짧은 hold가 직전 실제 관측 안내를 매 프레임 덮지 않게 하는 UI 전용 latch. */
     private val guidanceTextStabilizer = GuidanceTextStabilizer()
 
@@ -550,6 +556,9 @@ class MainActivity : ComponentActivity() {
         // 시계 방향 회전 안내 (사용자 요청 2026-08-27): "카메라 켜진 순간(12시)" 기준 실제
         // 회전량. AIMING 진입/이탈 시 motionEstimator.start()/stop() 호출부 참고.
         guidanceFeedback.cameraOrientationRad = { motionEstimator.currentOrientationRad() }
+        // 인물 세션 감지 (사용자 요청 2026-08-27) — 머리·발이 잘릴 만큼 가까우면 "뒤로 가라"를
+        // 촬영자가 아니라 피사체에게 전달하라고 안내한다.
+        guidanceFeedback.personSession = { portraitCropEligible }
         // 인물 세션의 자동촬영 승자 컷은 얼굴 3분할 크롭으로 마무리한다 (연사 채점 스레드에서 호출)
         cameraController.burstFinisher = { file ->
             if (portraitCropEligible) PortraitAutoCrop.apply(file) else null
@@ -612,6 +621,7 @@ class MainActivity : ComponentActivity() {
                     showResult = false
                     sessionRawText = ""
                     guidanceText = ""
+                    subjectModeDebugLabel = ""
                 }
                 // 조준 시작 = 새 추적 세션. track_id 가 이전 세션과 섞이지 않도록 초기화한다.
                 // TargetSpec은 아직 백엔드 응답 전이라 일단 null로 시작 — onUtteranceRecognized의
@@ -1017,6 +1027,7 @@ class MainActivity : ComponentActivity() {
                                         gridEnabled = settingsUiState.gridEnabled,
                                         gridColorArgb = settingsUiState.gridColorArgb,
                                         gridThicknessDp = settingsUiState.gridThicknessDp,
+                                        modeDebugLabel = subjectModeDebugLabel,
                                     )
                                 }
                                 if (homeVisible) {
@@ -2695,6 +2706,17 @@ class MainActivity : ComponentActivity() {
         val serverRawText = localRawText?.let(::serverSafeUtterance) ?: spec?.rawText.orEmpty()
         val effectiveSpec = spec?.let {
             if (it.rawText == serverRawText) it else it.copy(rawText = serverRawText)
+        }
+        // 인물/사물/풍경 내부 판정 — 사용자에게는 말하지 않고 화면에 작게 표시만 한다(확인용,
+        // 사용자 요청 2026-08-27). 발화에서 인물로 판정되면 "인물", YOLO(Objects365) 라벨이
+        // 실제로 잡히면(objectLabel != null) "사물", 발화에서 풍경으로 판정되면 "풍경" — 그
+        // 외(YOLO에 없는 사물·미해결 등)는 원래대로 "일반"(일반 촬영 모드)이지 "풍경"으로
+        // 뭉뚱그리지 않는다(사용자 요청 2026-08-27 정정 — "사실 일반촬영모드+풍경인거지").
+        subjectModeDebugLabel = when {
+            effectiveSpec?.subjectType == TargetSpec.SubjectType.PERSON -> "인물"
+            effectiveSpec?.subjectType == TargetSpec.SubjectType.OBJECT && effectiveSpec.objectLabel != null -> "사물"
+            effectiveSpec?.subjectType == TargetSpec.SubjectType.LANDSCAPE -> "풍경"
+            else -> "일반"
         }
         val identityName = if (effectiveSpec?.subjectType == TargetSpec.SubjectType.LANDSCAPE) {
             null
