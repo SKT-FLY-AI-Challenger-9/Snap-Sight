@@ -93,6 +93,7 @@ import com.example.snap_sight.network.PhotoDescriptionClient
 import com.example.snap_sight.network.MetadataLabelContract
 import com.example.snap_sight.network.SpeechSynthClient
 import com.example.snap_sight.network.TextQaClient
+import com.example.snap_sight.metrics.SessionLatencyTracker
 import com.example.snap_sight.network.UtteranceClient
 import com.example.snap_sight.privacy.CloudTextRedactor
 import com.example.snap_sight.privacy.RegisteredIdentityMatcher
@@ -156,6 +157,9 @@ class MainActivity : ComponentActivity() {
     private val sessionManager by lazy { CaptureSessionManager(this, cameraController) }
     private val frameUploader = FrameUploader()
     private val utteranceClient = UtteranceClient()
+
+    /** 세션 구간 지연 측정 (SnapLatency logcat → ai/tools/latency_report.py 로 p50/p95 집계). */
+    private val latencyTracker = SessionLatencyTracker()
     private val finalFrameClient = FinalFrameClient()
     private val canonicalFrameStore by lazy { CanonicalFrameStore(this) }
     private val descriptionLookup by lazy { DescriptionLookup(this) }
@@ -608,10 +612,22 @@ class MainActivity : ComponentActivity() {
                 onDone = onDone,
             )
         }
+        guidanceFeedback.speechStartListener = latencyTracker::onSpeechStart
         sessionManager.listener = object : CaptureSessionManager.Listener {
             override fun onStateChanged(state: SessionState) {
                 sessionState = state
                 statusText = state.description
+                // 구간 지연 마크 — 상태 전이가 곧 구간 경계다 (SessionLatencyTracker 참고)
+                when (state) {
+                    SessionState.LISTENING -> latencyTracker.begin(sessionManager.sessionId)
+                    SessionState.PARSING ->
+                        latencyTracker.mark(sessionManager.sessionId, SessionLatencyTracker.MARK_STT_DONE)
+                    SessionState.AIMING ->
+                        latencyTracker.mark(sessionManager.sessionId, SessionLatencyTracker.MARK_AIMING_START)
+                    SessionState.CAPTURING ->
+                        latencyTracker.mark(sessionManager.sessionId, SessionLatencyTracker.MARK_SHUTTER)
+                    else -> Unit
+                }
                 updateAnalysisMode()
                 if (state == SessionState.LISTENING) {
                     cancelCaptureNetworkWork()
@@ -875,6 +891,7 @@ class MainActivity : ComponentActivity() {
                                     "type=${spec?.subjectType?.wire}, " +
                                     "confidence=${spec?.confidence}",
                             )
+                            latencyTracker.mark(sessionId, SessionLatencyTracker.MARK_UTTERANCE_UNDERSTOOD)
                             applyTargetSpecIfStillAiming(sessionId, spec, localRawText = text)
                         }
 
@@ -1262,6 +1279,7 @@ class MainActivity : ComponentActivity() {
         metadataClient.pollMetadata(sessionId, serverRevision, object : MetadataClient.Callback {
             override fun onDone(metadata: MetadataClient.Metadata) {
                 if (!isCurrentServerCapture(sessionId, serverRevision)) return
+                latencyTracker.mark(sessionId, SessionLatencyTracker.MARK_UNDERSTANDING_DONE)
                 val labels = MetadataLabelContract.sanitize(
                     fixed = metadata.labels,
                     custom = metadata.customLabels,
@@ -1413,6 +1431,7 @@ class MainActivity : ComponentActivity() {
         if (!isCurrentServerCapture(sessionId, serverRevision) || !isCurrentVisibleResult(sessionId)) return
         val text = description?.takeIf { it.isNotBlank() } ?: captureHeadline()
         lastManualCaptureDescription = text
+        latencyTracker.expectAnnounce(sessionId) // 다음 재생 시작 = 결과 안내 시작 (지연 측정)
         guidanceFeedback.announceDynamic(
             text,
             onDone = {
@@ -3211,6 +3230,7 @@ class MainActivity : ComponentActivity() {
                         return
                     }
                     activeServerCaptureRevision = result.captureRevision
+                    latencyTracker.mark(result.sessionId, SessionLatencyTracker.MARK_UPLOAD_DONE)
                     Log.i(TAG, "업로드 완료 [${result.sessionId}] 후보 ${result.receivedCandidateCount}장")
                     pollCaptureUnderstanding(
                         result.sessionId,
@@ -3390,6 +3410,7 @@ class MainActivity : ComponentActivity() {
     private fun announceManualCaptureDescription(sessionId: String) {
         val fallbackToHeadline = {
             if (isCurrentVisibleResult(sessionId)) {
+                latencyTracker.expectAnnounce(sessionId)
                 guidanceFeedback.announceDynamic(
                     captureHeadline(),
                     onDone = {
@@ -3406,12 +3427,14 @@ class MainActivity : ComponentActivity() {
         photoDescriptionClient.pollDescription(sessionId, object : PhotoDescriptionClient.Callback {
             override fun onDone(description: String?) {
                 if (!isCurrentVisibleResult(sessionId)) return
+                latencyTracker.mark(sessionId, SessionLatencyTracker.MARK_DESCRIPTION_DONE)
                 val text = description?.takeIf { it.isNotBlank() }
                 if (text == null) {
                     fallbackToHeadline()
                     return
                 }
                 lastManualCaptureDescription = text
+                latencyTracker.expectAnnounce(sessionId)
                 guidanceFeedback.announceDynamic(
                     text,
                     onDone = {
