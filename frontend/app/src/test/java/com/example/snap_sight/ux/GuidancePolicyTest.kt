@@ -46,7 +46,7 @@ class GuidancePolicyTest {
     fun `off-center speaks one direction word with a vibration`() {
         val policy = GuidancePolicy()
         val actions = policy.feed(result(x = -0.30f, size = 0f), now = 0)
-        assertEquals(listOf(GuidanceAction.Speak(GuidanceDirection.LEFT.utterance), GuidanceAction.Vibrate), actions)
+        assertEquals(listOf(GuidanceAction.Speak(GuidanceDirection.Clock(11).utterance), GuidanceAction.Vibrate), actions)
     }
 
     @Test
@@ -56,7 +56,7 @@ class GuidancePolicyTest {
         assertTrue(policy.feed(result(x = 0.30f, size = 0f), now = 500).isEmpty())
         assertTrue(nonPresence(policy.feed(result(x = 0.30f, size = 0f), now = 2_000)).isEmpty())
         val again = policy.feed(result(x = 0.30f, size = 0f), now = GuidancePolicy.DIRECTION_REPEAT_MS)
-        assertEquals(listOf(GuidanceDirection.RIGHT.utterance), speech(again))
+        assertEquals(listOf(GuidanceDirection.Clock(1).utterance), speech(again))
         assertTrue(again.contains(GuidanceAction.Vibrate))
     }
 
@@ -72,19 +72,119 @@ class GuidancePolicyTest {
     fun `the axis furthest past its threshold wins`() {
         // x: 0.25/0.20 = 1.25, size: +0.30/0.10 = 3.0 이지만 FARTHER("뒤로")는 안내하지 않으므로 x 가 뽑힌다
         val actions = GuidancePolicy().feed(result(x = 0.25f, size = 0.30f), now = 0)
-        assertEquals(listOf(GuidanceDirection.RIGHT.utterance), speech(actions))
-        // y 가 있으면 후보에 들어간다: y -0.50/0.25 = 2.0 > x 1.25 → 위로
+        assertEquals(listOf(GuidanceDirection.Clock(1).utterance), speech(actions))
+        // x·y 둘 다 벗어나 있어도 절대 섞지 않는다(사용자 요청 2026-08-27) — 더 급한 쪽(y,
+        // 2.0 > x의 1.25) 하나만 본다. y=-0.50은 무게중심이 위쪽 칸 바깥쪽 절반까지 가서
+        // 급한 구역이라 "몸쪽으로 기울여 주세요"가 된다.
         val vertical = GuidancePolicy().feed(result(x = 0.25f, size = 0f, y = -0.50f), now = 0)
-        assertEquals(listOf(GuidanceDirection.UP.utterance), speech(vertical))
+        assertEquals(listOf(GuidanceDirection.TILT_TOP_TOWARD.utterance), speech(vertical))
         val down = GuidancePolicy().feed(result(x = 0f, size = 0f, y = 0.40f), now = 0)
-        assertEquals(listOf(GuidanceDirection.DOWN.utterance), speech(down))
+        assertEquals(listOf(GuidanceDirection.TILT_TOP_AWAY.utterance), speech(down))
+    }
+
+    @Test
+    fun `dominant axis wins without blending into a diagonal hour`() {
+        // 사용자 요청 2026-08-27 — 좌우·상하를 절대 섞지 않는다("8시·5시·7시 이런 게 나오면
+        // 안 돼"). 둘 다 벗어나 있어도 더 급한 쪽 하나만 순수하게 말한다.
+        val horizontalWins = GuidancePolicy().feed(result(x = 0.30f, size = 0f, y = -0.26f), now = 0)
+        assertEquals(listOf(GuidanceDirection.Clock(1).utterance), speech(horizontalWins))
+        val verticalWins = GuidancePolicy().feed(result(x = 0.21f, size = 0f, y = -0.50f), now = 0)
+        assertEquals(listOf(GuidanceDirection.TILT_TOP_TOWARD.utterance), speech(verticalWins))
+    }
+
+    @Test
+    fun `vertical zone escalates from clock hour to tilt wording based on centroid position`() {
+        // 사용자 요청 2026-08-27 — 여백(margin) 대신 무게중심 위치로 판정한다(물체 크기가
+        // 다르면 여백 비율이 달라져 들쭉날쭉했음). 위쪽 칸(키패드 2번)의 중심 쪽 절반까지
+        // 왔으면 완만하게 12시, 바깥쪽 절반이면 "몸쪽으로 기울여 주세요".
+        val mildUp = result(x = 0f, size = 0f, y = -0.28f) // centerY=0.22, 안쪽 절반[1/6,1/3)
+        assertEquals(listOf(GuidanceDirection.Clock(12).utterance), speech(GuidancePolicy().feed(mildUp, now = 0)))
+
+        val severeUp = result(x = 0f, size = 0f, y = -0.50f) // centerY=0.0, 바깥쪽 절반
+        assertEquals(
+            listOf(GuidanceDirection.TILT_TOP_TOWARD.utterance),
+            speech(GuidancePolicy().feed(severeUp, now = 0)),
+        )
+
+        val severeDown = result(x = 0f, size = 0f, y = 0.40f) // centerY=0.90, 바깥쪽 절반
+        assertEquals(
+            listOf(GuidanceDirection.TILT_TOP_AWAY.utterance),
+            speech(GuidancePolicy().feed(severeDown, now = 0)),
+        )
+    }
+
+    @Test
+    fun `horizontal zone escalates from mild to severe based on centroid position`() {
+        // 사용자 요청 2026-08-27 — 왼쪽(키패드 4번)·오른쪽(6번) 칸도 무게중심이 중심 쪽 절반
+        // 까지 왔으면 완만한 11시·1시, 아직 바깥쪽 절반이면 더 급한 10시·2시.
+        val farFromEdge = result(x = 0.30f, size = 0f) // centerX=0.80, 안쪽 절반[1/3,5/6)
+        assertEquals(listOf(GuidanceDirection.Clock(1).utterance), speech(GuidancePolicy().feed(farFromEdge, now = 0)))
+
+        val nearEdge = result(x = 0.35f, size = 0f) // centerX=0.85, 바깥쪽 절반
+        assertEquals(listOf(GuidanceDirection.Clock(2).utterance), speech(GuidancePolicy().feed(nearEdge, now = 0)))
+    }
+
+    @Test
+    fun `visible subject direction never exceeds camera half field of view`() {
+        // 사용자 확인 2026-08-27 — "정면=12시, 화면 안에서는 카메라 반화각(~33도)만큼만
+        // 벗어나니까 11시~1시 근처만 나온다. 3시·9시가 실제로 나오려면 화면 밖으로 완전히
+        // 벗어난(LOST) 상황이어야 한다." 화면에 보이는 동안은 자이로를 줘도 무시하고 항상
+        // 이 좁은 범위 안에서만 말한다 — [pickDirection]은 cameraOrientationRad를 아예 받지
+        // 않는다(사용 안 함). 대신 [onJudgment]에 자이로를 줘도(피사체가 보이는 동안은) 결과가
+        // 안 바뀌는지 확인한다.
+        val visible = result(x = 0.30f, size = 0f)
+        val withoutGyro = speech(GuidancePolicy().feed(visible, now = 0))
+        val withGyro = speech(
+            GuidancePolicy().onJudgment(
+                GuidanceStateMapper.from(visible), visible, nowMs = 0,
+                cameraOrientationRad = -1.3963f to 0f, // 80도 돌아간 척해도 무시돼야 함
+            ),
+        )
+        assertEquals(listOf(GuidanceDirection.Clock(1).utterance), withoutGyro)
+        assertEquals(withoutGyro, withGyro)
+    }
+
+    @Test
+    fun `lost subject search direction tracks last known bearing plus turn since loss`() {
+        // 사용자 확인 2026-08-27 — 화면에서 완전히 벗어나면(LOST) 마지막으로 보였던 방향에
+        // 그 이후 실제로 돈 양(자이로)을 반영해, 화면 안에서는 못 나오는 먼 시각(11시 등)까지
+        // 안내해야 한다. subjectDesignated를 안 줘서 "사라졌어요" 안내와 안 겹치게 한다.
+        val policy = GuidancePolicy()
+        val visible = result(x = 0.30f, size = 0f)
+        val firstActions = policy.onJudgment(
+            GuidanceStateMapper.from(visible), visible, nowMs = 0, cameraOrientationRad = 0f to 0f,
+        )
+        assertEquals(listOf(GuidanceDirection.Clock(1).utterance), speech(firstActions))
+
+        // 놓침 — 디바운스 전에는 침묵 (기존 LOST 규칙 그대로)
+        assertTrue(
+            policy.onJudgment(
+                GuidanceStateMapper.from(lostResult), lostResult,
+                nowMs = 850, cameraOrientationRad = 0f to 0f,
+            ).isEmpty(),
+        )
+        // 디바운스 뒤: 완전히 놓친 순간은 오른쪽으로 사라졌으니 곧장 3시부터 시작한다
+        // (사용자 요청 2026-08-27 — "9시 영역에서 아예 사라지면 9시", 반대쪽은 3시).
+        val justLost = policy.onJudgment(
+            GuidanceStateMapper.from(lostResult), lostResult,
+            nowMs = 850 + GuidancePolicy.LOST_DEBOUNCE_MS + 1, cameraOrientationRad = 0f to 0f,
+        )
+        assertEquals(listOf(GuidanceDirection.Clock(3).utterance), speech(justLost))
+
+        // 그 사이 오른쪽으로 120도나 돌아 목표(90도)를 지나쳐버림 — 되돌아가야 하니 11시로 갱신
+        val overTurned = policy.onJudgment(
+            GuidanceStateMapper.from(lostResult), lostResult,
+            nowMs = 850 + GuidancePolicy.LOST_DEBOUNCE_MS + 1 + GuidancePolicy.DIRECTION_REPEAT_MS,
+            cameraOrientationRad = -2.0944f to 0f, // 오른쪽으로 120도 돎(90도를 넘어 지나침)
+        )
+        assertEquals(listOf(GuidanceDirection.Clock(11).utterance), speech(overTurned))
     }
 
     @Test
     fun `vertical-only deviation is spoken instead of READY`() {
-        // x·size 는 CENTERED(계약상 isReady) 지만 위로 벗어남 → "촬영하세요" 대신 GuidanceDirection.UP.utterance
+        // x·size 는 CENTERED(계약상 isReady) 지만 위로 벗어남 → "촬영하세요" 대신 GuidanceDirection.Clock(12).utterance
         val policy = GuidancePolicy()
-        assertEquals(listOf(GuidanceDirection.UP.utterance), speech(policy.feed(result(x = 0f, size = 0f, y = -0.30f), now = 0)))
+        assertEquals(listOf(GuidanceDirection.Clock(12).utterance), speech(policy.feed(result(x = 0f, size = 0f, y = -0.30f), now = 0)))
         assertTrue(policy.feed(result(x = 0f, size = 0f, y = -0.30f), now = 300).isEmpty())
     }
 
@@ -112,7 +212,7 @@ class GuidancePolicyTest {
         assertEquals(listOf(GuidanceDirection.CLOSER.utterance), speech(policy.onJudgment(GuidanceStateMapper.from(r), r, 6_000, zoomHandlesDistance = false)))
         // 다른 축이 벗어나 있으면 그 축은 여전히 말한다
         val r2 = result(x = -0.30f, size = -0.30f)
-        assertEquals(listOf(GuidanceDirection.LEFT.utterance), speech(GuidancePolicy().onJudgment(GuidanceStateMapper.from(r2), r2, 0, zoomHandlesDistance = true)))
+        assertEquals(listOf(GuidanceDirection.Clock(11).utterance), speech(GuidancePolicy().onJudgment(GuidanceStateMapper.from(r2), r2, 0, zoomHandlesDistance = true)))
         // 너무 큰 것(FARTHER)은 "뒤로"를 말하지 않고, READY 도 막지 않는다 (2026-08-23) — 안정화 대기만
         val r3 = result(x = 0f, size = 0.30f)
         assertTrue(GuidancePolicy().onJudgment(GuidanceStateMapper.from(r3), r3, 0, zoomHandlesDistance = true).isEmpty())
@@ -125,8 +225,8 @@ class GuidancePolicyTest {
         assertEquals(listOf(GuidancePolicy.READY_UTTERANCE), speech(policy.feed(result(0f, 0f), now = 300)))
         // 0.25 는 진입 임계(0.20)는 넘지만 이탈 임계(0.30)는 안 넘음 → 여전히 READY(침묵)
         assertTrue(policy.feed(result(x = 0.25f, size = 0f), now = 600).isEmpty())
-        // 0.35 → 이탈 → 방향 안내
-        assertEquals(listOf(GuidanceDirection.RIGHT.utterance), speech(policy.feed(result(x = 0.35f, size = 0f), now = 2_000)))
+        // 0.35 → 이탈 → 방향 안내 (무게중심이 오른쪽 칸 바깥쪽 절반까지 가서 급한 구역 2시)
+        assertEquals(listOf(GuidanceDirection.Clock(2).utterance), speech(policy.feed(result(x = 0.35f, size = 0f), now = 2_000)))
     }
 
     // ---- READY ----
@@ -255,7 +355,7 @@ class GuidancePolicyTest {
         assertTrue(policy.feed(lostResult, now = 100 + GuidancePolicy.LOST_DEBOUNCE_MS - 1).isEmpty())
         // 다시 찾으면 에피소드 종료 — 아무 것도 안 나갔고 방향 안내가 바로 재개된다
         val back = policy.feed(result(0.3f, 0f), now = 1_500)
-        assertEquals(listOf(GuidanceDirection.RIGHT.utterance), speech(back))
+        assertEquals(listOf(GuidanceDirection.Clock(1).utterance), speech(back))
     }
 
     @Test
@@ -307,7 +407,7 @@ class GuidancePolicyTest {
         assertTrue(policy.feed(lostResult, now = GuidancePolicy.SEARCH_HINT_AFTER_MS).isEmpty())
         // 아무 물체가 잡혀도 "찾았어요" 없이 방향 안내로 직행
         val found = policy.feed(result(0.3f, 0f), now = GuidancePolicy.SEARCH_HINT_AFTER_MS + 1_100)
-        assertEquals(listOf(GuidanceDirection.RIGHT.utterance), speech(found))
+        assertEquals(listOf(GuidanceDirection.Clock(1).utterance), speech(found))
         // 오래 잡혀 있어도 존재 진동 없음
         val held = policy.feed(
             result(0.3f, 0f),
@@ -360,7 +460,7 @@ class GuidancePolicyTest {
         policy.setSubject("피사체")
         // 시작부터 보이면 "찾았어요" 없이 방향 안내로 직행 (탐색 단계가 없었음)
         val direct = policy.feed(result(0.3f, 0f), now = 0)
-        assertEquals(listOf(GuidanceDirection.RIGHT.utterance), speech(direct))
+        assertEquals(listOf(GuidanceDirection.Clock(1).utterance), speech(direct))
         // 긴 이탈로 "벗어났어요"까지 나간 뒤 재검출 → "다시 찾았어요." 1회
         val lostAt = 100L
         policy.feed(lostResult, now = lostAt)
@@ -449,7 +549,7 @@ class GuidancePolicyTest {
     @Test
     fun `heartbeat waits for both state persistence and speech silence`() {
         val policy = GuidancePolicy()
-        policy.feed(result(x = 0.3f, size = 0f), now = 0) // GuidanceDirection.RIGHT.utterance
+        policy.feed(result(x = 0.3f, size = 0f), now = 0) // GuidanceDirection.Clock(1).utterance
         val cropped = result(
             x = 0f, size = 0f,
             visibility = FrameVisibility(

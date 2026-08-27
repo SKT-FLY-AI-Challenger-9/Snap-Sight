@@ -547,6 +547,9 @@ class MainActivity : ComponentActivity() {
         guidanceFeedback.phonePitch = {
             if (foodPitchSession) null else sessionManager.tiltMonitor.pitchDegrees
         }
+        // 시계 방향 회전 안내 (사용자 요청 2026-08-27): "카메라 켜진 순간(12시)" 기준 실제
+        // 회전량. AIMING 진입/이탈 시 motionEstimator.start()/stop() 호출부 참고.
+        guidanceFeedback.cameraOrientationRad = { motionEstimator.currentOrientationRad() }
         // 인물 세션의 자동촬영 승자 컷은 얼굴 3분할 크롭으로 마무리한다 (연사 채점 스레드에서 호출)
         cameraController.burstFinisher = { file ->
             if (portraitCropEligible) PortraitAutoCrop.apply(file) else null
@@ -866,15 +869,20 @@ class MainActivity : ComponentActivity() {
                         }
 
                         override fun onFailure(error: Throwable) {
-                            // 타겟 스펙 요청 실패해도 촬영 흐름은 계속 진행 (일반 촬영 모드로 대체)
+                            // 타겟 스펙 요청 실패해도 촬영 흐름은 계속 진행 (일반 촬영 모드로 대체).
+                            // targetSpecPending만 내리고 끝내면 applyTargetSpecIfStillAiming이
+                            // 아예 안 불려 "촬영 요청을 확인하고 있어요"에서 안내가 멈춰버렸다
+                            // (사용자 요청 2026-08-27 — 네트워크 실패 시에도 text==null 경로와
+                            // 동일하게 FAILED 스펙으로 안내를 이어가야 한다).
                             Log.w(TAG, "타겟 스펙 요청 실패 [$sessionId]", error)
-                            if (sessionManager.sessionId == sessionId &&
-                                sessionManager.state == SessionState.AIMING
-                            ) {
-                                synchronized(targetIntentLock) {
-                                    targetSpecPending = false
-                                }
-                            }
+                            val failedSpec = TargetSpec(
+                                sessionId = sessionId,
+                                rawText = serverText,
+                                source = "ondevice",
+                                schemaVersion = "0.2",
+                                status = TargetSpec.Status.FAILED,
+                            )
+                            applyTargetSpecIfStillAiming(sessionId, failedSpec, localRawText = text)
                         }
                     },
                 )

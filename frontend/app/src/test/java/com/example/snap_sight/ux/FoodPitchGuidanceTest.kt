@@ -41,13 +41,13 @@ class FoodPitchGuidanceTest {
     @Test
     fun `pitch within tolerance falls through to normal direction guidance`() {
         val actions = GuidancePolicy().feed(result(x = -0.30f, size = 0f), now = 0, pitch = 5f)
-        assertEquals(listOf(GuidanceDirection.LEFT.utterance), speech(actions))
+        assertEquals(listOf(GuidanceDirection.Clock(11).utterance), speech(actions))
     }
 
     @Test
     fun `null pitch keeps existing behaviour untouched`() {
         val actions = GuidancePolicy().feed(result(x = -0.30f, size = 0f), now = 0, pitch = null)
-        assertEquals(listOf(GuidanceDirection.LEFT.utterance), speech(actions))
+        assertEquals(listOf(GuidanceDirection.Clock(11).utterance), speech(actions))
     }
 
     @Test

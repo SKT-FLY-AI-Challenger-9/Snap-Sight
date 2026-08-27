@@ -35,21 +35,29 @@ class CameraMotionEstimator(context: Context) : SensorEventListener {
     private val gyroscope: Sensor? = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
 
     private val lock = Any()
-    private var accumulatedYawRad = 0.0   // 좌우 패닝 (device y축)
-    private var accumulatedPitchRad = 0.0 // 상하 틸트 (device x축)
+    private var accumulatedYawRad = 0.0   // 좌우 패닝 (device y축) — consumeHint()가 매번 비운다
+    private var accumulatedPitchRad = 0.0 // 상하 틸트 (device x축) — consumeHint()가 매번 비운다
+    // 세션 시작 이후 누적 회전량 — 비우지 않는다. 시계 방향 회전 안내(사용자 요청 2026-08-27,
+    // "카메라 켜진 순간이 12시")의 기준 원점(0,0=12시)에서 지금까지 얼마나 돌았는지를 잰다.
+    private var totalYawRad = 0.0
+    private var totalPitchRad = 0.0
     private var lastEventTimestampNs = 0L
     private var running = false
 
-    /** 조준(AIMING) 진입 시 호출. 자이로가 없으면 false — 힌트는 항상 null 이 된다. */
+    /**
+     * 조준(AIMING) 진입 시 호출. 자이로가 없으면 false.
+     * [ENABLED] 는 [consumeHint] (트래커 예측 보정, 기능 1-C)만 게이트한다 — 시계 방향 회전
+     * 안내([currentOrientationRad])는 이 플래그와 무관하게 항상 센서를 듣는다.
+     */
     fun start(): Boolean {
-        // 기능 플래그가 꺼진 빌드에서는 센서 리스너도 실제로 등록하지 않는다.
-        if (!ENABLED) return false
         val sensor = gyroscope ?: return false
         synchronized(lock) {
             if (running) return true
             running = true
             accumulatedYawRad = 0.0
             accumulatedPitchRad = 0.0
+            totalYawRad = 0.0
+            totalPitchRad = 0.0
             lastEventTimestampNs = 0L
         }
         val registered = sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME)
@@ -94,9 +102,23 @@ class CameraMotionEstimator(context: Context) : SensorEventListener {
             val dtS = (event.timestamp - previous) / 1_000_000_000.0
             if (dtS <= 0.0 || dtS > MAX_SANE_DT_S) return
             // ω_y(패닝): 오른쪽 회전이 음수 → dx 음수(객체가 왼쪽으로) — KDoc 부호 가정 참고
-            accumulatedYawRad += event.values[1] * dtS
-            accumulatedPitchRad += event.values[0] * dtS
+            val dYaw = event.values[1] * dtS
+            val dPitch = event.values[0] * dtS
+            accumulatedYawRad += dYaw
+            accumulatedPitchRad += dPitch
+            totalYawRad += dYaw
+            totalPitchRad += dPitch
         }
+    }
+
+    /**
+     * [start] 이후 누적된 회전량(라디안, 비우지 않음) — (yaw, pitch).
+     * yaw: 오른쪽으로 돌수록 음수(위 KDoc 부호 규약), pitch: 위로 틸트할수록 양수.
+     * 자이로가 없거나 아직 시작 안 했으면 null.
+     */
+    fun currentOrientationRad(): Pair<Float, Float>? = synchronized(lock) {
+        if (!running) return null
+        totalYawRad.toFloat() to totalPitchRad.toFloat()
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
@@ -108,7 +130,10 @@ class CameraMotionEstimator(context: Context) : SensorEventListener {
          */
         const val ENABLED = false
 
-        // 일반적인 폰 후면 카메라 시야각 (세로 파지 upright 프레임 기준 근사)
+        // 일반적인 폰 후면 카메라 시야각 (세로 파지 upright 프레임 기준 근사).
+        // [GuidancePolicy]도 같은 값을 쓴다(시계 방향 회전 안내, 사용자 요청 2026-08-27) — 그
+        // 파일은 Android 의존성 없이 순수 JVM 테스트되므로 이 클래스를 import하지 않고 값만
+        // 복제해 둔다. 여기 값을 바꾸면 그쪽도 같이 바꿔야 한다.
         private const val HORIZONTAL_FOV_RAD = 66.0 * Math.PI / 180.0
         private const val VERTICAL_FOV_RAD = 52.0 * Math.PI / 180.0
 
