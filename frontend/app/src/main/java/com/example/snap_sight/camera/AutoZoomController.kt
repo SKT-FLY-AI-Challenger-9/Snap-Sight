@@ -25,6 +25,16 @@ class AutoZoomController(private val cameraController: CameraController) {
     private var noTargetStreak = 0
 
     /**
+     * 이번 세션만 면적 기반 자동 줌인을 켠다 — [ZOOM_IN_ENABLED]는 여전히 전역 기본값(꺼짐)이고,
+     * 인물 세션에서만 MainActivity가 이 값을 true로 켠다(사용자 요청 2026-08-27 — "인물이면
+     * 무게중심 가이드 후 줌인해서 찍어줘"). 세션 시작마다 [reset]에서 false로 되돌아간다.
+     */
+    @Volatile
+    var sessionZoomInEnabled: Boolean = false
+
+    private val zoomInActive: Boolean get() = ZOOM_IN_ENABLED || sessionZoomInEnabled
+
+    /**
      * CV 분석 스레드에서 매 프레임 호출된다.
      *
      * @param areaRatio  피사체 면적 / 프레임 면적
@@ -45,9 +55,18 @@ class AutoZoomController(private val cameraController: CameraController) {
             cameraController.setZoomRatio(BASE_ZOOM)
             return
         }
-        if (!ZOOM_IN_ENABLED || hold) return
+        if (!zoomInActive || hold) return
         val now = System.currentTimeMillis()
         if (now - lastZoomAtMs < COOLDOWN_MS) return
+        // 인물이 화면의 60%를 넘게 채우면(너무 가까움) 줌아웃부터 — 줌인과 같은 게이트
+        // (정렬 유지·쿨다운·인물 세션 한정)를 그대로 쓴다(사용자 요청 2026-08-27).
+        if (needsZoomOut(areaRatio)) {
+            val next = nextZoomOut(current, areaRatio, ZOOM_OUT_TRIGGER_AREA, cameraController.minZoomRatio)
+                ?: return
+            lastZoomAtMs = now
+            cameraController.setZoomRatio(next)
+            return
+        }
         val next = nextZoom(current, areaRatio, targetArea, cameraController.maxZoomRatio) ?: return
         lastZoomAtMs = now
         cameraController.setZoomRatio(next)
@@ -73,7 +92,7 @@ class AutoZoomController(private val cameraController: CameraController) {
      * 자동 줌인이 꺼져 있으면 항상 false (음성이 그대로 안내한다).
      */
     val canZoomIn: Boolean
-        get() = ZOOM_IN_ENABLED &&
+        get() = zoomInActive &&
             cameraController.zoomRatio < effectiveMaxZoom(cameraController.maxZoomRatio) - ZOOM_EPS
 
     /**
@@ -85,6 +104,7 @@ class AutoZoomController(private val cameraController: CameraController) {
         get() = canResolveSmallTarget(
             currentZoom = cameraController.zoomRatio,
             deviceMax = cameraController.maxZoomRatio,
+            zoomInEnabled = zoomInActive,
         )
 
     // 세션 시작·종료 시 호출 — [SESSION_START_ZOOM] 로 돌아간다. 기기 배율 범위로 클램프된다.
@@ -93,6 +113,7 @@ class AutoZoomController(private val cameraController: CameraController) {
         lastZoomAtMs = 0L
         alignedStreak = 0
         noTargetStreak = 0
+        sessionZoomInEnabled = false
         cameraController.setZoomRatio(SESSION_START_ZOOM)
         Log.i(
             "SnapSightZoom",
@@ -114,6 +135,8 @@ class AutoZoomController(private val cameraController: CameraController) {
         const val MAX_STEP = 1.5f
         /** 목표 − 이 값보다 작을 때만 줌인한다 — READY 의 size 허용 오차와 같은 값. */
         const val TRIGGER_MARGIN = 0.10f
+        /** 인물이 화면 면적의 이 비율을 넘게 채우면(너무 가까움) 줌아웃한다 (사용자 요청 2026-08-27). */
+        const val ZOOM_OUT_TRIGGER_AREA = 0.60f
         /** 줌인 전 구도 정렬이 유지돼야 하는 연속 실제 관측 프레임 수. */
         const val ALIGN_FRAMES = 5
         /** 광각에서 1.0배 복귀까지 허용하는 연속 타겟 미탐지 프레임 수 (약 2초 @ 3fps). */
@@ -138,9 +161,32 @@ class AutoZoomController(private val cameraController: CameraController) {
         ): Boolean = currentZoom < BASE_ZOOM - ZOOM_EPS ||
             (zoomInEnabled && currentZoom < effectiveMaxZoom(deviceMax) - ZOOM_EPS)
 
-        /** 이 면적이면 줌인 대상인지 (너무 큰 경우는 대상이 아니다 — 줌아웃 없음). */
+        /** 이 면적이면 줌인 대상인지 (너무 큰 경우는 [needsZoomOut] 이 따로 다룬다). */
         internal fun needsZoomIn(areaRatio: Float, targetArea: Float): Boolean =
             areaRatio > 0f && targetArea > 0f && areaRatio < targetArea - TRIGGER_MARGIN
+
+        /** 인물이 화면을 [triggerArea] 넘게 채우는지 — 너무 가까움, 줌아웃 대상. */
+        internal fun needsZoomOut(areaRatio: Float, triggerArea: Float = ZOOM_OUT_TRIGGER_AREA): Boolean =
+            areaRatio > triggerArea
+
+        /**
+         * 다음 줌아웃 배율. 필요 없거나(면적이 기준 이하) 더 줄일 여유가 없으면(기기 최소 배율
+         * 도달) null. [nextZoom] 과 대칭 — 면적은 줌의 제곱에 비례하므로 목표 배율 = 현재 ×
+         * √(기준면적/현재면적); 한 번에 [MAX_STEP] 배 이상 줄이지 않고, 기기 최소 배율 아래로는
+         * 안 내려간다(초광각 없는 기기는 사실상 1.0배에서 멈춤).
+         */
+        internal fun nextZoomOut(
+            currentZoom: Float,
+            areaRatio: Float,
+            triggerArea: Float,
+            deviceMin: Float,
+        ): Float? {
+            if (!needsZoomOut(areaRatio, triggerArea)) return null
+            if (currentZoom <= deviceMin + ZOOM_EPS) return null
+            val desired = currentZoom * sqrt(triggerArea / areaRatio)
+            val next = maxOf(desired, currentZoom / MAX_STEP, deviceMin)
+            return if (abs(next - currentZoom) < ZOOM_EPS) null else next
+        }
 
         /**
          * 다음 줌 배율. 줌인이 필요 없거나 더 당길 여유가 없으면 null.

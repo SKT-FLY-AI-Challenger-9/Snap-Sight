@@ -2778,6 +2778,10 @@ class MainActivity : ComponentActivity() {
         // 크롭이 스스로 건너뛰므로 identityName 포함이 안전하다)
         portraitCropEligible = effectiveSpec?.subjectType == TargetSpec.SubjectType.PERSON ||
             identityName != null
+        // 인물 세션에서만 자동 줌인을 켠다 — 전역으로는 여전히 꺼져 있다(면적만으로는 깊이
+        // 판단이 부정확해 2026-08-19에 끔). 인물은 화면 중앙에 오게 가이드 후 줌인해서
+        // 찍어달라는 요청(2026-08-27)이라 이 세션에서만 예외적으로 켠다.
+        autoZoom.sessionZoomInEnabled = portraitCropEligible
         guidanceFeedback.setSessionSubject(identityName ?: subjectKorean)
         synchronized(targetIntentLock) {
             if (!cvProcessor.isCurrentTargetIntentGeneration(appliedGeneration)) return
