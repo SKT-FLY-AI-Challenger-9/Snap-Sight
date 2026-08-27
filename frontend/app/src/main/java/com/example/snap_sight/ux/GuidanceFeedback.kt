@@ -107,6 +107,16 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     @Volatile
     var phonePitch: (() -> Float?)? = null
 
+    /**
+     * 조준(AIMING) 시작 이후 누적된 카메라 회전량(라디안, yaw to pitch) — null이면 자이로 없음/
+     * 미시작. MainActivity가 [com.example.snap_sight.camera.CameraMotionEstimator]로 연결한다.
+     * 위치 안내를 "화면 속 위치" 대신 "카메라 켜진 순간(12시) 기준 실제로 얼마나 돌았는지"로
+     * 말하는 데 쓴다 (사용자 요청 2026-08-27). null이면 기존처럼 화면 위치 기준으로 말한다.
+     * 분석 스레드에서 호출된다.
+     */
+    @Volatile
+    var cameraOrientationRad: (() -> Pair<Float, Float>?)? = null
+
     @Volatile
     private var ttsReady = false
 
@@ -280,6 +290,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
             readyBlockedReason = readyGate?.invoke(),
             pitchDeviationDeg = pitchDeviation?.invoke(),
             phonePitchDeg = phonePitch?.invoke(),
+            cameraOrientationRad = cameraOrientationRad?.invoke(),
         )
         for (action in decision.actions) {
             when (action) {

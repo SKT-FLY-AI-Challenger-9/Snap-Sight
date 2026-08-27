@@ -6,6 +6,8 @@ import com.example.snap_sight.cv.CompositionProfile
 import com.example.snap_sight.cv.ReadinessBlocker
 import com.example.snap_sight.cv.ReadinessVerdict
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.roundToInt
 
 /**
  * ⑥ 안내 정책 — 판정([GuidanceState]) 스트림을 "언제 무엇을 재생할지"([GuidanceAction])로 바꾼다.
@@ -40,25 +42,38 @@ internal sealed interface GuidanceAction {
 }
 
 // 노션 확정 스크립트(스크립트 - 준서) 문장 — SpeechCatalog 의 프리캐싱 음원과 1:1 로 일치해야 한다.
-internal enum class GuidanceDirection(val utterance: String) {
-    LEFT("조금 왼쪽으로 이동해 주세요."),
-    RIGHT("조금 오른쪽으로 이동해 주세요."),
-    UP("조금 위로 이동해 주세요."),
-    DOWN("조금 아래로 이동해 주세요."),
-    CLOSER("조금 가까이 가 주세요."),
+//
+// 좌우/상하 위치 안내는 시계 방향(1시~12시)으로 통합했다 (사용자 요청 2026-08-27) — "손으로 카메라를
+// 돌려 1시, 2시, 3시처럼 안내받고 싶다"는 요청 반영. 가로/세로 편차를 하나의 벡터로 합쳐 대각선도
+// 표현한다(12시=위, 3시=오른쪽, 6시=아래, 9시=왼쪽). 시간마다 고정 문구가 아니라 [hour] 값이 달라지므로
+// enum 이 아니라 데이터 클래스로 둔다 — [GuidancePolicy.speakDirectionIfDue] 의 동일성 비교는 유지된다.
+// 시각은 숫자("3시")가 아니라 순우리말 수사로 적는다 — 숫자로 두면 TTS가 한자어(삼 시)로 읽어
+// 어색하다. 동작도 "이동"이 아니라 "회전"이다 — 손으로 폰을 그 방향으로 돌리라는 뜻이라서
+// (사용자 요청 2026-08-27).
+/** 시각(1..12)의 순우리말 수사 — "삼 시"가 아니라 "세 시"로 읽히도록 숫자 대신 이 표기를 쓴다. */
+private val CLOCK_HOUR_WORDS = mapOf(
+    1 to "한", 2 to "두", 3 to "세", 4 to "네", 5 to "다섯", 6 to "여섯",
+    7 to "일곱", 8 to "여덟", 9 to "아홉", 10 to "열", 11 to "열한", 12 to "열두",
+)
+
+internal sealed class GuidanceDirection(val utterance: String) {
+    /** 위치(좌우/상하) 편차를 하나의 시계 방향으로 합친 안내 — [hour] 는 1..12. */
+    data class Clock(val hour: Int) : GuidanceDirection("${CLOCK_HOUR_WORDS.getValue(hour)} 시 방향으로 조금 회전해 주세요.")
+
+    object CLOSER : GuidanceDirection("조금 가까이 가 주세요.")
     /** 정의만 남김 — [GuidancePolicy.pickDirection] 은 FARTHER 를 고르지 않는다. */
-    FARTHER("조금 뒤로 당겨 주세요."),
+    object FARTHER : GuidanceDirection("조금 뒤로 당겨 주세요.")
 
     // 음식 피치 (2026-08-25) — 음식 세션에서 폰 각도를 목표(45°)로 유도. CV 편차가 아니라
     // 기울기 센서에서 오므로 pickDirection 이 아닌 judge() 의 피치 분기가 고른다.
-    TILT_LAY("폰을 조금 더 눕혀 주세요."),
-    TILT_RAISE("폰을 조금 세워 주세요."),
+    object TILT_LAY : GuidanceDirection("폰을 조금 더 눕혀 주세요.")
+    object TILT_RAISE : GuidanceDirection("폰을 조금 세워 주세요.")
 
     // 일반 세션 수직 안내의 기울기 문구 (2026-08-25) — 피사체가 위/아래로 벗어난 원인이
-    // 폰 피치로 보이면 UP/DOWN 대신 이 문구를 쓴다 ([GuidancePolicy.refineVerticalWithPitch]).
+    // 폰 피치로 보이면 Clock(12)/Clock(6) 대신 이 문구를 쓴다 ([GuidancePolicy.refineVerticalWithPitch]).
     // TODO: 노션 스크립트 미확정 임시 문구 — 확정되면 SpeechCatalog 음원과 함께 갱신 (그 전까지 TTS 폴백).
-    TILT_TOP_TOWARD("폰 윗부분을 몸 쪽으로 기울여 주세요."),
-    TILT_TOP_AWAY("폰 윗부분을 바깥쪽으로 기울여 주세요."),
+    object TILT_TOP_TOWARD : GuidanceDirection("폰 윗부분을 몸 쪽으로 기울여 주세요.")
+    object TILT_TOP_AWAY : GuidanceDirection("폰 윗부분을 바깥쪽으로 기울여 주세요.")
 }
 
 /** 한 번의 canonical 평가에서 나온 최종 verdict와 렌더링 액션. */
@@ -114,6 +129,14 @@ internal class GuidancePolicy(
     private var presenceSinceMs: Long? = null
     private var presenceVibrationOn = false
 
+    // ---- LOST 중 "마지막으로 보였던 방향" 추적 (사용자 요청 2026-08-27) ----
+    // 화면 안에 보이는 동안은 카메라 반화각(~33도) 안에서만 방향이 나오지만(11시~1시 근처),
+    // 완전히 놓치면(LOST) 마지막으로 본 방향 + 그 이후 자이로로 잰 회전량을 반영해 3시·9시까지도
+    // 안내한다 — "정면=12시, 화면 밖으로 나가야 3·9시가 나온다"는 확인된 설계.
+    private var lastKnownRightRad: Float? = null
+    private var lastKnownOrientationRad: Pair<Float, Float>? = null
+    private var lastSearchDirectionAtMs: Long = Long.MIN_VALUE / 2
+
     /** 새 세션 시작 — 이전 세션의 "이미 말했음" 상태를 지운다. */
     @Synchronized
     fun reset() {
@@ -137,6 +160,9 @@ internal class GuidancePolicy(
         // 진동 정지는 액션으로 못 내보내므로 GuidanceFeedback.resetSession 이 직접 끈다
         presenceSinceMs = null
         presenceVibrationOn = false
+        lastKnownRightRad = null
+        lastKnownOrientationRad = null
+        lastSearchDirectionAtMs = Long.MIN_VALUE / 2
     }
 
     /**
@@ -163,6 +189,7 @@ internal class GuidancePolicy(
         readyBlockedReason: String? = null,
         pitchDeviationDeg: Float? = null,
         phonePitchDeg: Float? = null,
+        cameraOrientationRad: Pair<Float, Float>? = null,
     ): List<GuidanceAction> = processJudgment(
         state = state,
         result = result,
@@ -171,6 +198,7 @@ internal class GuidancePolicy(
         readyBlockedReason = readyBlockedReason,
         pitchDeviationDeg = pitchDeviationDeg,
         phonePitchDeg = phonePitchDeg,
+        cameraOrientationRad = cameraOrientationRad,
     ).actions
 
     /**
@@ -180,6 +208,9 @@ internal class GuidancePolicy(
      *        피치 안내 없음. 양수 = 더 눕혀야 함, 음수 = 세워야 함.
      * @param phonePitchDeg 현재 폰 피치 (TiltSensorMonitor 규약: 양수 = 카메라가 아래를 봄) —
      *        일반 세션의 수직 이동 안내를 기울기 문구로 바꾸는 데만 쓴다. null 이면 항상 이동 문구.
+     * @param cameraOrientationRad AIMING 시작 이후 누적 카메라 회전량(라디안, yaw to pitch) —
+     *        null이 아니면 시계 방향 안내를 "화면 속 위치"가 아니라 "카메라 켜진 순간(12시)
+     *        기준으로 실제 얼마나 돌았는지 + 남은 보정"으로 계산한다 (사용자 요청 2026-08-27).
      */
     @Synchronized
     fun processJudgment(
@@ -190,13 +221,14 @@ internal class GuidancePolicy(
         readyBlockedReason: String? = null,
         pitchDeviationDeg: Float? = null,
         phonePitchDeg: Float? = null,
+        cameraOrientationRad: Pair<Float, Float>? = null,
     ): GuidanceDecision {
         val readiness = readinessEvaluator.evaluate(result, nowMs)
         // 존재 확인 진동 — 어떤 안내 분기든 상관없이 매 판정마다 갱신한다
         val presence = presenceActions(state.detected, nowMs)
         val actions = judge(
             state, result, readiness, nowMs, zoomHandlesDistance, readyBlockedReason,
-            pitchDeviationDeg, phonePitchDeg,
+            pitchDeviationDeg, phonePitchDeg, cameraOrientationRad,
         )
         return GuidanceDecision(readiness, presence + actions)
     }
@@ -240,10 +272,27 @@ internal class GuidancePolicy(
         readyBlockedReason: String?,
         pitchDeviationDeg: Float? = null,
         phonePitchDeg: Float? = null,
+        cameraOrientationRad: Pair<Float, Float>? = null,
     ): List<GuidanceAction> {
         if (!state.detected) {
             // 첫 검출 전에는 "사라졌어요"(LOST)가 아니라 탐색 안내(t2/t3)를 쓴다 — 비프 없음
-            return if (subjectEverDetected) onLost(nowMs) else onSearching(nowMs)
+            return if (subjectEverDetected) onLost(nowMs, cameraOrientationRad) else onSearching(nowMs)
+        }
+
+        // 보이는 동안 "마지막으로 어느 쪽으로 벗어나 있었는지"를 90도(=9시/3시)로 기록해 둔다
+        // — 완전히 놓치는(LOST) 순간 그 방향에서부터 시작해, 그 이후 실제로 돈 만큼(자이로)을
+        // 반영해 안내를 갱신한다(사용자 요청 2026-08-27). 위아래는 섞지 않는다 — 시계는
+        // 좌우 전용이다("8시·5시·7시 이런 게 나오면 안 돼").
+        if (cameraOrientationRad != null) {
+            val hSign = when (state.horizontal) {
+                HorizontalAlignment.LEFT -> -1f
+                HorizontalAlignment.RIGHT -> 1f
+                else -> 0f
+            }
+            if (hSign != 0f) {
+                lastKnownRightRad = hSign * (Math.PI.toFloat() / 2f)
+                lastKnownOrientationRad = cameraOrientationRad
+            }
         }
 
         // 첫 검출 — 탐색 단계가 실제로 있었을 때만 "찾았어요"를 말한다 (스크립트 3-1).
@@ -400,7 +449,7 @@ internal class GuidancePolicy(
         return if ((last - '가') % 28 != 0) withBatchim else withoutBatchim
     }
 
-    private fun onLost(nowMs: Long): List<GuidanceAction> {
+    private fun onLost(nowMs: Long, cameraOrientationRad: Pair<Float, Float>?): List<GuidanceAction> {
         readySpokenThisEpisode = false
         lastDirection = null // 다시 찾으면 방향을 바로 말해준다
         heartbeatStateSinceMs = null
@@ -418,8 +467,35 @@ internal class GuidancePolicy(
             // 커스텀 lostUtterance 를 넘긴 호출자(테스트)는 존중, 기본값이면 피사체 이름을 넣는다
             val text = if (lostUtterance == LOST_UTTERANCE) subjectLostUtterance() else lostUtterance
             actions.add(GuidanceAction.Speak(text))
+        } else {
+            // "사라졌어요"를 말하는 틱이 아니면, 마지막으로 보였던 방향 + 그 이후 회전량으로
+            // 계속 검색 방향을 알려준다 — 여기서만 3시·9시까지 갈 수 있다(사용자 요청 2026-08-27).
+            searchDirectionHour(nowMs, cameraOrientationRad)?.let { hour ->
+                lastSpokenAtMs = nowMs
+                actions.add(GuidanceAction.Speak(GuidanceDirection.Clock(hour).utterance))
+            }
         }
         return actions
+    }
+
+    /**
+     * 화면에서 완전히 벗어난 뒤 마지막으로 보였던 좌우 방향([lastKnownRightRad], 9시/3시 기준)에
+     * 그 순간부터 지금까지 실제로 돈 만큼(자이로 누적량 차이)을 반영해 지금 돌아야 할 방향을
+     * 시계로 계산한다. 위아래는 섞지 않는다 — 좌우 회전량만 본다("8시·5시·7시 이런 게 나오면
+     * 안 돼", 사용자 요청 2026-08-27). [DIRECTION_REPEAT_MS] 간격으로만 반복한다. 필요한 값이
+     * 하나라도 없으면(자이로 없음/아직 한 번도 좌우로 안 벗어나 봄) null.
+     */
+    private fun searchDirectionHour(nowMs: Long, cameraOrientationRad: Pair<Float, Float>?): Int? {
+        val lastRight = lastKnownRightRad ?: return null
+        val (lastYawRad, _) = lastKnownOrientationRad ?: return null
+        val (currentYawRad, _) = cameraOrientationRad ?: return null
+        if (nowMs - lastSearchDirectionAtMs < DIRECTION_REPEAT_MS) return null
+        lastSearchDirectionAtMs = nowMs
+        // accum 규약: yaw는 오른쪽으로 돌수록 음수 → "그 이후 오른쪽으로 돈 양"은 (last - current).
+        val turnedRightSinceRad = lastYawRad - currentYawRad
+        val nowRight = lastRight - turnedRightSinceRad
+        if (nowRight == 0f) return null
+        return wrapHour((Math.toDegrees(nowRight.toDouble()) / 30.0).roundToInt())
     }
 
     /**
@@ -468,6 +544,14 @@ internal class GuidancePolicy(
         /** 피사체가 이만큼 연속으로 잡혀 있으면 존재 확인 연속 진동 시작. */
         const val PRESENCE_VIBRATION_AFTER_MS = 1_500L
 
+        // 키패드 숫자 배열(1 2 3 / 4 5 6 / 7 8 9) 기준 가장자리 칸(4·6·2·8번)의 중심 쪽
+        // 절반/바깥쪽 절반을 가르는 경계 — 프레임을 3등분(각 1/3)한 칸의 중간점이다.
+        // 무게중심이 이 경계보다 중심에 가까우면 완만(11/1/12/6시), 바깥쪽이면 급함
+        // (10/2시, 몸쪽/바깥쪽 기울이기) — 물체 크기와 무관하게 판정하려고 여백(margin)
+        // 대신 무게중심 위치를 쓴다(사용자 요청 2026-08-27).
+        private const val ZONE_OUTER_HALF_LEFT = 1f / 6f
+        private const val ZONE_OUTER_HALF_RIGHT = 5f / 6f
+
         /** 음식 피치 목표각 허용 오차 — 이 안이면 각도 안내를 멈추고 구도 안내로 넘어간다. */
         const val PITCH_TOLERANCE_DEG = 12f
 
@@ -499,19 +583,23 @@ internal class GuidancePolicy(
             direction: GuidanceDirection,
             phonePitchDeg: Float?,
         ): GuidanceDirection {
-            if (phonePitchDeg == null) return direction
+            if (phonePitchDeg == null || direction !is GuidanceDirection.Clock) return direction
             return when {
-                direction == GuidanceDirection.UP && phonePitchDeg > PITCH_WORDING_SWAP_DEG ->
+                direction.hour == 12 && phonePitchDeg > PITCH_WORDING_SWAP_DEG ->
                     GuidanceDirection.TILT_TOP_TOWARD
-                direction == GuidanceDirection.DOWN && phonePitchDeg < -PITCH_WORDING_SWAP_DEG ->
+                direction.hour == 6 && phonePitchDeg < -PITCH_WORDING_SWAP_DEG ->
                     GuidanceDirection.TILT_TOP_AWAY
                 else -> direction
             }
         }
 
         /**
-         * 벗어난 축 중 "임계값 대비 비율"이 가장 큰 축 하나를 고른다.
-         * 수직(dy)은 [GuidanceState.vertical] 이 있을 때만 후보다.
+         * 좌우·상하 중 더 급한 쪽 하나만 고르고, 좌우면 시계로, 상하면 12시/6시로 말한다 —
+         * 절대 섞지 않는다("8시·5시·7시 이런 게 나오면 안 돼", 사용자 요청 2026-08-27). 12시
+         * =정면(카메라가 지금 향한 곳). 좌우는 프레임 가장자리에 얼마나 가까운지로 3단계 구역:
+         * 안 걸림(11/1시), 가장자리에 거의 걸림(10/2시) — 화면 안에서 나올 수 있는 가장 먼
+         * 시각이다. 완전히 벗어나면(LOST) 9시·3시부터 시작해 자이로로 계속 갱신하는 건
+         * [searchDirectionHour]가 담당한다.
          */
         fun pickDirection(
             state: GuidanceState,
@@ -519,43 +607,83 @@ internal class GuidancePolicy(
             zoomHandlesDistance: Boolean = false,
         ): GuidanceDirection? {
             if (!state.detected) return null
-            var best: GuidanceDirection? = null
-            var bestScore = 0f
-            fun consider(direction: GuidanceDirection?, score: Float) {
-                if (direction != null && score > bestScore) {
-                    best = direction
-                    bestScore = score
-                }
-            }
             val x = result.xDeviation ?: 0f
             val y = result.yDeviation ?: 0f
             val size = result.sizeDeviation ?: 0f
             val goal = result.goal ?: CompositionProfile.DEFAULT.goalFor(result.framing)
-            consider(
-                when (state.horizontal) {
-                    HorizontalAlignment.LEFT -> GuidanceDirection.LEFT
-                    HorizontalAlignment.RIGHT -> GuidanceDirection.RIGHT
+
+            val hSign = when (state.horizontal) {
+                HorizontalAlignment.LEFT -> -1f
+                HorizontalAlignment.RIGHT -> 1f
+                else -> 0f
+            }
+            val vSign = when (state.vertical) {
+                VerticalAlignment.UP -> -1f
+                VerticalAlignment.DOWN -> 1f
+                else -> 0f
+            }
+            val hScore = if (hSign != 0f) abs(x) / goal.maxAbsXDeviation.coerceAtLeast(1e-6f) else 0f
+            val vScore = if (vSign != 0f) abs(y) / goal.maxAbsYDeviation.coerceAtLeast(1e-6f) else 0f
+            val clockScore = max(hScore, vScore)
+
+            var best: GuidanceDirection? = null
+            var bestScore = 0f
+            if (clockScore > bestScore) {
+                val direction = when {
+                    hSign != 0f && hScore >= vScore ->
+                        GuidanceDirection.Clock(horizontalZoneHour(hSign, x + goal.anchorX))
+                    vSign != 0f -> verticalDirection(vSign, y + goal.anchorY)
                     else -> null
-                },
-                abs(x) / goal.maxAbsXDeviation.coerceAtLeast(1e-6f),
-            )
-            consider(
-                when (state.vertical) {
-                    VerticalAlignment.UP -> GuidanceDirection.UP
-                    VerticalAlignment.DOWN -> GuidanceDirection.DOWN
-                    else -> null
-                },
-                abs(y) / goal.maxAbsYDeviation.coerceAtLeast(1e-6f),
-            )
-            consider(
-                when (state.distance) {
-                    DistanceAlignment.CLOSER -> if (zoomHandlesDistance) null else GuidanceDirection.CLOSER
-                    DistanceAlignment.FARTHER -> null // "뒤로"는 안내하지 않는다 (KDoc 참고)
-                    else -> null
-                },
-                abs(size) / goal.maxAbsAreaDeviation.coerceAtLeast(1e-6f),
-            )
+                }
+                if (direction != null) {
+                    best = direction
+                    bestScore = clockScore
+                }
+            }
+            if (state.distance == DistanceAlignment.CLOSER && !zoomHandlesDistance) {
+                val closerScore = abs(size) / goal.maxAbsAreaDeviation.coerceAtLeast(1e-6f)
+                if (closerScore > bestScore) {
+                    best = GuidanceDirection.CLOSER
+                    bestScore = closerScore
+                }
+            }
+            // FARTHER는 안내하지 않는다 (KDoc 참고)
             return best
+        }
+
+        /**
+         * 화면에 보이는 동안의 좌우 구역 — 키패드 숫자 배열(1 2 3 / 4 5 6 / 7 8 9) 기준 4번
+         * (왼쪽)·6번(오른쪽) 칸을 무게중심 위치로 다시 반으로 나눈다: 그 칸의 중심 쪽 절반까지
+         * 왔으면 완만한 구역(11/1시), 아직 바깥쪽 절반이면 급한 구역(10/2시). 프레임 가장자리
+         * 여백(margin) 대신 무게중심 위치를 쓰는 이유 — 물체 크기가 다르면 같은 위치라도
+         * 여백 비율이 달라져 판정이 들쭉날쭉했다(사용자 요청 2026-08-27).
+         */
+        private fun horizontalZoneHour(hSign: Float, centerX: Float): Int = if (hSign > 0f) {
+            if (centerX > ZONE_OUTER_HALF_RIGHT) 2 else 1
+        } else {
+            if (centerX < ZONE_OUTER_HALF_LEFT) 10 else 11
+        }
+
+        /**
+         * 수직 방향 — 키패드 2번(위)·8번(아래) 칸을 무게중심 위치로 반으로 나눠, 중심 쪽
+         * 절반이면 완만하게 12시/6시로, 바깥쪽 절반이면 "몸쪽으로/바깥쪽으로 기울여 주세요"로
+         * 말한다(사용자 요청 2026-08-27). 폰 실제 피치가 크게 기운 경우
+         * ([refineVerticalWithPitch])와는 별개의, 구도(편차) 자체의 급함을 보는 판단이라 둘 다
+         * 각자 이 문구를 낼 수 있다.
+         */
+        private fun verticalDirection(vSign: Float, centerY: Float): GuidanceDirection {
+            return if (vSign < 0f) {
+                if (centerY < ZONE_OUTER_HALF_LEFT) GuidanceDirection.TILT_TOP_TOWARD else GuidanceDirection.Clock(12)
+            } else {
+                if (centerY > ZONE_OUTER_HALF_RIGHT) GuidanceDirection.TILT_TOP_AWAY else GuidanceDirection.Clock(6)
+            }
+        }
+
+        /** 1~12 범위로 감는다 (0 또는 음수 → +12, 13 이상 → 12를 뺌을 반복). */
+        private fun wrapHour(rawHour: Int): Int {
+            var hour = rawHour % 12
+            if (hour <= 0) hour += 12
+            return hour
         }
     }
 }
