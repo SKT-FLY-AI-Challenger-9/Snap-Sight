@@ -98,6 +98,7 @@ dependencies {
     implementation(libs.tensorflow.lite.gpu.api) // GpuDelegateFactory.Options
 
     implementation(libs.mlkit.face.detection)
+    implementation(libs.mlkit.pose.detection)
     testImplementation(libs.junit)
     testImplementation(libs.json)
     androidTestImplementation(platform(libs.androidx.compose.bom))
