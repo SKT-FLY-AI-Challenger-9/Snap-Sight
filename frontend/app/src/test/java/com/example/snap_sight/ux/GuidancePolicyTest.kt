@@ -169,13 +169,14 @@ class GuidancePolicyTest {
                 nowMs = 850, cameraOrientationRad = 0f to 0f,
             ).isEmpty(),
         )
-        // 디바운스 뒤: 완전히 놓친 순간은 오른쪽으로 사라졌으니 곧장 3시부터 시작한다
-        // (사용자 요청 2026-08-27 — "9시 영역에서 아예 사라지면 9시", 반대쪽은 3시).
+        // 디바운스 뒤: 완전히 놓친 순간(원래 각도로는 3시)은 오른쪽으로 사라졌으니 말할 수
+        // 있는 가장 먼 시각인 2시로 고정한다(사용자 요청 2026-08-28 — "10시부터 2시까지
+        // 빼고는 아예 음성도 삭제해버려", 반대쪽은 10시).
         val justLost = policy.onJudgment(
             GuidanceStateMapper.from(lostResult), lostResult,
             nowMs = 850 + GuidancePolicy.LOST_DEBOUNCE_MS + 1, cameraOrientationRad = 0f to 0f,
         )
-        assertEquals(listOf(GuidanceDirection.Clock(3).utterance), speech(justLost))
+        assertEquals(listOf(GuidanceDirection.Clock(2).utterance), speech(justLost))
 
         // 그 사이 오른쪽으로 120도나 돌아 목표(90도)를 지나쳐버림 — 되돌아가야 하니 11시로 갱신
         val overTurned = policy.onJudgment(
@@ -444,7 +445,7 @@ class GuidancePolicyTest {
         assertEquals(listOf("피사체가 아직 안 보여요. 좌우로 천천히 움직여 주세요."), speech(hint))
         assertTrue(hint.none { it == GuidanceAction.WarningTone })
         val fail = policy.feed(lostResult, now = GuidancePolicy.SEARCH_FAIL_AFTER_MS)
-        assertEquals(listOf("피사체를 못 찾았어요. 더 찾을까요, 다른 대상을 고를까요?"), speech(fail))
+        assertEquals(listOf(GuidancePolicy.SUBJECT_NOT_FOUND_UTTERANCE), speech(fail))
         val found = policy.feed(result(0.3f, 0f), now = GuidancePolicy.SEARCH_FAIL_AFTER_MS + 1_000)
         assertEquals(listOf("피사체를 찾았어요."), speech(found))
     }
@@ -538,24 +539,41 @@ class GuidancePolicyTest {
     }
 
     @Test
-    fun `visibility-blocked state speaks a heartbeat instead of staying silent`() {
-        val policy = GuidancePolicy()
-        // 머리가 잘린 전신 구도 — x/y/size 는 다 맞는데 VISIBILITY 만 막힌 상태
-        val cropped = result(
+    fun `visibility-blocked state reuses clock-tilt wording for the most-clipped edge`() {
+        // 사용자 요청 2026-08-28 — "피사체 전체가 화면 안에 들어오게" 같은 별도 문구 대신
+        // 기존 시계·기울기 어휘를 재사용한다. FULL_BODY 프레이밍은 VISIBILITY 를 상하
+        // 가장자리로만 판정하므로(requiredVisibleEdges=TOP,BOTTOM) 실제로 도달 가능한 건
+        // 위/아래 두 경우뿐이다 — 좌우는 [PersonFramingController]/MainActivity 쪽에서
+        // bbox 를 직접 봐서 따로 처리한다.
+        val topCropped = result(
             x = 0f, size = 0f,
             visibility = FrameVisibility(
                 leftMargin = 0.4f, topMargin = 0f, rightMargin = 0.4f, bottomMargin = 0.1f,
             ),
         )
-        assertTrue(policy.feed(cropped, now = 0).isEmpty())
-        val actions = policy.feed(cropped, now = GuidancePolicy.HEARTBEAT_AFTER_MS)
-        assertEquals(listOf(GuidancePolicy.VISIBILITY_HEARTBEAT), speech(actions))
+        assertEquals(
+            listOf(GuidanceDirection.TILT_TOP_TOWARD.utterance),
+            speech(GuidancePolicy().feed(topCropped, now = 0)),
+        )
+
+        val bottomCropped = result(
+            x = 0f, size = 0f,
+            visibility = FrameVisibility(
+                leftMargin = 0.4f, topMargin = 0.4f, rightMargin = 0.4f, bottomMargin = 0f,
+            ),
+        )
+        assertEquals(
+            listOf(GuidanceDirection.TILT_TOP_AWAY.utterance),
+            speech(GuidancePolicy().feed(bottomCropped, now = 0)),
+        )
     }
 
     @Test
-    fun `person session speaks a safe tell-the-subject message instead of the generic visibility heartbeat`() {
-        // 사용자 요청 2026-08-27 — 인물 세션에서 머리·발이 잘릴 만큼 가까우면 "뒤로 가라"를
-        // 촬영자 본인이 아니라 피사체(상대방)에게 전달하라고 안내해야 안전하다.
+    fun `person session stays silent on visibility heartbeat since PersonFramingController handles it`() {
+        // 사용자 요청 2026-08-28 — "너무 가깝다는 멘트가 뜨던데 줌할 때". 인물 세션의
+        // VISIBILITY(너무 가까움)는 이제 MainActivity의 PersonFramingController가
+        // 줌·진동·자동촬영으로 전부 대신하므로, GuidancePolicy 는 여기서 아무 말도 하지
+        // 않는다(예전엔 "대상이 너무 가까워요"를 반복했다).
         val policy = GuidancePolicy()
         val cropped = result(
             x = 0f, size = 0f,
@@ -571,25 +589,28 @@ class GuidancePolicyTest {
             GuidanceStateMapper.from(cropped), cropped,
             nowMs = GuidancePolicy.HEARTBEAT_AFTER_MS, personSession = true,
         )
-        assertEquals(listOf(GuidancePolicy.PERSON_TOO_CLOSE_HEARTBEAT), speech(actions))
+        assertTrue(speech(actions).isEmpty())
     }
 
     @Test
     fun `heartbeat waits for both state persistence and speech silence`() {
+        // 인물 VISIBILITY 하트비트는 이제 완전히 조용해졌으므로(위 테스트 참고), 이 게이팅
+        // 자체는 여전히 유효한 AUTO_ZOOM_HEARTBEAT(SIZE 블로커 + 줌 처리) 경로로 검증한다.
         val policy = GuidancePolicy()
         policy.feed(result(x = 0.3f, size = 0f), now = 0) // GuidanceDirection.Clock(1).utterance
-        val cropped = result(
-            x = 0f, size = 0f,
-            visibility = FrameVisibility(
-                leftMargin = 0.4f, topMargin = 0f, rightMargin = 0.4f, bottomMargin = 0.1f,
-            ),
+        val small = result(x = 0f, size = -0.30f)
+        // t=1s 부터 SIZE(너무 작음) 상태 지속 — 상태 지속 4s 와 음성 공백 4s 를 모두 채워야 말한다
+        assertTrue(
+            policy.onJudgment(GuidanceStateMapper.from(small), small, nowMs = 1_000, zoomHandlesDistance = true).isEmpty(),
         )
-        // t=1s 부터 잘림 상태 — 상태 지속 4s 와 음성 공백 4s 를 모두 채워야 말한다
-        assertTrue(policy.feed(cropped, now = 1_000).isEmpty())
-        assertTrue(nonPresence(policy.feed(cropped, now = 4_500)).isEmpty())
+        assertTrue(
+            nonPresence(
+                policy.onJudgment(GuidanceStateMapper.from(small), small, nowMs = 4_500, zoomHandlesDistance = true),
+            ).isEmpty(),
+        )
         assertEquals(
-            listOf(GuidancePolicy.VISIBILITY_HEARTBEAT),
-            speech(policy.feed(cropped, now = 5_000)),
+            listOf(GuidancePolicy.AUTO_ZOOM_HEARTBEAT),
+            speech(policy.onJudgment(GuidanceStateMapper.from(small), small, nowMs = 5_000, zoomHandlesDistance = true)),
         )
     }
 }

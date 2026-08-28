@@ -419,6 +419,11 @@ class MainActivity : ComponentActivity() {
      * 잡히면 "사물", 나머지는 전부 "풍경".
      */
     private var subjectModeDebugLabel by mutableStateOf("")
+    /**
+     * 인물 프레이밍 머리·발 좌표 확인용 — 슬라이더 튜닝 중 실측값을 보려고 화면에만 표시한다
+     * (사용자 요청 2026-08-28). CV 분석 스레드에서 매 판정마다 갱신, 빈 문자열이면 비표시.
+     */
+    private var personFramingDebugLabel by mutableStateOf("")
     /** predictOnly/짧은 hold가 직전 실제 관측 안내를 매 프레임 덮지 않게 하는 UI 전용 latch. */
     private val guidanceTextStabilizer = GuidanceTextStabilizer()
 
@@ -543,6 +548,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // 마이크를 처음 누르기 전에 미리 인식기를 만들어둔다 — 서비스 바인딩 지연을 앱 시작
+        // 시점으로 옮겨서 실제 마이크 버튼 반응이 빨라지게(사용자 요청 2026-08-28).
+        searchRecognizer.prewarm()
 
         currentScreen = if (appPrefs.getBoolean(KEY_ONBOARDING_DONE, false)) {
             AppScreen.MAIN
@@ -582,8 +590,10 @@ class MainActivity : ComponentActivity() {
         // 촬영자가 아니라 피사체에게 전달하라고 안내한다.
         guidanceFeedback.personSession = { portraitCropEligible }
         // 인물 세션의 자동촬영 승자 컷은 얼굴 3분할 크롭으로 마무리한다 (연사 채점 스레드에서 호출)
+        // PORTRAIT_CROP_ENABLED: 2026-08-28 사용자 요청으로 일단 꺼둠 — 인물 프레이밍 줌/캡처
+        // 튜닝 중 원본 그대로 확인하려고.
         cameraController.burstFinisher = { file ->
-            if (portraitCropEligible) PortraitAutoCrop.apply(file) else null
+            if (PORTRAIT_CROP_ENABLED && portraitCropEligible) PortraitAutoCrop.apply(file) else null
         }
         guidanceFeedback.applySettings(settingsUiState) // 저장된 설정값을 시작부터 반영
         // 동적 문장(촬영 요약·사진 설명)도 프리셋 보이스로 — 백엔드 SKT 프록시 즉석 합성 연결.
@@ -1064,7 +1074,11 @@ class MainActivity : ComponentActivity() {
                                         gridEnabled = settingsUiState.gridEnabled,
                                         gridColorArgb = settingsUiState.gridColorArgb,
                                         gridThicknessDp = settingsUiState.gridThicknessDp,
-                                        modeDebugLabel = subjectModeDebugLabel,
+                                        modeDebugLabel = if (personFramingDebugLabel.isBlank()) {
+                                            subjectModeDebugLabel
+                                        } else {
+                                            "$subjectModeDebugLabel · $personFramingDebugLabel"
+                                        },
                                     )
                                 }
                                 if (homeVisible) {
@@ -2717,6 +2731,7 @@ class MainActivity : ComponentActivity() {
         personFramingSession = false
         personFramingPose.reset()
         personFraming.reset()
+        personFramingDebugLabel = ""
         currentIdentities = emptyMap()
         synchronized(cvSnapshotLock) {
             latestObservedObjects = emptyList()
@@ -3042,15 +3057,39 @@ class MainActivity : ComponentActivity() {
                 // case 1/2 를 나누고, ML Kit Pose 머리·발 좌표로 줌/진동/3초 확정 촬영을 맡긴다.
                 // 좌우는 기존 3x5 시계 안내가 그대로 처리한다.
                 val personFramingOutcome = if (personFramingSession && dev != null && readiness != null) {
-                    val bboxFitsFrame = ReadinessBlocker.VISIBILITY !in readiness.blockers
+                    // VISIBILITY 블로커는 FULL_BODY 프레이밍에서 상하 가장자리만 본다 — 줌인이
+                    // 세로 목표(머리·발)만 좇다가 좌우가 먼저 프레임을 넘는 경우를 놓친다.
+                    // dev.frameVisibility(=VISIBILITY 블로커와 같은 원본)로 위아래·양옆이
+                    // 동시에 닿았는지, bbox 높이가 얼만지 직접 계산한다 — output.objects 의
+                    // "이번 프레임 실관측(!predicted)" 재조회에 기대지 않는다: 너무 가까우면
+                    // 욜로가 그 프레임엔 사람을 놓쳐도(추정치로만 이어짐) dev 는 여전히 값을
+                    // 들고 있어, 극근접일수록 오히려 이 판정이 더 필요하다(사용자 요청
+                    // 2026-08-28 — "바운딩 박스가 이미 위아래 닿았을 때 자꾸 가깝다고만 뜬다").
+                    val visibility = dev.frameVisibility
+                    val bboxHeightRatio = visibility?.let { 1f - it.topMargin - it.bottomMargin }
+                    val axisClipped = visibility?.let {
+                        (it.topMargin <= PERSON_FRAMING_EDGE_TOUCH_MARGIN && it.bottomMargin <= PERSON_FRAMING_EDGE_TOUCH_MARGIN) ||
+                            (it.leftMargin <= PERSON_FRAMING_EDGE_TOUCH_MARGIN && it.rightMargin <= PERSON_FRAMING_EDGE_TOUCH_MARGIN)
+                    } ?: false
+                    val bboxFitsFrame = ReadinessBlocker.VISIBILITY !in readiness.blockers && !axisClipped
                     val poseFresh = personFramingPose.isFresh(output.timestampMs)
+                    val headYForFrame = if (poseFresh) personFramingPose.headY else null
+                    val footYForFrame = if (poseFresh) personFramingPose.footY else null
+                    // 슬라이더 튜닝 확인용 실측값 표시 (사용자 요청 2026-08-28 — "화면에 머리
+                    // 위치도 뜨게 해줘"). 좌표는 %로, bbox 높이도 함께 보여준다.
+                    personFramingDebugLabel = "머리 ${headYForFrame?.let { "%.0f%%".format(it * 100) } ?: "?"} " +
+                        "발 ${footYForFrame?.let { "%.0f%%".format(it * 100) } ?: "?"} " +
+                        "H ${bboxHeightRatio?.let { "%.0f%%".format(it * 100) } ?: "?"}"
                     personFraming.onJudgment(
                         bboxFitsFrame = bboxFitsFrame,
-                        headY = if (poseFresh) personFramingPose.headY else null,
-                        footY = if (poseFresh) personFramingPose.footY else null,
+                        headY = headYForFrame,
+                        footY = footYForFrame,
+                        bboxHeightRatio = bboxHeightRatio,
+                        generalReady = readiness.ready,
                         nowMs = output.timestampMs,
                     )
                 } else {
+                    personFramingDebugLabel = ""
                     null
                 }
                 if (personFramingOutcome != null) {
@@ -3601,6 +3640,7 @@ class MainActivity : ComponentActivity() {
         // 분리 시 onDetached() 가 불려 TFLite 인터프리터가 해제된다.
         cameraController.release()
         guidanceFeedback.release()
+        searchRecognizer.release() // prewarm()으로 미리 만들어둔 인식기를 여기서 정리한다
     }
 
     private companion object {
@@ -3641,6 +3681,12 @@ class MainActivity : ComponentActivity() {
 
         /** 음식 세션의 목표 폰 각도 — 45° 비스듬 샷 (탑다운 90°는 조준 난도가 높아 후속). */
         private const val FOOD_TARGET_PITCH_DEG = 45f
+
+        /** 인물 프레이밍 줌 중 bbox 가장자리 "닿음" 판정 여백 (사용자 요청 2026-08-28). */
+        private const val PERSON_FRAMING_EDGE_TOUCH_MARGIN = 0.02f
+
+        /** 인물 3분할 크롭 on/off — 2026-08-28 사용자 요청으로 일단 꺼둠. */
+        private const val PORTRAIT_CROP_ENABLED = false
         const val CV_TAG = "SnapSightCV"
         const val PREFS_NAME = "snap_sight_prefs"
         const val KEY_ONBOARDING_DONE = "onboarding_done"

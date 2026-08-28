@@ -3,6 +3,7 @@
 // 뽑아 정규화(0..1, 위=0/아래=1) 좌표로 넘긴다(사용자 요청 2026-08-28: "ML kit 기준으로").
 package com.example.snap_sight.face
 
+import android.graphics.Rect
 import android.util.Log
 import com.example.snap_sight.cv.CvFrame
 import com.example.snap_sight.cv.FrameResult
@@ -13,6 +14,7 @@ import com.google.mlkit.vision.pose.PoseDetection
 import com.google.mlkit.vision.pose.PoseLandmark
 import com.google.mlkit.vision.pose.defaults.PoseDetectorOptions
 import java.util.concurrent.TimeUnit
+import kotlin.math.roundToInt
 
 /**
  * 스레딩: [onFrame] 은 CV 분석 스레드에서 동기 호출된다([SelfieGazeMonitor]와 같은 규약).
@@ -22,6 +24,11 @@ import java.util.concurrent.TimeUnit
  * 비용: [enabled] 가 인물 세션일 때만 true 이고, 그때도 [analysisIntervalMs] 간격으로만
  * 1회 돈다 — 실시간 스트림 모드([PoseDetectorOptions.STREAM_MODE])라 프레임 간 추적을
  * 재사용해 매 호출이 처음부터 다시 찾는 것보다 싸다.
+ *
+ * 검출은 전체 프레임이 아니라 [PADDING_RATIO] 여백을 더한 사람 bbox 영역만 잘라서 돌린다
+ * (사용자 요청 2026-08-28 — "ML kit가 얼굴은 거의 인식을 못하더라"). 전체 프레임에는 배경이
+ * 대부분이라 ML Kit 내부 리사이즈 후 사람이 차지하는 실제 픽셀이 너무 작아졌던 게 원인 —
+ * [FaceIdentifier]/[ObjectIdentifier]가 이미 같은 이유로 track bbox 를 잘라서 쓴다.
  */
 class PersonFramingPoseTracker(
     private val analysisIntervalMs: Long = 400L,
@@ -81,7 +88,12 @@ class PersonFramingPoseTracker(
             return
         }
 
-        val bitmap = frame.toBitmap() ?: return
+        val region = paddedRegion(
+            xMin = personBox.bbox.xMin, yMin = personBox.bbox.yMin,
+            xMax = personBox.bbox.xMax, yMax = personBox.bbox.yMax,
+            frameWidth = frame.width, frameHeight = frame.height,
+        )
+        val bitmap = frame.toBitmap(region) ?: return
         try {
             val pose = try {
                 Tasks.await(
@@ -92,24 +104,40 @@ class PersonFramingPoseTracker(
                 Log.w(TAG, "인물 프레이밍 자세 검출 실패 — 이 프레임은 건너뜀", t)
                 return
             }
-            headY = landmarkY(pose, PoseLandmark.NOSE, bitmap.height)
-            footY = averageAnkleY(pose, bitmap.height)
+            headY = landmarkY(pose, PoseLandmark.NOSE, region.top, frame.height)
+            footY = averageAnkleY(pose, region.top, frame.height)
             lastUpdatedAtMs = now
         } finally {
             bitmap.recycle()
         }
     }
 
-    private fun landmarkY(pose: Pose, type: Int, bitmapHeight: Int): Float? {
-        val landmark = pose.getPoseLandmark(type) ?: return null
-        if (landmark.inFrameLikelihood < MIN_LIKELIHOOD) return null
-        return (landmark.position.y / bitmapHeight).coerceIn(0f, 1f)
+    /** 사람 bbox(정규화 0..1) 에 [PADDING_RATIO] 여백을 더한 픽셀 영역 — 프레임 밖으로 안 나가게 클램프. */
+    private fun paddedRegion(
+        xMin: Float, yMin: Float, xMax: Float, yMax: Float,
+        frameWidth: Int, frameHeight: Int,
+    ): Rect {
+        val padX = (xMax - xMin) * PADDING_RATIO
+        val padY = (yMax - yMin) * PADDING_RATIO
+        val left = ((xMin - padX) * frameWidth).roundToInt().coerceIn(0, frameWidth - 1)
+        val top = ((yMin - padY) * frameHeight).roundToInt().coerceIn(0, frameHeight - 1)
+        val right = ((xMax + padX) * frameWidth).roundToInt().coerceIn(left + 1, frameWidth)
+        val bottom = ((yMax + padY) * frameHeight).roundToInt().coerceIn(top + 1, frameHeight)
+        return Rect(left, top, right, bottom)
     }
 
-    private fun averageAnkleY(pose: Pose, bitmapHeight: Int): Float? {
+    /** 크롭 영역 안 랜드마크 픽셀 y 를 [regionTop] 만큼 되돌려 전체 프레임 기준 정규화 y 로 바꾼다. */
+    private fun landmarkY(pose: Pose, type: Int, regionTop: Int, frameHeight: Int): Float? {
+        val landmark = pose.getPoseLandmark(type) ?: return null
+        if (landmark.inFrameLikelihood < MIN_LIKELIHOOD) return null
+        val fullFramePixelY = regionTop + landmark.position.y
+        return (fullFramePixelY / frameHeight).coerceIn(0f, 1f)
+    }
+
+    private fun averageAnkleY(pose: Pose, regionTop: Int, frameHeight: Int): Float? {
         val ys = listOfNotNull(
-            landmarkY(pose, PoseLandmark.LEFT_ANKLE, bitmapHeight),
-            landmarkY(pose, PoseLandmark.RIGHT_ANKLE, bitmapHeight),
+            landmarkY(pose, PoseLandmark.LEFT_ANKLE, regionTop, frameHeight),
+            landmarkY(pose, PoseLandmark.RIGHT_ANKLE, regionTop, frameHeight),
         )
         if (ys.isEmpty()) return null
         return ys.sum() / ys.size
@@ -121,6 +149,9 @@ class PersonFramingPoseTracker(
         const val FRESH_MS = 1_200L
 
         /** 이보다 신뢰도가 낮은 랜드마크는 화면 밖 추정치로 보고 버린다. */
-        const val MIN_LIKELIHOOD = 0.5f
+        const val MIN_LIKELIHOOD = 0.3f
+
+        /** 사람 bbox 사방에 더하는 여백 비율 — 머리 끝·발끝이 bbox 밖으로 살짝 나가는 것 대비. */
+        const val PADDING_RATIO = 0.25f
     }
 }
