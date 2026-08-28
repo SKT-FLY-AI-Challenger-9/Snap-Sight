@@ -3,6 +3,7 @@ package com.example.snap_sight.ux
 import com.example.snap_sight.cv.DeviationResult
 import com.example.snap_sight.cv.CanonicalReadinessEvaluator
 import com.example.snap_sight.cv.CompositionProfile
+import com.example.snap_sight.cv.FrameEdge
 import com.example.snap_sight.cv.ReadinessBlocker
 import com.example.snap_sight.cv.ReadinessVerdict
 import kotlin.math.abs
@@ -131,8 +132,8 @@ internal class GuidancePolicy(
 
     // ---- LOST 중 "마지막으로 보였던 방향" 추적 (사용자 요청 2026-08-27) ----
     // 화면 안에 보이는 동안은 카메라 반화각(~33도) 안에서만 방향이 나오지만(11시~1시 근처),
-    // 완전히 놓치면(LOST) 마지막으로 본 방향 + 그 이후 자이로로 잰 회전량을 반영해 3시·9시까지도
-    // 안내한다 — "정면=12시, 화면 밖으로 나가야 3·9시가 나온다"는 확인된 설계.
+    // 완전히 놓치면(LOST) 마지막으로 본 방향 + 그 이후 자이로로 잰 회전량을 반영해 2시·10시까지도
+    // 안내한다 — 말하는 시각은 항상 10~2시(10·11·1·2)로만 묶는다(사용자 요청 2026-08-28).
     private var lastKnownRightRad: Float? = null
     private var lastKnownOrientationRad: Pair<Float, Float>? = null
     private var lastSearchDirectionAtMs: Long = Long.MIN_VALUE / 2
@@ -367,10 +368,40 @@ internal class GuidancePolicy(
         }
         readySpokenThisEpisode = false
         val direction = pickDirection(state, result, zoomHandlesDistance)
+            ?: visibilityFallbackDirection(readiness, result, personSession)
         if (direction == null) {
-            return heartbeat(readiness, zoomHandlesDistance, personSession, nowMs)
+            return heartbeat(readiness, zoomHandlesDistance, nowMs)
         }
         return speakDirectionIfDue(refineVerticalWithPitch(direction, phonePitchDeg), nowMs)
+    }
+
+    /**
+     * 위치는 중앙인데(pickDirection == null) bbox 가장자리가 잘려 있으면(VISIBILITY) 어느
+     * 변이 가장 심하게 잘렸는지로 기존 시계·기울기 문구 중 하나를 고른다 — "피사체 전체가
+     * 화면 안에 들어오게" 같은 별도 문구 대신 항상 쓰던 어휘를 재사용한다(사용자 요청
+     * 2026-08-28). 인물 세션은 [PersonFramingController]가 줌·진동·자동촬영으로 대신
+     * 처리하므로 제외한다(사용자 요청 2026-08-28 — "너무 가깝다는 멘트가 뜨던데 줌할 때").
+     */
+    private fun visibilityFallbackDirection(
+        readiness: ReadinessVerdict,
+        result: DeviationResult,
+        personSession: Boolean,
+    ): GuidanceDirection? {
+        if (personSession || ReadinessBlocker.VISIBILITY !in readiness.blockers) return null
+        val visibility = result.frameVisibility ?: return null
+        val margins = listOf(
+            FrameEdge.LEFT to visibility.leftMargin,
+            FrameEdge.TOP to visibility.topMargin,
+            FrameEdge.RIGHT to visibility.rightMargin,
+            FrameEdge.BOTTOM to visibility.bottomMargin,
+        )
+        return when (margins.minByOrNull { it.second }?.first) {
+            FrameEdge.LEFT -> GuidanceDirection.Clock(11)
+            FrameEdge.RIGHT -> GuidanceDirection.Clock(1)
+            FrameEdge.TOP -> GuidanceDirection.TILT_TOP_TOWARD
+            FrameEdge.BOTTOM -> GuidanceDirection.TILT_TOP_AWAY
+            null -> null
+        }
     }
 
     /** 방향 단어 공통 게이팅 — 같은 방향은 [DIRECTION_REPEAT_MS], 바뀐 방향도 [DIRECTION_MIN_GAP_MS] 간격. */
@@ -396,7 +427,6 @@ internal class GuidancePolicy(
     private fun heartbeat(
         readiness: ReadinessVerdict,
         zoomHandlesDistance: Boolean,
-        personSession: Boolean,
         nowMs: Long,
     ): List<GuidanceAction> {
         val stateSince = heartbeatStateSinceMs ?: nowMs.also { heartbeatStateSinceMs = it }
@@ -405,12 +435,13 @@ internal class GuidancePolicy(
         if (nowMs - stateSince < HEARTBEAT_AFTER_MS) return emptyList()
         if (nowMs - lastSpokenAtMs < HEARTBEAT_AFTER_MS) return emptyList()
         val text = when {
-            // 인물 세션에서 머리·발이 잘릴 만큼 가까우면 "뒤로 가라"를 촬영자 본인이 아니라
-            // 피사체(상대방)에게 전달하라고 한다 — 시각장애 사용자 본인의 뒤로 이동은 위험하지만
-            // (GuidanceDirection FARTHER 미채택 사유와 동일), 상대방에게 말로 전달하는 건
-            // 안전하다(사용자 요청 2026-08-27).
-            ReadinessBlocker.VISIBILITY in readiness.blockers && personSession -> PERSON_TOO_CLOSE_HEARTBEAT
-            ReadinessBlocker.VISIBILITY in readiness.blockers -> VISIBILITY_HEARTBEAT
+            // 인물 세션의 VISIBILITY(너무 가까움)는 이제 여기서 아무 말도 하지 않는다 —
+            // MainActivity의 [PersonFramingController]가 줌·진동·3초 확정 촬영으로 전부
+            // 대신하므로 "대상이 너무 가까워요" 안내가 그 진행 중에 겹쳐 나오면 오히려
+            // 혼란스럽다(사용자 요청 2026-08-28 — "너무 가깝다는 멘트가 뜨던데 줌할 때").
+            // 인물이 아닌 세션의 VISIBILITY 도 이제 여기까지 오지 않는다 — judge()의
+            // visibilityFallbackDirection 이 먼저 시계·기울기 문구로 처리한다(사용자 요청
+            // 2026-08-28: "피사체 전체가 화면 안에 들어오게" 문구를 없애자).
             ReadinessBlocker.SIZE in readiness.blockers && zoomHandlesDistance -> AUTO_ZOOM_HEARTBEAT
             ReadinessBlocker.UNSTABLE in readiness.blockers -> HOLD_STEADY_HEARTBEAT
             else -> return emptyList()
@@ -438,7 +469,7 @@ internal class GuidancePolicy(
         if (!searchFailSpoken && nowMs - since >= SEARCH_FAIL_AFTER_MS) {
             searchFailSpoken = true
             lastSpokenAtMs = nowMs
-            return listOf(GuidanceAction.Speak(subjectNotFoundUtterance()))
+            return listOf(GuidanceAction.Speak(SUBJECT_NOT_FOUND_UTTERANCE))
         }
         return emptyList()
     }
@@ -447,8 +478,6 @@ internal class GuidancePolicy(
     private fun subjectFoundUtterance() = "$subjectWord${josa("을", "를")} 찾았어요."
     private fun subjectSearchingUtterance() =
         "$subjectWord${josa("이", "가")} 아직 안 보여요. 좌우로 천천히 움직여 주세요."
-    private fun subjectNotFoundUtterance() =
-        "$subjectWord${josa("을", "를")} 못 찾았어요. 더 찾을까요, 다른 대상을 고를까요?"
     private fun subjectLostUtterance() =
         "$subjectWord${josa("이", "가")} 화면에서 사라졌어요."
 
@@ -479,7 +508,8 @@ internal class GuidancePolicy(
             actions.add(GuidanceAction.Speak(text))
         } else {
             // "사라졌어요"를 말하는 틱이 아니면, 마지막으로 보였던 방향 + 그 이후 회전량으로
-            // 계속 검색 방향을 알려준다 — 여기서만 3시·9시까지 갈 수 있다(사용자 요청 2026-08-27).
+            // 계속 검색 방향을 알려준다 — 여기서만 2시·10시까지 갈 수 있다(사용자 요청 2026-08-27,
+            // 2026-08-28에 3·9시도 음성에서 뺐다).
             searchDirectionHour(nowMs, cameraOrientationRad)?.let { hour ->
                 lastSpokenAtMs = nowMs
                 actions.add(GuidanceAction.Speak(GuidanceDirection.Clock(hour).utterance))
@@ -506,13 +536,14 @@ internal class GuidancePolicy(
         val nowRight = lastRight - turnedRightSinceRad
         if (nowRight == 0f) return null
         val hour = wrapHour((Math.toDegrees(nowRight.toDouble()) / 30.0).roundToInt())
-        // 6시/12시는 음성 목록에서 뺐다 — 많이 지나쳐서 4~8시나 12시가 나올 상황이면
-        // 처음 놓쳤던 쪽(3시 또는 9시)의 가장 먼 경계에 고정한다(사용자 요청 2026-08-27).
+        // 말하는 시각은 10~2시(10·11·1·2, 12시는 기울기 문구 몫)로만 한다(사용자 요청
+        // 2026-08-28: "10시부터 2시까지 빼고는 아예 음성도 삭제해버려"). 그 밖(3~9시)으로
+        // 많이 지나쳤으면 처음 놓쳤던 쪽(2시 또는 10시)의 가장 먼 경계에 고정한다.
         return clampToSpokenHour(hour, cameFromRight = lastRight > 0f)
     }
 
     private fun clampToSpokenHour(hour: Int, cameFromRight: Boolean): Int = when (hour) {
-        in 4..8 -> if (cameFromRight) 3 else 9
+        in 3..9 -> if (cameFromRight) 2 else 10
         12 -> if (cameFromRight) 1 else 11
         else -> hour
     }
@@ -548,6 +579,14 @@ internal class GuidancePolicy(
         const val LOST_UTTERANCE = "피사체가 화면에서 사라졌어요."
         const val REFIND_UTTERANCE = "다시 찾았어요."
         const val DEFAULT_SUBJECT = "피사체"
+
+        /**
+         * 탐색 실패([SEARCH_FAIL_AFTER_MS] 이상 한 번도 못 찾음) 안내 (사용자 요청 2026-08-28 —
+         * "그냥 '피사체가 화면에서 없습니다' 라고 하지 말고"). 대상 이름을 넣지 않는 고정 문구라
+         * 대상별 SpeechCatalog 변형이 필요 없다 — 손을 어느 쪽으로 돌려야 할지까지 안내한다.
+         */
+        const val SUBJECT_NOT_FOUND_UTTERANCE =
+            "말씀하신 대상을 찾지 못했어요. 핸드폰을 아홉 시부터 세 시 방향으로 돌려 주세요."
 
         /** 탐색(첫 검출 전) — "아직 안 보여요" / "못 찾았어요" 안내 시점 (스크립트 3-2/3-3). */
         const val SEARCH_HINT_AFTER_MS = 4_000L
@@ -586,9 +625,6 @@ internal class GuidancePolicy(
 
         /** 어떤 음성도 없는 상태가 이만큼 이어지면 하트비트 상태 안내를 1회 말한다 (반복도 이 간격). */
         const val HEARTBEAT_AFTER_MS = 4_000L
-        const val VISIBILITY_HEARTBEAT = "피사체 전체가 화면 안에 들어오게 비춰주세요"
-        /** 인물 세션에서 머리·발이 잘릴 만큼 가까울 때 — 촬영자가 아니라 피사체에게 전달하라는 문구. */
-        const val PERSON_TOO_CLOSE_HEARTBEAT = "대상이 너무 가까워요. 상대방에게 뒤로 가 달라고 말씀해주세요"
         const val AUTO_ZOOM_HEARTBEAT = "구도를 자동으로 맞추는 중이에요"
         const val HOLD_STEADY_HEARTBEAT = "좋아요, 그대로 유지해주세요"
 
@@ -621,8 +657,8 @@ internal class GuidancePolicy(
          * 절대 섞지 않는다("8시·5시·7시 이런 게 나오면 안 돼", 사용자 요청 2026-08-27). 12시
          * =정면(카메라가 지금 향한 곳). 좌우는 프레임 가장자리에 얼마나 가까운지로 3단계 구역:
          * 안 걸림(11/1시), 가장자리에 거의 걸림(10/2시) — 화면 안에서 나올 수 있는 가장 먼
-         * 시각이다. 완전히 벗어나면(LOST) 9시·3시부터 시작해 자이로로 계속 갱신하는 건
-         * [searchDirectionHour]가 담당한다.
+         * 시각이다. 완전히 벗어나면(LOST) 그 이후로도 10/11/1/2시 안에서만 자이로로 계속
+         * 갱신하는 건 [searchDirectionHour]가 담당한다(2026-08-28: 3·9시도 음성에서 뺐다).
          */
         fun pickDirection(
             state: GuidanceState,

@@ -141,8 +141,8 @@ class AutoZoomController(private val cameraController: CameraController) {
         const val MAX_STEP = 1.5f
         /** 목표 − 이 값보다 작을 때만 줌인한다 — READY 의 size 허용 오차와 같은 값. */
         const val TRIGGER_MARGIN = 0.10f
-        /** 인물 프레이밍([requestZoomStep]) 한 스텝의 확대 비율 — 10%씩(사용자 요청 2026-08-28). */
-        const val PERSON_FRAMING_ZOOM_STEP = 1.10f
+        /** 인물 프레이밍([requestZoomStep]) 한 스텝의 확대 비율 — 15%씩(사용자 요청 2026-08-28). */
+        const val PERSON_FRAMING_ZOOM_STEP = 1.15f
         /** 줌인 전 구도 정렬이 유지돼야 하는 연속 실제 관측 프레임 수. */
         const val ALIGN_FRAMES = 5
         /** 광각에서 1.0배 복귀까지 허용하는 연속 타겟 미탐지 프레임 수 (약 2초 @ 3fps). */
@@ -155,7 +155,8 @@ class AutoZoomController(private val cameraController: CameraController) {
         const val SESSION_START_ZOOM = 1.0f
         /** 피사체를 찾은 뒤 돌아오는 기본 배율. 촬영은 항상 이 값 이상에서 한다. */
         const val BASE_ZOOM = 1.0f
-        const val COOLDOWN_MS = 2_000L
+        /** 줌 스텝 사이 최소 간격 — 인물 프레이밍 튜닝으로 2초→1초→0.5초 단축(사용자 요청 2026-08-28). */
+        const val COOLDOWN_MS = 500L
         private const val ZOOM_EPS = 0.05f
 
         internal fun effectiveMaxZoom(deviceMax: Float): Float = minOf(MAX_ZOOM, deviceMax)

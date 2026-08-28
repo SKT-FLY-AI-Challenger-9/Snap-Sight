@@ -48,17 +48,30 @@ class SpeechToTextRecognizer(private val context: Context) {
 
     val isAvailable: Boolean get() = SpeechRecognizer.isRecognitionAvailable(context)
 
+    /**
+     * 실제로 듣기 전에 미리 [SpeechRecognizer]를 만들어둔다 — 매번 [start] 때 새로 만들면
+     * 시스템 인식 서비스에 바인딩하는 시간이 그대로 "마이크 누르고 켜지기까지" 지연으로
+     * 느껴진다(사용자 요청 2026-08-28 — "마이크 누르고 0.5초 안에 켜졌으면 해"). 메인 스레드
+     * (Looper 있는 스레드)에서 호출. 이미 만들어져 있거나 기기가 인식을 지원하지 않으면 무해.
+     */
+    fun prewarm() {
+        if (recognizer != null || !isAvailable) return
+        runCatching {
+            recognizer = SpeechRecognizer.createSpeechRecognizer(context)
+        }.onFailure { Log.w(TAG, "STT 사전 준비 실패 — 다음 시작 때 새로 만든다", it) }
+    }
+
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun start(listener: Listener) {
-        release()
-
         if (!isAvailable) {
             listener.onError("이 기기는 음성 인식을 지원하지 않습니다.")
             return
         }
 
-        val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
-        this.recognizer = recognizer
+        // 매 세션 destroy 후 재생성하면 서비스 재바인딩 비용을 그대로 다시 낸다 — 하나를
+        // 계속 재사용해 두 번째 시작부터는 그 비용이 없다(위 prewarm() 참고).
+        val recognizer = recognizer
+            ?: SpeechRecognizer.createSpeechRecognizer(context).also { this.recognizer = it }
         recognizer.setRecognitionListener(RecognitionListenerAdapter(listener))
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -74,13 +87,13 @@ class SpeechToTextRecognizer(private val context: Context) {
         recognizer?.stopListening()
     }
 
-    /** 세션 취소. 콜백 없이 즉시 정리한다. */
+    /** 세션 취소. 콜백 없이 즉시 정리한다 — 인식기 자체는 재사용을 위해 살려둔다. */
     fun cancel() {
         recognizer?.cancel()
-        release()
     }
 
-    private fun release() {
+    /** 완전히 끝낼 때만 호출(액티비티 종료 등) — 이후 [start]는 새 인식기를 만든다. */
+    fun release() {
         recognizer?.destroy()
         recognizer = null
     }
@@ -99,13 +112,13 @@ class SpeechToTextRecognizer(private val context: Context) {
             } else {
                 listener.onRecognized(text)
             }
-            release()
+            // release() 하지 않는다 — 인식기를 재사용해 다음 start()가 재생성 비용 없이 빠르게 켜진다.
         }
 
         override fun onError(error: Int) {
             Log.w(TAG, "인식 오류: $error")
             listener.onError(errorMessage(error))
-            release()
+            // release() 하지 않는다 — 위 onResults와 같은 이유.
         }
 
         override fun onReadyForSpeech(params: Bundle?) {
