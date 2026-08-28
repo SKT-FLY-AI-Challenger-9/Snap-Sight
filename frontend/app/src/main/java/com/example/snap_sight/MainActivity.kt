@@ -251,6 +251,14 @@ class MainActivity : ComponentActivity() {
     @Volatile
     private var foodPitchSession = false
 
+    /**
+     * 상반신 줌 세션 (2026-08-27 테스트 기능) — 발화에 "상반신"이 들어가면("준서 상반신
+     * 찍고 싶어") 조준 중 대상 bbox 높이에 맞춰 자동 확대해 머리~허리 구도를 만든다.
+     * 그 외 세션은 기존 배율 정책(1.0배 고정) 그대로다.
+     */
+    @Volatile
+    private var upperBodyZoomSession = false
+
     /** 인물(subjectType=person 또는 등록 이름) 세션 — 자동촬영 승자 컷에 3분할 크롭 적용. */
     @Volatile
     private var portraitCropEligible = false
@@ -2693,6 +2701,7 @@ class MainActivity : ComponentActivity() {
         deviationCalculator.reset()
         autoCapture.reset()
         foodPitchSession = false
+        upperBodyZoomSession = false
         portraitCropEligible = false
         currentIdentities = emptyMap()
         synchronized(cvSnapshotLock) {
@@ -2774,6 +2783,9 @@ class MainActivity : ComponentActivity() {
         foodPitchSession = effectiveSpec?.subjectType == TargetSpec.SubjectType.OBJECT &&
             (effectiveSpec.objectLabel in FOOD_LABELS ||
                 FOOD_KEYWORDS.any { (localRawText ?: serverRawText).contains(it) })
+        // 상반신 줌 (2026-08-27 테스트): 발화에 "상반신"이 있을 때만 무장한다 — 실제 배율
+        // 조정은 조준 중 대상 실관측 bbox 가 확정한다 (음식 피치와 같은 무장-확정 구조).
+        upperBodyZoomSession = (localRawText ?: serverRawText).contains(UPPER_BODY_KEYWORD)
         // 인물 세션이면 자동촬영 승자 컷에 3분할 크롭을 건다 (등록 사물 이름은 얼굴이 없어
         // 크롭이 스스로 건너뛰므로 identityName 포함이 안전하다)
         portraitCropEligible = effectiveSpec?.subjectType == TargetSpec.SubjectType.PERSON ||
@@ -3013,7 +3025,23 @@ class MainActivity : ComponentActivity() {
                     )
                 } == true
                 val dev = output.deviation
-                if (dev != null && readiness != null) {
+                // 상반신 줌 (2026-08-27 테스트): 발화에 "상반신"이 있는 세션은 대상 track 의
+                // 실관측 bbox 높이로 배율을 맞춘다. 예측(coasting) bbox 는 크기가 부정확해 제외.
+                val upperBodyBox = if (upperBodyZoomSession) {
+                    output.objects.firstOrNull { it.trackId == dev?.trackId && !it.predicted }?.bbox
+                } else {
+                    null
+                }
+                if (upperBodyBox != null) {
+                    autoZoom.onUpperBodyTarget(
+                        bboxHeight = upperBodyBox.height,
+                        // 프레임 상·하단에 닿았거나 높이가 포화됐으면 이미 잘린 관측 —
+                        // 전신 높이 추정에 쓰지 않는다 (과확대 폭주 방지)
+                        clamped = upperBodyBox.height > 0.9f ||
+                            upperBodyBox.yMin < 0.02f || upperBodyBox.yMax > 0.98f,
+                        hold = ready,
+                    )
+                } else if (dev != null && readiness != null) {
                     autoZoom.onTargetArea(
                         areaRatio = dev.areaRatio,
                         targetArea = readiness.goal.targetAreaRatio,
@@ -3587,6 +3615,9 @@ class MainActivity : ComponentActivity() {
 
         /** 음식 세션의 목표 폰 각도 — 45° 비스듬 샷 (탑다운 90°는 조준 난도가 높아 후속). */
         private const val FOOD_TARGET_PITCH_DEG = 45f
+
+        /** 상반신 줌 세션을 무장하는 발화 키워드 (2026-08-27 테스트 기능). */
+        private const val UPPER_BODY_KEYWORD = "상반신"
         const val CV_TAG = "SnapSightCV"
         const val PREFS_NAME = "snap_sight_prefs"
         const val KEY_ONBOARDING_DONE = "onboarding_done"
