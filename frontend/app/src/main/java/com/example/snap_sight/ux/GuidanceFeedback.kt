@@ -395,6 +395,11 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         runCatching { generator.startTone(SCAN_END_TONE, SCAN_TONE_MS) }
     }
 
+    /** 인물 프레이밍 확정 진동 — [PersonFramingController.Outcome.vibrate] 전용 공개 창구. */
+    fun vibrateConfirm() {
+        vibrateShort()
+    }
+
     private fun playTransitionTone(rising: Boolean) {
         vibrateShort()
         val generator = toneGenerator ?: rebuildToneGenerator() ?: return

@@ -24,15 +24,7 @@ class AutoZoomController(private val cameraController: CameraController) {
     @Volatile
     private var noTargetStreak = 0
 
-    /**
-     * 이번 세션만 면적 기반 자동 줌인을 켠다 — [ZOOM_IN_ENABLED]는 여전히 전역 기본값(꺼짐)이고,
-     * 인물 세션에서만 MainActivity가 이 값을 true로 켠다(사용자 요청 2026-08-27 — "인물이면
-     * 무게중심 가이드 후 줌인해서 찍어줘"). 세션 시작마다 [reset]에서 false로 되돌아간다.
-     */
-    @Volatile
-    var sessionZoomInEnabled: Boolean = false
-
-    private val zoomInActive: Boolean get() = ZOOM_IN_ENABLED || sessionZoomInEnabled
+    private val zoomInActive: Boolean get() = ZOOM_IN_ENABLED
 
     /**
      * CV 분석 스레드에서 매 프레임 호출된다.
@@ -58,61 +50,33 @@ class AutoZoomController(private val cameraController: CameraController) {
         if (!zoomInActive || hold) return
         val now = System.currentTimeMillis()
         if (now - lastZoomAtMs < COOLDOWN_MS) return
-        // 인물이 화면의 60%를 넘게 채우면(너무 가까움) 줌아웃부터 — 줌인과 같은 게이트
-        // (정렬 유지·쿨다운·인물 세션 한정)를 그대로 쓴다(사용자 요청 2026-08-27).
-        if (needsZoomOut(areaRatio)) {
-            val next = nextZoomOut(current, areaRatio, ZOOM_OUT_TRIGGER_AREA, cameraController.minZoomRatio)
-                ?: return
-            lastZoomAtMs = now
-            cameraController.setZoomRatio(next)
-            return
-        }
         val next = nextZoom(current, areaRatio, targetArea, cameraController.maxZoomRatio) ?: return
         lastZoomAtMs = now
         cameraController.setZoomRatio(next)
     }
 
-    // ---- 상반신 줌 (2026-08-27 테스트 기능) ----
-    // 발화에 "상반신"이 들어간 세션("준서 상반신 찍고 싶어")에서만 MainActivity 가 이 경로를
-    // 호출한다. 면적 기반 자동 줌([ZOOM_IN_ENABLED], 현재 off)과 별개의 스위치로 동작한다.
+    // ---- 인물 프레이밍 줌 스텝 (2026-08-28) ----
+    // [PersonFramingController] 가 목표 미도달을 판단하면 이 메서드로 10%씩 배율을 올린다 —
+    // 위의 면적 기반 줌([onTargetArea])과 달리 정렬 스트릭 없이 매 호출마다 쿨다운만 본다.
 
     /**
-     * 기본 배율(1.0x) 기준으로 역산한 대상의 전신 높이(프레임 대비 비율) 추정치.
-     * 프레임에 잘리지 않은 관측만으로 갱신한다 — 확대 후 bbox 가 프레임에 닿아 높이가
-     * 포화(≈1.0)되면 그 관측으로는 "얼마나 더 당길지"를 알 수 없기 때문.
-     */
-    @Volatile
-    private var upperBodyFullHeightAtBase: Float? = null
-
-    /**
-     * 상반신 세션의 매 실관측마다 호출한다. 대상 전신 높이가 프레임의
-     * [UPPER_BODY_HEIGHT_TARGET]배가 되도록 배율을 맞춘다(하체가 프레임 아래로 잘려
-     * 머리~허리 상반신 구도가 된다). 양방향 — 대상이 다가와 과확대가 되면 되돌린다.
+     * 인물 프레이밍용 배율 스텝 — 쿨다운([COOLDOWN_MS]) 안이거나 이미 상한이면 아무 일도
+     * 하지 않고 null. 실제로 배율을 바꿨을 때만 새 배율을 반환한다(호출부가 이 값으로
+     * 톤·진동 여부를 판단한다).
      *
-     * @param bboxHeight 이번 관측의 bbox 높이 (프레임 대비 0..1)
-     * @param clamped bbox 가 프레임 상·하단에 닿아 이미 잘린 관측인가 — true 면 전신 높이
-     *        추정을 갱신하지 않는다 (마지막 신뢰 추정을 계속 쓴다)
-     * @param hold true 면 배율을 건드리지 않는다 (READY 유지 중 — 셔터 직전 화면 흔들림 방지)
+     * @param factor 한 스텝에 곱할 배율 (기본 10% 확대).
      */
-    fun onUpperBodyTarget(bboxHeight: Float, clamped: Boolean, hold: Boolean) {
-        noTargetStreak = 0
-        val current = cameraController.zoomRatio
-        if (!clamped && bboxHeight > 0f) {
-            upperBodyFullHeightAtBase = bboxHeight / current
-        }
-        if (hold) return
-        val fullAtBase = upperBodyFullHeightAtBase ?: return
+    fun requestZoomStep(factor: Float = PERSON_FRAMING_ZOOM_STEP): Float? {
         val now = System.currentTimeMillis()
-        if (now - lastZoomAtMs < COOLDOWN_MS) return
-        val next = nextUpperBodyZoom(
-            current, fullAtBase, effectiveMaxZoom(cameraController.maxZoomRatio),
-        ) ?: return
+        if (now - lastZoomAtMs < COOLDOWN_MS) return null
+        val current = cameraController.zoomRatio
+        val ceiling = effectiveMaxZoom(cameraController.maxZoomRatio)
+        if (current >= ceiling - ZOOM_EPS) return null
+        val next = (current * factor).coerceAtMost(ceiling)
+        if (abs(next - current) < ZOOM_EPS) return null
         lastZoomAtMs = now
         cameraController.setZoomRatio(next)
-        Log.i(
-            "SnapSightZoom",
-            "상반신 줌 — 전신높이(1.0x) %.2f, 배율 %.2f → %.2f".format(fullAtBase, current, next),
-        )
+        return next
     }
 
     /**
@@ -156,8 +120,6 @@ class AutoZoomController(private val cameraController: CameraController) {
         lastZoomAtMs = 0L
         alignedStreak = 0
         noTargetStreak = 0
-        sessionZoomInEnabled = false
-        upperBodyFullHeightAtBase = null
         cameraController.setZoomRatio(SESSION_START_ZOOM)
         Log.i(
             "SnapSightZoom",
@@ -179,8 +141,8 @@ class AutoZoomController(private val cameraController: CameraController) {
         const val MAX_STEP = 1.5f
         /** 목표 − 이 값보다 작을 때만 줌인한다 — READY 의 size 허용 오차와 같은 값. */
         const val TRIGGER_MARGIN = 0.10f
-        /** 인물이 화면 면적의 이 비율을 넘게 채우면(너무 가까움) 줌아웃한다 (사용자 요청 2026-08-27). */
-        const val ZOOM_OUT_TRIGGER_AREA = 0.60f
+        /** 인물 프레이밍([requestZoomStep]) 한 스텝의 확대 비율 — 10%씩(사용자 요청 2026-08-28). */
+        const val PERSON_FRAMING_ZOOM_STEP = 1.10f
         /** 줌인 전 구도 정렬이 유지돼야 하는 연속 실제 관측 프레임 수. */
         const val ALIGN_FRAMES = 5
         /** 광각에서 1.0배 복귀까지 허용하는 연속 타겟 미탐지 프레임 수 (약 2초 @ 3fps). */
@@ -205,59 +167,9 @@ class AutoZoomController(private val cameraController: CameraController) {
         ): Boolean = currentZoom < BASE_ZOOM - ZOOM_EPS ||
             (zoomInEnabled && currentZoom < effectiveMaxZoom(deviceMax) - ZOOM_EPS)
 
-        /**
-         * 상반신 줌 목표 — 전신 bbox 높이가 프레임의 이 배수가 되도록 확대하면 화면에는
-         * 위쪽 ~55%(머리~허리)만 남는다 (2026-08-27 테스트 기능, 실기기 감으로 튜닝).
-         */
-        const val UPPER_BODY_HEIGHT_TARGET = 1.8f
-
-        /** 목표 배율과 이만큼 이내 차이면 유지 — 미세 진동으로 배율이 계속 움찔거리지 않게. */
-        const val UPPER_BODY_DEADBAND = 0.15f
-
-        /**
-         * 상반신 줌의 다음 배율. 목표 = [UPPER_BODY_HEIGHT_TARGET] / 전신높이(1.0x 기준),
-         * [BASE_ZOOM]..[effectiveMaxZoom] 로 클램프. 양방향이며 한 번에 [MAX_STEP] 비율까지만
-         * 움직인다. 데드밴드 안이거나 변화가 무의미하면 null.
-         */
-        internal fun nextUpperBodyZoom(
-            currentZoom: Float,
-            fullHeightAtBase: Float,
-            ceiling: Float,
-        ): Float? {
-            if (fullHeightAtBase <= 0f) return null
-            val desired = (UPPER_BODY_HEIGHT_TARGET / fullHeightAtBase)
-                .coerceIn(BASE_ZOOM, ceiling)
-            if (abs(desired - currentZoom) < UPPER_BODY_DEADBAND) return null
-            val stepped = desired.coerceIn(currentZoom / MAX_STEP, currentZoom * MAX_STEP)
-            return if (abs(stepped - currentZoom) < ZOOM_EPS) null else stepped
-        }
-
-        /** 이 면적이면 줌인 대상인지 (너무 큰 경우는 [needsZoomOut] 이 따로 다룬다). */
+        /** 이 면적이면 줌인 대상인지. */
         internal fun needsZoomIn(areaRatio: Float, targetArea: Float): Boolean =
             areaRatio > 0f && targetArea > 0f && areaRatio < targetArea - TRIGGER_MARGIN
-
-        /** 인물이 화면을 [triggerArea] 넘게 채우는지 — 너무 가까움, 줌아웃 대상. */
-        internal fun needsZoomOut(areaRatio: Float, triggerArea: Float = ZOOM_OUT_TRIGGER_AREA): Boolean =
-            areaRatio > triggerArea
-
-        /**
-         * 다음 줌아웃 배율. 필요 없거나(면적이 기준 이하) 더 줄일 여유가 없으면(기기 최소 배율
-         * 도달) null. [nextZoom] 과 대칭 — 면적은 줌의 제곱에 비례하므로 목표 배율 = 현재 ×
-         * √(기준면적/현재면적); 한 번에 [MAX_STEP] 배 이상 줄이지 않고, 기기 최소 배율 아래로는
-         * 안 내려간다(초광각 없는 기기는 사실상 1.0배에서 멈춤).
-         */
-        internal fun nextZoomOut(
-            currentZoom: Float,
-            areaRatio: Float,
-            triggerArea: Float,
-            deviceMin: Float,
-        ): Float? {
-            if (!needsZoomOut(areaRatio, triggerArea)) return null
-            if (currentZoom <= deviceMin + ZOOM_EPS) return null
-            val desired = currentZoom * sqrt(triggerArea / areaRatio)
-            val next = maxOf(desired, currentZoom / MAX_STEP, deviceMin)
-            return if (abs(next - currentZoom) < ZOOM_EPS) null else next
-        }
 
         /**
          * 다음 줌 배율. 줌인이 필요 없거나 더 당길 여유가 없으면 null.

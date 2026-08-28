@@ -63,6 +63,7 @@ import com.example.snap_sight.face.FileFaceDebugSink
 import com.example.snap_sight.face.ObjectIdentifier
 import com.example.snap_sight.face.LocalObjectAppearanceEmbedder
 import com.example.snap_sight.face.ObjectRegistry
+import com.example.snap_sight.face.PersonFramingPoseTracker
 import com.example.snap_sight.face.RegistryReloadGate
 import com.example.snap_sight.face.SelfieGazeMonitor
 import com.example.snap_sight.face.TfLiteFaceEmbedder
@@ -117,6 +118,7 @@ import com.example.snap_sight.ux.HomeScreen
 import com.example.snap_sight.ux.ResultScreen
 import com.example.snap_sight.ux.OnboardingPermissionState
 import com.example.snap_sight.ux.OnboardingScreen
+import com.example.snap_sight.ux.PersonFramingController
 import com.example.snap_sight.ux.SettingsRepository
 import com.example.snap_sight.ux.SettingsScreen
 import com.example.snap_sight.ux.SettingsUiState
@@ -235,6 +237,12 @@ class MainActivity : ComponentActivity() {
     // 셀카 모드 시선 판정 — 전면 카메라일 때만 켜진다 (CaptureScreen onLensChanged 로 토글)
     private val selfieGaze = SelfieGazeMonitor()
 
+    /** 인물 프레이밍(2026-08-28)의 머리·발 좌표 공급원 — 인물 세션일 때만 켜진다. */
+    private val personFramingPose = PersonFramingPoseTracker()
+
+    /** 인물 프레이밍 상태 기계 — case 1/2 분기·줌 스텝·3초 확정 촬영 ([PersonFramingController] 참고). */
+    private val personFraming = PersonFramingController()
+
     /**
      * 자동촬영 중재자 (2026-08-24) — 등록 이름·objectLabel 로 대상이 명확한 세션에서
      * 대상 검출이 이어지면 셔터를 세션당 1회 요청한다. 타겟 세대마다
@@ -252,12 +260,12 @@ class MainActivity : ComponentActivity() {
     private var foodPitchSession = false
 
     /**
-     * 상반신 줌 세션 (2026-08-27 테스트 기능) — 발화에 "상반신"이 들어가면("준서 상반신
-     * 찍고 싶어") 조준 중 대상 bbox 높이에 맞춰 자동 확대해 머리~허리 구도를 만든다.
-     * 그 외 세션은 기존 배율 정책(1.0배 고정) 그대로다.
+     * 인물 프레이밍 세션 (2026-08-28) — subjectType 이 PERSON 일 때만 true. 등록 사물처럼
+     * [portraitCropEligible] 은 true지만 사람이 아닌 세션은 제외한다(사람이 아니면 머리·발
+     * 좌표를 못 찾아 줌이 끝없이 계속되는 것을 막기 위함).
      */
     @Volatile
-    private var upperBodyZoomSession = false
+    private var personFramingSession = false
 
     /** 인물(subjectType=person 또는 등록 이름) 세션 — 자동촬영 승자 컷에 3분할 크롭 적용. */
     @Volatile
@@ -267,6 +275,7 @@ class MainActivity : ComponentActivity() {
     private val faceAnalyzers = object : FaceFrameAnalyzer {
         override fun analyze(frame: CvFrame, frameResult: FrameResult): Map<Int, String> {
             selfieGaze.onFrame(frame)
+            personFramingPose.onFrame(frame, frameResult)
             // person track 은 얼굴, 나머지 track 은 사물 — 대상이 겹치지 않아 합쳐도 안전하다
             val people = faceIdentifier.analyze(frame, frameResult)
             val objects = objectIdentifier.analyze(frame, frameResult)
@@ -275,6 +284,7 @@ class MainActivity : ComponentActivity() {
 
         override fun reset() {
             selfieGaze.reset()
+            personFramingPose.reset()
             faceIdentifier.reset()
             objectIdentifier.reset()
         }
@@ -794,11 +804,13 @@ class MainActivity : ComponentActivity() {
                             priority = GuidanceFeedback.SpeechPriority.CAPTURE,
                         )
                         autoZoom.reset() // 촬영이 끝나면 세션 시작 배율로 (현재 1.0배 고정)
+                        personFraming.reset()
                     }
                     SessionState.ERROR -> {
                         // 노션 확정 스크립트 문장 (5-6 촬영 실패)
                         guidanceFeedback.announce("저장하지 못했어요. 다시 촬영할까요?")
                         autoZoom.reset()
+                        personFraming.reset()
                     }
                     else -> Unit
                 }
@@ -2701,8 +2713,10 @@ class MainActivity : ComponentActivity() {
         deviationCalculator.reset()
         autoCapture.reset()
         foodPitchSession = false
-        upperBodyZoomSession = false
         portraitCropEligible = false
+        personFramingSession = false
+        personFramingPose.reset()
+        personFraming.reset()
         currentIdentities = emptyMap()
         synchronized(cvSnapshotLock) {
             latestObservedObjects = emptyList()
@@ -2783,17 +2797,14 @@ class MainActivity : ComponentActivity() {
         foodPitchSession = effectiveSpec?.subjectType == TargetSpec.SubjectType.OBJECT &&
             (effectiveSpec.objectLabel in FOOD_LABELS ||
                 FOOD_KEYWORDS.any { (localRawText ?: serverRawText).contains(it) })
-        // 상반신 줌 (2026-08-27 테스트): 발화에 "상반신"이 있을 때만 무장한다 — 실제 배율
-        // 조정은 조준 중 대상 실관측 bbox 가 확정한다 (음식 피치와 같은 무장-확정 구조).
-        upperBodyZoomSession = (localRawText ?: serverRawText).contains(UPPER_BODY_KEYWORD)
         // 인물 세션이면 자동촬영 승자 컷에 3분할 크롭을 건다 (등록 사물 이름은 얼굴이 없어
         // 크롭이 스스로 건너뛰므로 identityName 포함이 안전하다)
         portraitCropEligible = effectiveSpec?.subjectType == TargetSpec.SubjectType.PERSON ||
             identityName != null
-        // 인물 세션에서만 자동 줌인을 켠다 — 전역으로는 여전히 꺼져 있다(면적만으로는 깊이
-        // 판단이 부정확해 2026-08-19에 끔). 인물은 화면 중앙에 오게 가이드 후 줌인해서
-        // 찍어달라는 요청(2026-08-27)이라 이 세션에서만 예외적으로 켠다.
-        autoZoom.sessionZoomInEnabled = portraitCropEligible
+        // 인물 프레이밍(2026-08-28)은 실제 사람일 때만 — portraitCropEligible 과 달리 등록
+        // 사물은 제외한다(머리·발 랜드마크가 안 잡혀 줌이 끝없이 계속되는 것을 막기 위함).
+        personFramingSession = effectiveSpec?.subjectType == TargetSpec.SubjectType.PERSON
+        personFramingPose.enabled = personFramingSession
         guidanceFeedback.setSessionSubject(identityName ?: subjectKorean)
         synchronized(targetIntentLock) {
             if (!cvProcessor.isCurrentTargetIntentGeneration(appliedGeneration)) return
@@ -2972,7 +2983,9 @@ class MainActivity : ComponentActivity() {
         // 셔터를 요청한다. 예고 발화 없이 기존 셔터 효과음만 낸다.
         // 풍경(LANDSCAPE)·일반 촬영(GENERAL_WAITING)은 eligible=false 라 수동 촬영 그대로다.
         if (sessionManager.state == SessionState.AIMING) {
-            val autoEligible = guidanceMode == AimingGuidanceMode.COMPOSITION &&
+            // 인물 프레이밍 세션은 이 판정 대신 아래 [personFraming](3초 확정)이 셔터를 요청한다.
+            val autoEligible = !personFramingSession &&
+                guidanceMode == AimingGuidanceMode.COMPOSITION &&
                 (output.targetIdentityName != null || output.targetSpec?.objectLabel != null)
             val fire = autoCapture.onJudgment(
                 eligible = autoEligible,
@@ -3025,22 +3038,35 @@ class MainActivity : ComponentActivity() {
                     )
                 } == true
                 val dev = output.deviation
-                // 상반신 줌 (2026-08-27 테스트): 발화에 "상반신"이 있는 세션은 대상 track 의
-                // 실관측 bbox 높이로 배율을 맞춘다. 예측(coasting) bbox 는 크기가 부정확해 제외.
-                val upperBodyBox = if (upperBodyZoomSession) {
-                    output.objects.firstOrNull { it.trackId == dev?.trackId && !it.predicted }?.bbox
+                // 인물 프레이밍 (2026-08-28): bbox 가 화면을 벗어났는지(VISIBILITY 블로커)로
+                // case 1/2 를 나누고, ML Kit Pose 머리·발 좌표로 줌/진동/3초 확정 촬영을 맡긴다.
+                // 좌우는 기존 3x5 시계 안내가 그대로 처리한다.
+                val personFramingOutcome = if (personFramingSession && dev != null && readiness != null) {
+                    val bboxFitsFrame = ReadinessBlocker.VISIBILITY !in readiness.blockers
+                    val poseFresh = personFramingPose.isFresh(output.timestampMs)
+                    personFraming.onJudgment(
+                        bboxFitsFrame = bboxFitsFrame,
+                        headY = if (poseFresh) personFramingPose.headY else null,
+                        footY = if (poseFresh) personFramingPose.footY else null,
+                        nowMs = output.timestampMs,
+                    )
                 } else {
                     null
                 }
-                if (upperBodyBox != null) {
-                    autoZoom.onUpperBodyTarget(
-                        bboxHeight = upperBodyBox.height,
-                        // 프레임 상·하단에 닿았거나 높이가 포화됐으면 이미 잘린 관측 —
-                        // 전신 높이 추정에 쓰지 않는다 (과확대 폭주 방지)
-                        clamped = upperBodyBox.height > 0.9f ||
-                            upperBodyBox.yMin < 0.02f || upperBodyBox.yMax > 0.98f,
-                        hold = ready,
-                    )
+                if (personFramingOutcome != null) {
+                    if (personFramingOutcome.action == PersonFramingController.Action.RequestZoomStep) {
+                        if (autoZoom.requestZoomStep() != null) guidanceFeedback.playScanTick()
+                    }
+                    if (personFramingOutcome.vibrate) guidanceFeedback.vibrateConfirm()
+                    if (personFramingOutcome.action == PersonFramingController.Action.Capture) {
+                        val expectedSessionId = sessionManager.sessionId
+                        val generation = output.targetIntentGeneration
+                        runOnUiThread {
+                            if (cvProcessor.isCurrentTargetIntentGeneration(generation)) {
+                                sessionManager.autoShutter(expectedSessionId)
+                            }
+                        }
+                    }
                 } else if (dev != null && readiness != null) {
                     autoZoom.onTargetArea(
                         areaRatio = dev.areaRatio,
@@ -3615,9 +3641,6 @@ class MainActivity : ComponentActivity() {
 
         /** 음식 세션의 목표 폰 각도 — 45° 비스듬 샷 (탑다운 90°는 조준 난도가 높아 후속). */
         private const val FOOD_TARGET_PITCH_DEG = 45f
-
-        /** 상반신 줌 세션을 무장하는 발화 키워드 (2026-08-27 테스트 기능). */
-        private const val UPPER_BODY_KEYWORD = "상반신"
         const val CV_TAG = "SnapSightCV"
         const val PREFS_NAME = "snap_sight_prefs"
         const val KEY_ONBOARDING_DONE = "onboarding_done"
