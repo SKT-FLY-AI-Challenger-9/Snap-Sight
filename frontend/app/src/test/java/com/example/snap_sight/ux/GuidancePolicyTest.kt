@@ -45,7 +45,7 @@ class GuidancePolicyTest {
     @Test
     fun `off-center speaks one direction word with a vibration`() {
         val policy = GuidancePolicy()
-        val actions = policy.feed(result(x = -0.30f, size = 0f), now = 0)
+        val actions = policy.feed(result(x = -0.25f, size = 0f), now = 0)
         assertEquals(listOf(GuidanceAction.Speak(GuidanceDirection.Clock(11).utterance), GuidanceAction.Vibrate), actions)
     }
 
@@ -113,14 +113,21 @@ class GuidancePolicyTest {
     }
 
     @Test
-    fun `horizontal zone escalates from mild to severe based on centroid position`() {
-        // 사용자 요청 2026-08-27 — 왼쪽(키패드 4번)·오른쪽(6번) 칸도 무게중심이 중심 쪽 절반
-        // 까지 왔으면 완만한 11시·1시, 아직 바깥쪽 절반이면 더 급한 10시·2시.
-        val farFromEdge = result(x = 0.30f, size = 0f) // centerX=0.80, 안쪽 절반[1/3,5/6)
-        assertEquals(listOf(GuidanceDirection.Clock(1).utterance), speech(GuidancePolicy().feed(farFromEdge, now = 0)))
+    fun `horizontal zone follows a five-column split of the frame`() {
+        // 사용자 요청 2026-08-28 — 화면을 3x3 대신 3x5로 더 나눈다. 왼쪽부터 1열=10시,
+        // 2열=11시, (3열=정중앙), 4열=1시, 5열=2시 — 경계는 [GuidancePolicy.ZONE_OUTER_HALF_LEFT]
+        // ·[ZONE_OUTER_HALF_RIGHT](각 1/5, 4/5)가 4열|5열, 1열|2열을 가른다.
+        val col4 = result(x = 0.25f, size = 0f) // centerX=0.75, 4열
+        assertEquals(listOf(GuidanceDirection.Clock(1).utterance), speech(GuidancePolicy().feed(col4, now = 0)))
 
-        val nearEdge = result(x = 0.35f, size = 0f) // centerX=0.85, 바깥쪽 절반
-        assertEquals(listOf(GuidanceDirection.Clock(2).utterance), speech(GuidancePolicy().feed(nearEdge, now = 0)))
+        val col5 = result(x = 0.45f, size = 0f) // centerX=0.95, 5열(맨 끝)
+        assertEquals(listOf(GuidanceDirection.Clock(2).utterance), speech(GuidancePolicy().feed(col5, now = 0)))
+
+        val col2 = result(x = -0.25f, size = 0f) // centerX=0.25, 2열
+        assertEquals(listOf(GuidanceDirection.Clock(11).utterance), speech(GuidancePolicy().feed(col2, now = 0)))
+
+        val col1 = result(x = -0.45f, size = 0f) // centerX=0.05, 1열(맨 끝)
+        assertEquals(listOf(GuidanceDirection.Clock(10).utterance), speech(GuidancePolicy().feed(col1, now = 0)))
     }
 
     @Test
@@ -210,7 +217,7 @@ class GuidancePolicyTest {
         // 줌 한계 → 그때 GuidanceDirection.CLOSER.utterance
         assertEquals(listOf(GuidanceDirection.CLOSER.utterance), speech(policy.onJudgment(GuidanceStateMapper.from(r), r, 6_000, zoomHandlesDistance = false)))
         // 다른 축이 벗어나 있으면 그 축은 여전히 말한다
-        val r2 = result(x = -0.30f, size = -0.30f)
+        val r2 = result(x = -0.25f, size = -0.30f)
         assertEquals(listOf(GuidanceDirection.Clock(11).utterance), speech(GuidancePolicy().onJudgment(GuidanceStateMapper.from(r2), r2, 0, zoomHandlesDistance = true)))
         // 너무 큰 것(FARTHER)은 "뒤로"를 말하지 않고, READY 도 막지 않는다 (2026-08-23) — 안정화 대기만
         val r3 = result(x = 0f, size = 0.30f)
