@@ -72,6 +72,49 @@ class AutoZoomController(private val cameraController: CameraController) {
         cameraController.setZoomRatio(next)
     }
 
+    // ---- 상반신 줌 (2026-08-27 테스트 기능) ----
+    // 발화에 "상반신"이 들어간 세션("준서 상반신 찍고 싶어")에서만 MainActivity 가 이 경로를
+    // 호출한다. 면적 기반 자동 줌([ZOOM_IN_ENABLED], 현재 off)과 별개의 스위치로 동작한다.
+
+    /**
+     * 기본 배율(1.0x) 기준으로 역산한 대상의 전신 높이(프레임 대비 비율) 추정치.
+     * 프레임에 잘리지 않은 관측만으로 갱신한다 — 확대 후 bbox 가 프레임에 닿아 높이가
+     * 포화(≈1.0)되면 그 관측으로는 "얼마나 더 당길지"를 알 수 없기 때문.
+     */
+    @Volatile
+    private var upperBodyFullHeightAtBase: Float? = null
+
+    /**
+     * 상반신 세션의 매 실관측마다 호출한다. 대상 전신 높이가 프레임의
+     * [UPPER_BODY_HEIGHT_TARGET]배가 되도록 배율을 맞춘다(하체가 프레임 아래로 잘려
+     * 머리~허리 상반신 구도가 된다). 양방향 — 대상이 다가와 과확대가 되면 되돌린다.
+     *
+     * @param bboxHeight 이번 관측의 bbox 높이 (프레임 대비 0..1)
+     * @param clamped bbox 가 프레임 상·하단에 닿아 이미 잘린 관측인가 — true 면 전신 높이
+     *        추정을 갱신하지 않는다 (마지막 신뢰 추정을 계속 쓴다)
+     * @param hold true 면 배율을 건드리지 않는다 (READY 유지 중 — 셔터 직전 화면 흔들림 방지)
+     */
+    fun onUpperBodyTarget(bboxHeight: Float, clamped: Boolean, hold: Boolean) {
+        noTargetStreak = 0
+        val current = cameraController.zoomRatio
+        if (!clamped && bboxHeight > 0f) {
+            upperBodyFullHeightAtBase = bboxHeight / current
+        }
+        if (hold) return
+        val fullAtBase = upperBodyFullHeightAtBase ?: return
+        val now = System.currentTimeMillis()
+        if (now - lastZoomAtMs < COOLDOWN_MS) return
+        val next = nextUpperBodyZoom(
+            current, fullAtBase, effectiveMaxZoom(cameraController.maxZoomRatio),
+        ) ?: return
+        lastZoomAtMs = now
+        cameraController.setZoomRatio(next)
+        Log.i(
+            "SnapSightZoom",
+            "상반신 줌 — 전신높이(1.0x) %.2f, 배율 %.2f → %.2f".format(fullAtBase, current, next),
+        )
+    }
+
     /**
      * AIMING 중 타겟을 못 잡은 프레임마다 호출 — 광각(1.0 미만)에서 [NO_TARGET_FRAMES] 연속 실패하면
      * 기본 배율 1.0 으로 복귀한다. 광각은 인식률이 낮아 "못 봐서 광각을 못 벗어나는" 악순환을 끊는 폴백.
@@ -114,6 +157,7 @@ class AutoZoomController(private val cameraController: CameraController) {
         alignedStreak = 0
         noTargetStreak = 0
         sessionZoomInEnabled = false
+        upperBodyFullHeightAtBase = null
         cameraController.setZoomRatio(SESSION_START_ZOOM)
         Log.i(
             "SnapSightZoom",
@@ -160,6 +204,33 @@ class AutoZoomController(private val cameraController: CameraController) {
             zoomInEnabled: Boolean = ZOOM_IN_ENABLED,
         ): Boolean = currentZoom < BASE_ZOOM - ZOOM_EPS ||
             (zoomInEnabled && currentZoom < effectiveMaxZoom(deviceMax) - ZOOM_EPS)
+
+        /**
+         * 상반신 줌 목표 — 전신 bbox 높이가 프레임의 이 배수가 되도록 확대하면 화면에는
+         * 위쪽 ~55%(머리~허리)만 남는다 (2026-08-27 테스트 기능, 실기기 감으로 튜닝).
+         */
+        const val UPPER_BODY_HEIGHT_TARGET = 1.8f
+
+        /** 목표 배율과 이만큼 이내 차이면 유지 — 미세 진동으로 배율이 계속 움찔거리지 않게. */
+        const val UPPER_BODY_DEADBAND = 0.15f
+
+        /**
+         * 상반신 줌의 다음 배율. 목표 = [UPPER_BODY_HEIGHT_TARGET] / 전신높이(1.0x 기준),
+         * [BASE_ZOOM]..[effectiveMaxZoom] 로 클램프. 양방향이며 한 번에 [MAX_STEP] 비율까지만
+         * 움직인다. 데드밴드 안이거나 변화가 무의미하면 null.
+         */
+        internal fun nextUpperBodyZoom(
+            currentZoom: Float,
+            fullHeightAtBase: Float,
+            ceiling: Float,
+        ): Float? {
+            if (fullHeightAtBase <= 0f) return null
+            val desired = (UPPER_BODY_HEIGHT_TARGET / fullHeightAtBase)
+                .coerceIn(BASE_ZOOM, ceiling)
+            if (abs(desired - currentZoom) < UPPER_BODY_DEADBAND) return null
+            val stepped = desired.coerceIn(currentZoom / MAX_STEP, currentZoom * MAX_STEP)
+            return if (abs(stepped - currentZoom) < ZOOM_EPS) null else stepped
+        }
 
         /** 이 면적이면 줌인 대상인지 (너무 큰 경우는 [needsZoomOut] 이 따로 다룬다). */
         internal fun needsZoomIn(areaRatio: Float, targetArea: Float): Boolean =
