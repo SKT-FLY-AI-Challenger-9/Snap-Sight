@@ -720,9 +720,13 @@ class MainActivity : ComponentActivity() {
         // 등록 이름이 든 문장은 서버로 보내지 않는다(프라이버시 계약) — 그 문장만 내장 TTS.
         guidanceFeedback.dynamicSpeechFetcher = { text, voice -> speechSynthClient.fetch(text, voice) }
         guidanceFeedback.dynamicSpeechGate = { text ->
-            // 서류 결과(OCR 본문·요약·답변)는 서버 합성으로도 내보내지 않는다 — 내장 TTS 로만 (2026-08-30)
+            // 서류 결과(OCR 본문·요약·답변)는 서버 합성으로도 내보내지 않는다 — 내장 TTS 로만
+            // (2026-08-30). 단, 서류 "결과 화면이 떠 있는 동안"으로 한정한다 — 화면을 떠나
+            // 갤러리·홈으로 가도 다음 촬영 전까지 모든 동적 문장이 기본 TTS 로 새던 문제
+            // (실기기 로그 2026-08-31: 갤러리 목록 낭독이 기본 목소리로 나옴).
             val documentResult = documentCaptureSessionId != null &&
-                documentCaptureSessionId == lastCapturedSessionId
+                documentCaptureSessionId == lastCapturedSessionId &&
+                isCurrentVisibleResult(documentCaptureSessionId ?: "")
             !documentResult && (registeredPeople + registeredObjects).none { name ->
                 name.isNotBlank() && text.contains(name)
             }
