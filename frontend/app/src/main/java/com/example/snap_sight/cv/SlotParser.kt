@@ -28,6 +28,16 @@ object SlotParser {
     internal val COMPOSITION_KEYWORDS =
         listOf("구도", "멋지게", "멋있게", "예쁘게", "이쁘게", "감성", "분위기", "상반신")
 
+    // 인물 요청 (2026-08-31): "사람 찍고 싶다"가 신호 0개로 needs_clarification 에 떨어져 일반
+    // 촬영 모드가 되던 문제 — subjectType 기본값이 PERSON 이라 "사람"이라는 명시가 신호로 세지지
+    // 않았다. 인물 단어를 주체 신호로 센다 (subjectType 은 그대로 PERSON). 사물 키워드가 먼저
+    // 매칭되므로 "아이스크림"의 "아이" 같은 포함 관계는 사물이 이긴다. 2글자 미만 금지 규칙 공유.
+    // `ai/slot_parser.py` 의 PERSON_KEYWORDS 와 항목·순서가 같아야 한다.
+    internal val PERSON_KEYWORDS = listOf(
+        "사람", "인물", "친구", "가족", "아기", "아이", "엄마", "아빠",
+        "할머니", "할아버지", "언니", "오빠", "누나", "동생",
+    )
+
     private val COUNT_WORDS = linkedMapOf(
         "혼자" to 1, "한 명" to 1, "한명" to 1,
         "두 명" to 2, "두명" to 2, "둘" to 2,
@@ -417,7 +427,8 @@ object SlotParser {
             }
         }
 
-        val subjectMatched = subjectType != TargetSpec.SubjectType.PERSON || objectLabel != null
+        val subjectMatched = subjectType != TargetSpec.SubjectType.PERSON || objectLabel != null ||
+            PERSON_KEYWORDS.any { it in text }
         val countMatched = subjectCount != null
         val framingMatched = framing != TargetSpec.Framing.FULL_BODY
         val compositionMatched = COMPOSITION_KEYWORDS.any { it in text }
