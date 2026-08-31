@@ -17,7 +17,9 @@ import kotlin.math.abs
  *  2. 잘림 — 글자 영역이 마주보는 두 변에 닿으면 줌아웃(줌이 1.0 이면 "멀리"), 한 변이면 그
  *     방향으로 폰을 옮기기
  *  3. 크기 — 영역이 [ZOOM_TARGET_FILL] 미만이면 **줌인**으로 채운다(사용자 요청 2026-08-30 —
- *     "정면으로 맞추고 확대만 해줘도"). 줌이 상한이고도 [MIN_FILL] 미만일 때만 "가까이".
+ *     "정면으로 맞추고 확대만 해줘도"). 단 한 스텝(×[ZOOM_STEP]) 뒤에도 서류 외곽이 프레임
+ *     안에 남을 때만([zoomStepKeepsDocumentInside], 2026-08-31 — 과확대로 엣지가 잘리던 문제).
+ *     줌이 상한이거나 가드에 막히고도 [MIN_FILL] 미만일 때만 "가까이".
  *  4. 위치 — 중심이 [POSITION_TOLERANCE] 넘게 벗어나면 옮기기
  *  5. 회전 — 글자 줄 각도의 스냅 편차가 [ROTATION_TOLERANCE_DEG] 를 넘으면 돌리기 (풍경 문구 공용)
  *  6. 반사 — 서류 영역 포화 픽셀이 [GLARE_MAX] 를 넘으면 자리 옮기기
@@ -180,7 +182,9 @@ internal class DocumentGuide {
         }
 
         // 크기: 줌으로 채우는 게 기본. 통과 상태에서는 목표까지 다시 줌하지 않는다(히스테리시스).
-        if (!relaxed && o.area < ZOOM_TARGET_FILL && zoomInAvailable) {
+        // 스텝 후에도 서류 외곽이 프레임 안에 남을 때만 — 글자 면적 기준만 보고 줌하면 종이
+        // 엣지가 프레임 밖으로 밀려 잘린 채 찍혔다 (실기기 2026-08-31).
+        if (!relaxed && o.area < ZOOM_TARGET_FILL && zoomInAvailable && zoomStepKeepsDocumentInside(o)) {
             return Problem(STATUS_ZOOMING_IN, zoom = Zoom.IN)
         }
         if (o.area < MIN_FILL / factor) return Problem(STATUS_TOO_FAR, CLOSER_UTTERANCE)
@@ -226,6 +230,30 @@ internal class DocumentGuide {
         return null
     }
 
+    /**
+     * 한 줌 스텝(×[ZOOM_STEP]) 뒤에도 서류 외곽이 프레임 안에 남는가 — 줌은 프레임 중심 기준
+     * 배율이라 중심에서 거리 d 인 점이 d×스텝으로 밀려난다. 모서리 4점이 있으면 그 극값으로,
+     * 없으면 글자 상자로 판정하되 종이 여백(글자 밖 여백)을 모르므로 안전 여백을 더 크게 잡는다.
+     */
+    internal fun zoomStepKeepsDocumentInside(o: DocumentObservation): Boolean {
+        val corners = o.corners
+        val extent: Float
+        val safety: Float
+        if (corners != null) {
+            extent = listOf(corners.tl, corners.tr, corners.br, corners.bl).maxOf {
+                maxOf(abs(it.x - 0.5f), abs(it.y - 0.5f))
+            }
+            safety = ZOOM_EDGE_SAFETY
+        } else {
+            extent = maxOf(
+                abs(o.left - 0.5f), abs(o.right - 0.5f),
+                abs(o.top - 0.5f), abs(o.bottom - 0.5f),
+            )
+            safety = ZOOM_EDGE_SAFETY_TEXT_ONLY
+        }
+        return extent * ZOOM_STEP <= 0.5f - safety
+    }
+
     private fun searching(nowMs: Long): Outcome {
         val since = searchingSinceMs ?: nowMs.also { searchingSinceMs = it }
         val utterance = if (nowMs - since >= SEARCH_HINT_AFTER_MS) {
@@ -261,8 +289,21 @@ internal class DocumentGuide {
         const val EDGE_MARGIN_HOLD = 0.015f
         /** 한 변만 엣지 미검출일 때, 그쪽 여백이 이 안이면 "프레임 밖"으로 보고 옮기라고 한다. */
         const val MISSING_EDGE_MARGIN = 0.08f
-        /** 글자 영역이 프레임의 이 비율 미만이면 줌인으로 채운다 (여유가 있을 때). */
-        const val ZOOM_TARGET_FILL = 0.45f
+        /**
+         * 글자 영역이 프레임의 이 비율 미만이면 줌인으로 채운다 (여유가 있을 때).
+         * 2026-08-31 0.45→0.40 — 과확대로 종이 엣지가 잘리던 실기기 피드백.
+         */
+        const val ZOOM_TARGET_FILL = 0.40f
+        /**
+         * 서류 줌 한 스텝의 확대 비율 (2026-08-31) — 인물 프레이밍(1.15)보다 완만하게. 인식
+         * 지연(~350ms 주기) 동안 스텝이 겹쳐 목표를 지나치던 과확대를 줄인다. MainActivity 가
+         * [com.example.snap_sight.camera.AutoZoomController.requestZoomStep] 에 이 값을 넘긴다.
+         */
+        const val ZOOM_STEP = 1.08f
+        /** 줌인 예측 가드: 스텝 후 서류 모서리가 프레임 가장자리에서 이만큼은 남아야 한다. */
+        const val ZOOM_EDGE_SAFETY = 0.06f
+        /** 모서리 4점이 없어 글자 상자로 판정할 때의 안전 여백 — 종이 여백을 몰라 더 크게. */
+        const val ZOOM_EDGE_SAFETY_TEXT_ONLY = 0.12f
         /** 줌을 다 써도 이 비율 미만이면 "가까이" — 글자가 읽힐 해상도 하한. */
         const val MIN_FILL = 0.30f
         /** 중심이 이 이상 벗어나면 옮기라고 한다 (프레임 단위). */
@@ -271,9 +312,11 @@ internal class DocumentGuide {
          * 기울임(원근) 허용 수렴비 하한 (2026-08-31, 외곽 v2) — 짧은 변/긴 변이 이 미만이면
          * 카메라가 그 축으로 젖혀진 것. 글자 높이 방식(2026-08-30, 제목·본문 크기 차이에 오판)
          * 을 대체한다. 촬영 후 사다리꼴 보정([com.example.snap_sight.document.DocumentDewarper])이
-         * 흡수 가능한 범위보다 안쪽으로 잡는다.
+         * 흡수 가능한 범위(0.70)보다 안쪽으로 잡는다.
+         * 0.92→0.85 (2026-08-31 완화, 실기기 피드백 "정면 판정이 빡세다") — 어차피 저장 시
+         * 원근 보정이 펴 주므로, 안내는 심하게 젖혀진 경우만 잡으면 된다.
          */
-        const val KEYSTONE_MIN_RATIO = 0.92f
+        const val KEYSTONE_MIN_RATIO = 0.85f
         /** 통과 상태에서의 수렴비 추가 여유 (히스테리시스). */
         const val KEYSTONE_HYSTERESIS = 0.04f
         /** 글자 줄 회전 허용치(도, 스냅 편차). */

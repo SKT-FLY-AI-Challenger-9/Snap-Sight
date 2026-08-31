@@ -73,7 +73,8 @@ def test_person_count_and_closeup_framing_parsed():
     assert spec.object_label is None
     assert spec.subject_count == 2
     assert spec.framing is Framing.CLOSEUP
-    assert spec.confidence == 0.8
+    # "친구"가 인물 주체 신호로도 세어져 주체+인원수+프레이밍 3개 매칭 (2026-08-31)
+    assert spec.confidence == 1.0
 
 
 def test_common_words_containing_removed_short_keywords_do_not_false_match():
@@ -168,6 +169,17 @@ def test_no_signal_matched_sets_needs_clarification():
 
     assert spec.confidence == 0.4
     assert spec.status is TargetSpecStatus.NEEDS_CLARIFICATION
+
+
+def test_explicit_person_word_alone_is_a_subject_signal():
+    """'사람 찍고 싶다'가 신호 0개로 needs_clarification(→일반 촬영 모드)에 떨어지던 회귀 방지
+    (2026-08-31) — 인물 단어 명시는 주체 신호로 세고 subject_type은 PERSON 유지."""
+    for text in ["사람 찍고 싶다", "인물 찍어줘", "친구 찍어줘"]:
+        spec = parse_target_spec(text, session_id="sess_person")
+
+        assert spec.subject_type is SubjectType.PERSON
+        assert spec.confidence == 0.6
+        assert spec.status is TargetSpecStatus.OK
 
 
 def test_at_least_one_signal_matched_sets_status_ok():

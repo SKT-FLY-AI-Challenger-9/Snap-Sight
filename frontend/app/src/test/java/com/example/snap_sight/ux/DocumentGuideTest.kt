@@ -125,9 +125,38 @@ class DocumentGuideTest {
         assertEquals(DocumentGuide.Zoom.IN, outcome.zoom)
         assertNull(outcome.utterance)
         assertEquals(DocumentGuide.STATUS_ZOOMING_IN, outcome.statusText)
-        // 목표(45%) 미만이면 최소(30%)를 넘어도 계속 확대한다
+        // 목표(40%) 미만이면 최소(30%)를 넘어도 계속 확대한다
         val mid = obs(left = 0.2f, top = 0.2f, right = 0.8f, bottom = 0.8f) // 36%
         assertEquals(DocumentGuide.Zoom.IN, DocumentGuide().onJudgment(mid, true, 0, zoomInAvailable = true).zoom)
+    }
+
+    @Test
+    fun `zoom in is blocked when a step would push the document edge out`() {
+        // 글자 상자가 가로로 이미 넓다 — 면적(18%)은 목표 미만이지만 한 스텝 뒤 좌우가 안전
+        // 여백을 뚫는다. 줌 대신 "가까이"로 푼다 (과확대 엣지 잘림 방지, 2026-08-31).
+        val wideThin = obs(left = 0.05f, right = 0.95f, top = 0.4f, bottom = 0.6f)
+        val outcome = DocumentGuide().onJudgment(wideThin, true, 0, zoomInAvailable = true)
+        assertNull(outcome.zoom)
+        assertEquals(DocumentGuide.CLOSER_UTTERANCE, outcome.utterance)
+    }
+
+    @Test
+    fun `zoom guard uses corners when available and text box otherwise`() {
+        val guide = DocumentGuide()
+        // 모서리 4점 기준: 중앙 0.5×0.6 사각형 — 극값 0.3, 스텝 후 0.324 ≤ 0.44 → 허용
+        val fits = obs(
+            left = 0.3f, right = 0.7f, top = 0.3f, bottom = 0.7f,
+            corners = trapezoid(topWidth = 0.5f, bottomWidth = 0.5f),
+        )
+        assertTrue(guide.zoomStepKeepsDocumentInside(fits))
+        // 모서리가 이미 가장자리 근처 (극값 0.42, 스텝 후 0.4536 > 0.44) → 차단
+        val nearEdge = obs(
+            left = 0.15f, right = 0.85f, top = 0.35f, bottom = 0.65f,
+            corners = trapezoid(topWidth = 0.84f, bottomWidth = 0.84f, leftHeight = 0.72f, rightHeight = 0.72f),
+        )
+        assertFalse(guide.zoomStepKeepsDocumentInside(nearEdge))
+        // 모서리가 없으면 글자 상자 + 더 큰 안전 여백 — 극값 0.38, 스텝 후 0.41 > 0.38 → 차단
+        assertFalse(guide.zoomStepKeepsDocumentInside(obs(left = 0.12f, right = 0.88f, top = 0.3f, bottom = 0.7f)))
     }
 
     @Test
@@ -163,7 +192,7 @@ class DocumentGuideTest {
 
     @Test
     fun `converging widths ask to tilt the top or bottom of the phone`() {
-        // 윗변이 짧다(0.5/0.6 ≈ 0.83 < 0.92) = 위가 멀다 → 윗부분을 서류 쪽으로
+        // 윗변이 짧다(0.5/0.6 ≈ 0.83 < 0.85) = 위가 멀다 → 윗부분을 서류 쪽으로
         val topFar = DocumentGuide().onJudgment(obs(corners = trapezoid(0.5f, 0.6f)), true, 0)
         assertEquals(DocumentGuide.TILT_TOP_TOWARD_UTTERANCE, topFar.utterance)
         assertEquals(DocumentGuide.STATUS_TILTED, topFar.statusText)
@@ -186,7 +215,7 @@ class DocumentGuideTest {
 
     @Test
     fun `a nearly rectangular quad passes and missing corners skip the tilt check`() {
-        // 수렴비 0.97 — 허용(0.92) 안 → READY
+        // 수렴비 0.97 — 허용(0.85) 안 → READY
         val square = DocumentGuide().onJudgment(obs(corners = trapezoid(0.58f, 0.6f)), true, 0)
         assertEquals(DocumentGuide.READY_UTTERANCE, square.utterance)
         // 모서리가 없으면 기울임 판정 자체를 건너뛴다 (fail-open)
