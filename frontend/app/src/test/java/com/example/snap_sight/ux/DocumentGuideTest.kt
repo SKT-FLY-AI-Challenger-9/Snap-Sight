@@ -22,11 +22,31 @@ class DocumentGuideTest {
         gradient: Float = 0f,
         glare: Float = 0f,
         at: Long = 0L,
+        corners: DocumentQuad? = null,
+        edgeLeft: Boolean = false,
+        edgeTop: Boolean = false,
+        edgeRight: Boolean = false,
+        edgeBottom: Boolean = false,
     ) = DocumentObservation(
         left = left, top = top, right = right, bottom = bottom,
         lineCount = lines, angleDegrees = angle, heightGradient = gradient,
-        glareFraction = glare, atMs = at,
+        glareFraction = glare, atMs = at, corners = corners,
+        edgeLeft = edgeLeft, edgeTop = edgeTop, edgeRight = edgeRight, edgeBottom = edgeBottom,
     )
+
+    /** 위/아래 변 폭을 지정한 사다리꼴 (중앙 정렬, 높이 0.6·세로 0.2~0.8). */
+    private fun trapezoid(topWidth: Float, bottomWidth: Float, leftHeight: Float = 0.6f, rightHeight: Float = 0.6f): DocumentQuad {
+        val topHalf = topWidth / 2f
+        val bottomHalf = bottomWidth / 2f
+        val topLeftY = 0.5f - leftHeight / 2f
+        val topRightY = 0.5f - rightHeight / 2f
+        return DocumentQuad(
+            tl = DocPoint(0.5f - topHalf, topLeftY),
+            tr = DocPoint(0.5f + topHalf, topRightY),
+            br = DocPoint(0.5f + bottomHalf, topRightY + rightHeight),
+            bl = DocPoint(0.5f - bottomHalf, topLeftY + leftHeight),
+        )
+    }
 
     private val small = obs(left = 0.35f, top = 0.35f, right = 0.65f, bottom = 0.65f) // 면적 9%
 
@@ -67,6 +87,39 @@ class DocumentGuideTest {
     }
 
     @Test
+    fun `clipping margin is wider on entry and narrower while holding`() {
+        // 진입: 여백 2.5%(< 3%)면 잘림으로 본다 (2026-08-31 — 빠듯한 여백이 원근 보정을 놓치게 했다)
+        val entering = DocumentGuide().onJudgment(obs(left = 0.025f), true, 0)
+        assertEquals(DocumentGuide.SHIFT_LEFT_UTTERANCE, entering.utterance)
+        // 통과 상태에서는 1.5%까지 버틴다 (히스테리시스)
+        val guide = DocumentGuide()
+        guide.onJudgment(obs(at = 0), true, 0) // READY
+        val kept = guide.onJudgment(obs(left = 0.02f, at = 500), true, 500)
+        assertNull(kept.utterance)
+        assertEquals(DocumentGuide.STATUS_HOLD, kept.statusText)
+    }
+
+    @Test
+    fun `a single missing edge with a tight margin asks to shift toward it`() {
+        // 실기기 2026-08-31: 윗변만 미검출 + 위 여백 빠듯 → 프레임 밖으로 나간 것 — 위로 옮기라고 한다
+        val outcome = DocumentGuide().onJudgment(
+            obs(top = 0.05f, edgeLeft = true, edgeRight = true, edgeBottom = true), true, 0,
+        )
+        assertEquals(DocumentGuide.SHIFT_UP_UTTERANCE, outcome.utterance)
+        assertEquals(DocumentGuide.STATUS_CLIPPED, outcome.statusText)
+        // 여백이 넉넉하면(8% 이상) 대비 없는 변으로 보고 통과한다 (fail-open)
+        val roomy = DocumentGuide().onJudgment(
+            obs(top = 0.12f, edgeLeft = true, edgeRight = true, edgeBottom = true), true, 0,
+        )
+        assertEquals(DocumentGuide.READY_UTTERANCE, roomy.utterance)
+        // 두 변 이하로 잡힌 경우는 이 규칙을 적용하지 않는다
+        val fewEdges = DocumentGuide().onJudgment(
+            obs(top = 0.05f, edgeLeft = true, edgeBottom = true), true, 0,
+        )
+        assertEquals(DocumentGuide.READY_UTTERANCE, fewEdges.utterance)
+    }
+
+    @Test
     fun `small text area zooms in silently while zoom is available`() {
         val outcome = DocumentGuide().onJudgment(small, true, 0, zoomInAvailable = true)
         assertEquals(DocumentGuide.Zoom.IN, outcome.zoom)
@@ -92,18 +145,53 @@ class DocumentGuideTest {
     fun `off-center area asks to shift toward the document along the worse axis`() {
         // 서류가 오른쪽·약간 아래에 있음 — 더 벗어난 좌우 축만 말한다
         val outcome = DocumentGuide().onJudgment(
-            obs(left = 0.30f, top = 0.20f, right = 0.98f, bottom = 0.90f), true, 0,
+            obs(left = 0.30f, top = 0.20f, right = 0.96f, bottom = 0.90f), true, 0,
         )
         assertEquals(DocumentGuide.SHIFT_RIGHT_UTTERANCE, outcome.utterance)
         assertEquals(DocumentGuide.STATUS_OFF_CENTER, outcome.statusText)
     }
 
     @Test
-    fun `height gradient is ignored while tilt guidance is disabled`() {
-        // 제목·본문 글자 크기 차이를 기울기로 오인하던 문제 (실기기 2026-08-30) — 정면은 사용자가 맞춘다
-        assertFalse(DocumentGuide.TILT_GUIDANCE_ENABLED)
+    fun `height gradient alone never triggers tilt guidance`() {
+        // 제목·본문 글자 크기 차이를 기울기로 오인하던 문제 (실기기 2026-08-30) — 기울임은
+        // 모서리 수렴비로만 판정한다
         val outcome = DocumentGuide().onJudgment(obs(gradient = 0.6f), true, 0)
         assertEquals(DocumentGuide.READY_UTTERANCE, outcome.utterance)
+    }
+
+    // ---- 기울임(원근) — 모서리 수렴비 (외곽 v2, 2026-08-31) ----
+
+    @Test
+    fun `converging widths ask to tilt the top or bottom of the phone`() {
+        // 윗변이 짧다(0.5/0.6 ≈ 0.83 < 0.92) = 위가 멀다 → 윗부분을 서류 쪽으로
+        val topFar = DocumentGuide().onJudgment(obs(corners = trapezoid(0.5f, 0.6f)), true, 0)
+        assertEquals(DocumentGuide.TILT_TOP_TOWARD_UTTERANCE, topFar.utterance)
+        assertEquals(DocumentGuide.STATUS_TILTED, topFar.statusText)
+        // 아랫변이 짧으면 반대
+        val bottomFar = DocumentGuide().onJudgment(obs(corners = trapezoid(0.6f, 0.5f)), true, 0)
+        assertEquals(DocumentGuide.TILT_TOP_AWAY_UTTERANCE, bottomFar.utterance)
+    }
+
+    @Test
+    fun `converging heights ask to tilt the left or right of the phone`() {
+        val leftFar = DocumentGuide().onJudgment(
+            obs(corners = trapezoid(0.6f, 0.6f, leftHeight = 0.5f, rightHeight = 0.62f)), true, 0,
+        )
+        assertEquals(DocumentGuide.TILT_LEFT_TOWARD_UTTERANCE, leftFar.utterance)
+        val rightFar = DocumentGuide().onJudgment(
+            obs(corners = trapezoid(0.6f, 0.6f, leftHeight = 0.62f, rightHeight = 0.5f)), true, 0,
+        )
+        assertEquals(DocumentGuide.TILT_RIGHT_TOWARD_UTTERANCE, rightFar.utterance)
+    }
+
+    @Test
+    fun `a nearly rectangular quad passes and missing corners skip the tilt check`() {
+        // 수렴비 0.97 — 허용(0.92) 안 → READY
+        val square = DocumentGuide().onJudgment(obs(corners = trapezoid(0.58f, 0.6f)), true, 0)
+        assertEquals(DocumentGuide.READY_UTTERANCE, square.utterance)
+        // 모서리가 없으면 기울임 판정 자체를 건너뛴다 (fail-open)
+        val noQuad = DocumentGuide().onJudgment(obs(), true, 0)
+        assertEquals(DocumentGuide.READY_UTTERANCE, noQuad.utterance)
     }
 
     @Test
