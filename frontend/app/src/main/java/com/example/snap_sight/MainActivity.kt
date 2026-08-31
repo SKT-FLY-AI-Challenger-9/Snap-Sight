@@ -45,6 +45,7 @@ import com.example.snap_sight.camera.PhotoLibrary
 import com.example.snap_sight.camera.MissingSubjectNotice
 import com.example.snap_sight.camera.HorizonStraightener
 import com.example.snap_sight.camera.PortraitAutoCrop
+import com.example.snap_sight.document.DocumentDewarper
 import com.example.snap_sight.document.DocumentReader
 import com.example.snap_sight.document.DocumentTextTracker
 import com.example.snap_sight.camera.TiltSensorMonitor
@@ -100,6 +101,7 @@ import com.example.snap_sight.network.TextQaClient
 import com.example.snap_sight.metrics.SessionLatencyTracker
 import com.example.snap_sight.network.UtteranceClient
 import com.example.snap_sight.privacy.CloudTextRedactor
+import com.example.snap_sight.privacy.DocumentTextRedactor
 import com.example.snap_sight.privacy.RegisteredIdentityMatcher
 import com.example.snap_sight.search.PhotoIndexEntry
 import com.example.snap_sight.search.PhotoIndexStore
@@ -122,6 +124,8 @@ import com.example.snap_sight.ux.ResultScreen
 import com.example.snap_sight.ux.OnboardingPermissionState
 import com.example.snap_sight.ux.OnboardingScreen
 import com.example.snap_sight.ux.DocumentGuide
+import com.example.snap_sight.ux.DocumentObservation
+import com.example.snap_sight.ux.DocumentQuad
 import com.example.snap_sight.ux.DocumentText
 import com.example.snap_sight.ux.DocumentVoiceCommand
 import com.example.snap_sight.ux.LandscapeGuide
@@ -276,10 +280,17 @@ class MainActivity : ComponentActivity() {
     /** 셔터 순간의 글자 줄 각도 — 저장 전 회전 보정([HorizonStraightener.applyTextRotation]) 입력. */
     @Volatile
     private var documentShutterAngleDeg: Float? = null
+
+    /** 셔터 순간의 서류 모서리 4점 — 저장 전 원근 보정([DocumentDewarper]) 입력 (외곽 v2). */
+    @Volatile
+    private var documentShutterQuad: DocumentQuad? = null
     /** 마지막으로 움직임 판정에 넣은 서류 관측 시각 — 같은 관측을 두 번 넣지 않게. */
     private var lastDocumentObservationFedMs = 0L
     /** 서류 모드 화면 카드 문구 — [DocumentGuide.Outcome.statusText]. */
     private var documentGuidanceText by mutableStateOf(DocumentGuide.STATUS_SEARCHING)
+
+    /** 서류 외곽 오버레이 (2026-08-31) — 신선한 관측일 때만, 아니면 null(표시 안 함). */
+    private var documentOverlayOutline by mutableStateOf<DocumentObservation?>(null)
 
     // ---- 서류 결과 1단계 (2026-08-30): 촬영본 원본 OCR → 낭독·요약·금액/날짜/단어 찾기, 전부 온디바이스 ----
     /** 서류 세션으로 찍힌 촬영의 세션 ID — 결과 화면이 이 ID 면 서류 흐름(서버 TTS·설명 없음)을 탄다. */
@@ -343,6 +354,20 @@ class MainActivity : ComponentActivity() {
 
     @Volatile
     private var captureConfirm = CaptureConfirm.NOT_ASKED
+
+    /**
+     * "이대로 찍을까요?" 거절 시각 (2026-08-31) — 거절 직후 [CaptureConfirm.RE_GUIDE] 가
+     * 이미 중앙이라는 이유로 같은 프레임에 바로 촬영해버리던 문제의 가드. 거절 후 이 시간은
+     * 지나야 중앙 도달을 촬영으로 인정한다 (그동안 시계 안내로 구도를 고칠 시간).
+     */
+    @Volatile
+    private var captureDeclinedAtMs = 0L
+
+    /** 화면 문구용 인물 프레이밍 국면 — CV 판정 스레드가 갱신, 하단 안내 카드가 읽는다. */
+    private enum class FramingPhase { NONE, ZOOMING, REACHED }
+
+    @Volatile
+    private var personFramingPhase = FramingPhase.NONE
 
     /** 인물(subjectType=person 또는 등록 이름) 세션 — 자동촬영 승자 컷에 3분할 크롭 적용. */
     @Volatile
@@ -698,10 +723,12 @@ class MainActivity : ComponentActivity() {
         // 튜닝 중 원본 그대로 확인하려고.
         cameraController.burstFinisher = { file ->
             val documentAngle = documentShutterAngleDeg
+            val documentQuad = documentShutterQuad
             val leveled = when {
-                // 서류(2026-08-30): 중력이 아니라 글자 줄 각도로 되돌린다 — 벽·거치대 어디든 서류 변 기준
-                documentSession && documentAngle != null ->
-                    HorizonStraightener.applyTextRotation(file, documentAngle)
+                // 서류: ① 모서리 4점이 있으면 사다리꼴을 직사각형으로 편다 (외곽 v2, 2026-08-31)
+                //       ② 없으면 글자 줄 각도 회전 보정 (2026-08-30) — 벽·거치대 어디든 서류 변 기준
+                documentSession -> documentQuad?.let { DocumentDewarper.apply(file, it) }
+                    ?: documentAngle?.let { HorizonStraightener.applyTextRotation(file, it) }
                 HORIZON_LEVEL_ENABLED && cameraController.isBackLens ->
                     HorizonStraightener.apply(file, sessionManager.shutterRollDegrees)
                 else -> null
@@ -895,14 +922,16 @@ class MainActivity : ComponentActivity() {
                         documentCaptureText = null
                         documentResultSaveAnnounced = false
                         documentResultAnnounced = false
-                        // 서류 모드: 셔터 순간 글자 줄 각도를 고정해 둔다 — 저장 전 회전 보정 입력
-                        documentShutterAngleDeg = if (documentSession) {
+                        // 서류 모드: 셔터 순간 관측(글자 각도·모서리 4점)을 고정해 둔다 — 저장 전
+                        // 원근/회전 보정 입력. 자동촬영이 정지 유지에서만 발동하므로 촬영본과 맞다.
+                        val shutterDocObservation = if (documentSession) {
                             documentText.observation
                                 ?.takeIf { System.currentTimeMillis() - it.atMs <= DocumentGuide.FRESH_MS }
-                                ?.angleDegrees
                         } else {
                             null
                         }
+                        documentShutterAngleDeg = shutterDocObservation?.angleDegrees
+                        documentShutterQuad = shutterDocObservation?.corners
                         guidanceFeedback.playShutter()
                     }
                     SessionState.SAVED -> {
@@ -1210,6 +1239,7 @@ class MainActivity : ComponentActivity() {
                                         onCancel = { cancelSessionToHome() },
                                         cvObjects = overlayObjects,
                                         identities = overlayIdentities,
+                                        documentOutline = documentOverlayOutline,
                                         // 등록 중엔 조준 UI 없이 미리보기+탐지 상자만 보여준다
                                         showOverlays = !homeVisible && !showResult && !enrollmentActive,
                                         onLensChanged = { isFront -> onLensChanged(isFront) },
@@ -1693,7 +1723,14 @@ class MainActivity : ComponentActivity() {
                     speak("네, 알겠어요")
                     return
                 }
-                textQaClient.ask(textContent, text) { answer ->
+                // 식별번호 마스킹 (2026-08-31) — OCR 원문이 서버 LLM 으로 나가는 유일한 경로.
+                // 주민등록번호는 동의로도 처리 불가(개인정보보호법 §24-2)라 필수 관문이다.
+                // 질문(사용자 발화)은 본인이 말한 내용이라 가리지 않는다.
+                val redactedContent = DocumentTextRedactor.redact(textContent)
+                if (redactedContent.anyMasked) {
+                    Log.i(TAG, "텍스트 Q&A 식별번호 마스킹: ${redactedContent.maskedCount}건")
+                }
+                textQaClient.ask(redactedContent.text, text) { answer ->
                     if (!isCurrentServerCapture(sessionId, serverRevision) ||
                         !isCurrentVisibleResult(sessionId)
                     ) {
@@ -1903,12 +1940,23 @@ class MainActivity : ComponentActivity() {
             override fun onRecognized(utterance: String) {
                 if (sessionManager.sessionId != sessionId) return
                 val squashed = utterance.replace(" ", "")
+                // 부정을 먼저 본다 — "아니네"의 "네" 오탐 방지 (범위 질문과 같은 규칙)
                 if (CAPTURE_DECLINE_ANSWERS.any { squashed.contains(it) }) {
-                    // "아니" — 시계 안내로 중앙 유도 재개, 중앙 도달 시 재질문 없이 촬영
+                    // "아니" — 시계 안내로 중앙 유도 재개, 중앙 도달 시 재질문 없이 촬영.
+                    // 거절 시각을 남겨 이미 중앙이어도 곧바로 찍지 않게 한다 (2026-08-31).
+                    captureDeclinedAtMs = System.currentTimeMillis()
                     captureConfirm = CaptureConfirm.RE_GUIDE
                     return
                 }
-                fireConfirmedCapture(sessionId)
+                if (squashed.isBlank() || CAPTURE_ACCEPT_ANSWERS.any { squashed.contains(it) }) {
+                    fireConfirmedCapture(sessionId)
+                    return
+                }
+                // 뭔가 말했는데 긍정도 부정도 아니면 촬영을 밀어붙이지 않는다 (실기기 2026-08-31 —
+                // "아니"가 애니·어니 등으로 오인식돼 그대로 찍혔다). 중앙 유도로 돌리면 중앙 도달
+                // 시 재질문 없이 찍으므로 흐름이 막히지 않는다. 침묵·인식 실패는 기존대로 동의.
+                captureDeclinedAtMs = System.currentTimeMillis()
+                captureConfirm = CaptureConfirm.RE_GUIDE
             }
 
             override fun onError(message: String) {
@@ -3120,6 +3168,8 @@ class MainActivity : ComponentActivity() {
         compositionScope = PersonFramingController.CompositionScope.FULL_BODY
         compositionQuestion = CompositionQuestion.NOT_ASKED
         captureConfirm = CaptureConfirm.NOT_ASKED
+        captureDeclinedAtMs = 0L
+        personFramingPhase = FramingPhase.NONE
         personFramingPose.reset()
         personFraming.reset()
         subjectMotion.reset()
@@ -3132,8 +3182,10 @@ class MainActivity : ComponentActivity() {
         documentText.reset()
         documentGuide.reset()
         documentShutterAngleDeg = null
+        documentShutterQuad = null
         lastDocumentObservationFedMs = 0L
         documentGuidanceText = DocumentGuide.STATUS_SEARCHING
+        documentOverlayOutline = null
         currentIdentities = emptyMap()
         synchronized(cvSnapshotLock) {
             latestObservedObjects = emptyList()
@@ -3590,6 +3642,14 @@ class MainActivity : ComponentActivity() {
                     personFramingDebugLabel = ""
                     null
                 }
+                // 하단 안내 카드용 국면 — 판정과 화면 문구가 어긋나지 않게 매 프레임 갱신
+                personFramingPhase = when {
+                    personFramingOutcome == null -> FramingPhase.NONE
+                    personFramingOutcome.targetReached -> FramingPhase.REACHED
+                    personFramingOutcome.action == PersonFramingController.Action.RequestZoomStep ->
+                        FramingPhase.ZOOMING
+                    else -> FramingPhase.NONE
+                }
                 if (personFramingOutcome != null) {
                     // 질문(범위·촬영 확인) 대기~확정 발화 동안은 줌·진동·촬영을 모두 보류한다 —
                     // 대답에 따라 목표·셔터가 달라지므로 그 전의 판정으로 움직이면 안 된다.
@@ -3639,7 +3699,12 @@ class MainActivity : ComponentActivity() {
                                 val expectedSessionId = sessionManager.sessionId
                                 runOnUiThread { askCaptureConfirm(expectedSessionId, question) }
                             }
-                            CaptureConfirm.RE_GUIDE -> if (centeredNow) {
+                            CaptureConfirm.RE_GUIDE -> if (centeredNow &&
+                                System.currentTimeMillis() - captureDeclinedAtMs >= CAPTURE_RE_GUIDE_MIN_MS
+                            ) {
+                                // 거절 직후엔 이미 중앙이어도 바로 찍지 않는다 — "아니"라고 했는데
+                                // 같은 프레임에 촬영되던 문제 (2026-08-31). 유예 동안 시계 안내로
+                                // 구도를 고칠 수 있고, 그 뒤 중앙이면 재질문 없이 찍는다.
                                 captureConfirm = CaptureConfirm.FIRING
                                 val expectedSessionId = sessionManager.sessionId
                                 runOnUiThread { fireConfirmedCapture(expectedSessionId) }
@@ -3691,6 +3756,9 @@ class MainActivity : ComponentActivity() {
             // 강제하지 않는다 — 서류가 책상·벽·거치대 어디에 있든 이미지 기준으로 판정한다.
             if (guidanceMode == AimingGuidanceMode.DOCUMENT && sessionManager.state == SessionState.AIMING) {
                 val observation = documentText.observation
+                // 화면 오버레이 (2026-08-31) — 신선한 관측만 그린다 (오래되면 지움)
+                documentOverlayOutline = observation
+                    ?.takeIf { output.timestampMs - it.atMs <= DocumentGuide.FRESH_MS }
                 if (observation != null && observation.atMs != lastDocumentObservationFedMs) {
                     // 손에 든 신분증처럼 움직이는 서류는 유지 시간이 쌓이지 않게 — 관측이 새로 올 때만 넣는다
                     lastDocumentObservationFedMs = observation.atMs
@@ -3714,9 +3782,13 @@ class MainActivity : ComponentActivity() {
                 outcome.utterance?.let {
                     guidanceFeedback.announce(it, priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT)
                 }
-                // 크기는 이동 대신 줌으로 맞춘다(사용자 요청 2026-08-30) — 스텝마다 짧은 틱
+                // 크기는 이동 대신 줌으로 맞춘다(사용자 요청 2026-08-30) — 스텝마다 짧은 틱.
+                // 줌인은 서류 전용 완만 스텝(2026-08-31 과확대 피드백) — 가드 예측과 같은 값.
                 when (outcome.zoom) {
-                    DocumentGuide.Zoom.IN -> if (autoZoom.requestZoomStep() != null) guidanceFeedback.playScanTick()
+                    DocumentGuide.Zoom.IN ->
+                        if (autoZoom.requestZoomStep(factor = DocumentGuide.ZOOM_STEP) != null) {
+                            guidanceFeedback.playScanTick()
+                        }
                     DocumentGuide.Zoom.OUT -> if (autoZoom.requestZoomOutStep() != null) guidanceFeedback.playScanTick()
                     null -> Unit
                 }
@@ -3746,12 +3818,29 @@ class MainActivity : ComponentActivity() {
                 AimingGuidanceMode.RESOLVING -> "촬영 요청을 확인하고 있어요"
                 AimingGuidanceMode.GENERAL_WAITING -> GENERAL_CAPTURE_WAITING_GUIDANCE
                 AimingGuidanceMode.COMPOSITION -> {
-                    val proposed = compositionGuidanceText(deviation, readiness, gazeBlock)
-                    guidanceTextStabilizer.stabilize(
-                        proposedText = proposed,
-                        subjectDetected = deviation?.subjectDetected == true && readiness != null,
-                        blockers = readiness?.blockers.orEmpty(),
-                    )
+                    // 인물 프레이밍(줌·질문) 상태 우선 (2026-08-31 화면 문구 어긋남 수정) —
+                    // 일반 구도 판정(readiness)은 줌·질문 흐름을 모른다: 가운데만 맞으면 줌이
+                    // 도는 중에도 ready 라 "지금이에요!"가 떴고, 목표 도달 뒤 질문 대기 중엔
+                    // blocker 이동 안내가 남았다. 프레이밍 상태가 있으면 그걸 그대로 보여준다
+                    // (상태 전환이 드물어 stabilizer 를 거치지 않아도 튀지 않는다).
+                    // RE_GUIDE("아니" 대답 뒤 중앙 유도)는 의도적으로 이동 안내로 떨어진다.
+                    val framingStatus = when {
+                        captureConfirm == CaptureConfirm.FIRING -> "지금이에요! 촬영할게요"
+                        captureConfirm == CaptureConfirm.PENDING ->
+                            "구도가 맞았어요. 이대로 찍을지 대답해 주세요"
+                        compositionQuestion == CompositionQuestion.PENDING -> "촬영 범위를 대답해 주세요"
+                        personFramingPhase == FramingPhase.REACHED -> "구도가 맞았어요"
+                        personFramingPhase == FramingPhase.ZOOMING -> "구도에 맞게 확대하는 중이에요"
+                        else -> null
+                    }
+                    framingStatus ?: run {
+                        val proposed = compositionGuidanceText(deviation, readiness, gazeBlock)
+                        guidanceTextStabilizer.stabilize(
+                            proposedText = proposed,
+                            subjectDetected = deviation?.subjectDetected == true && readiness != null,
+                            blockers = readiness?.blockers.orEmpty(),
+                        )
+                    }
                 }
             }
             // 셀카 모드: 시선이 카메라로 돌아온 순간을 한 번 알려준다 ("카메라를 보고 있어요")
@@ -4319,8 +4408,15 @@ class MainActivity : ComponentActivity() {
         /** [COMPOSITION_SCOPE_QUESTION] 의 긍정 대답 — 상반신 구도로 전환한다 (공백 제거 후 포함 비교). */
         private val COMPOSITION_UPPER_BODY_ANSWERS = listOf("네", "예", "응", "그래", "좋아", "상반신")
 
-        /** 부정·전신 유지 대답 — 긍정보다 먼저 검사한다 ("아니네" 같은 오탐 방지). */
-        private val COMPOSITION_FULL_BODY_ANSWERS = listOf("아니", "전신", "전체", "그대로", "싫어")
+        /**
+         * 부정·전신 유지 대답 — 긍정보다 먼저 검사한다 ("아니네" 같은 오탐 방지).
+         * "아뇨"는 "아니"를 포함하지 않아 별도 항목, "애니"는 STT 가 "아니"를 자주 잘못 받아
+         * 적는 형태다 (실기기 2026-08-31 — "아니"가 잘 안 먹힌다는 피드백).
+         */
+        private val COMPOSITION_FULL_BODY_ANSWERS = listOf(
+            "아니", "아뇨", "애니", "안돼", "안되", "말고", "그만", "하지마",
+            "전신", "전체", "그대로", "싫어",
+        )
 
         private const val COMPOSITION_UPPER_BODY_CONFIRM = "상반신에 집중해서 찍을게요."
         private const val COMPOSITION_FULL_BODY_CONFIRM = "전신이 나오게 찍을게요."
@@ -4333,8 +4429,25 @@ class MainActivity : ComponentActivity() {
         private const val CAPTURE_CONFIRM_ANNOUNCE = "좋아요. 지정하신 대로 찍을게요."
         private const val CAPTURE_CONFIRM_SPEECH_RATE = 1.2f
 
-        /** "이대로 찍을까요?"의 거부 대답 — 그 외(긍정·무응답)는 전부 촬영으로 본다. */
-        private val CAPTURE_DECLINE_ANSWERS = listOf("아니", "잠깐", "잠시", "기다려", "멈춰", "다시")
+        /**
+         * "이대로 찍을까요?"의 거부 대답 — 긍정보다 먼저 검사한다. "아뇨"는 "아니"를 포함하지
+         * 않아 별도 항목, "애니"는 STT 가 "아니"를 자주 잘못 받아 적는 형태 (실기기 2026-08-31).
+         */
+        private val CAPTURE_DECLINE_ANSWERS = listOf(
+            "아니", "아뇨", "애니", "안돼", "안되", "싫어", "말고", "그만", "하지마",
+            "잠깐", "잠시", "기다려", "멈춰", "다시",
+        )
+
+        /**
+         * "이대로 찍을까요?"의 긍정 대답 — 여기에도 없는 대답(오인식 공산)은 촬영하지 않고
+         * 중앙 유도로 돌린다. 무응답·인식 실패만 동의로 본다 (2026-08-31).
+         */
+        private val CAPTURE_ACCEPT_ANSWERS = listOf(
+            "네", "예", "응", "웅", "그래", "좋아", "찍어", "괜찮", "오케이", "당연",
+        )
+
+        /** 거절("아니") 후 이 시간은 지나야 중앙 도달을 촬영으로 인정한다 — 즉시 재촬영 방지. */
+        private const val CAPTURE_RE_GUIDE_MIN_MS = 3_000L
 
         /** 인물 3분할 크롭 on/off — 2026-08-28 사용자 요청으로 일단 꺼둠. */
         private const val PORTRAIT_CROP_ENABLED = false

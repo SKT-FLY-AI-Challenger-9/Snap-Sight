@@ -7,7 +7,9 @@ package com.example.snap_sight.document
 import android.util.Log
 import com.example.snap_sight.cv.CvFrame
 import com.example.snap_sight.face.toBitmap
+import com.example.snap_sight.ux.DocLine
 import com.example.snap_sight.ux.DocumentObservation
+import com.example.snap_sight.ux.DocumentQuad
 import com.example.snap_sight.ux.TextLineBox
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
@@ -43,6 +45,10 @@ class DocumentTextTracker(
     fun reset() {
         observation = null
         nextAnalysisAtMs = 0L
+        stickyLeft.atMs = 0L
+        stickyTop.atMs = 0L
+        stickyRight.atMs = 0L
+        stickyBottom.atMs = 0L
     }
 
     /** 분석 프레임마다 호출 (CV 분석 스레드). 꺼져 있으면 즉시 리턴. */
@@ -77,12 +83,117 @@ class DocumentTextTracker(
                 )
             }
             val union = DocumentObservation.fromLines(lines, glareFraction = 0f, nowMs = now)
-            observation = union?.copy(
-                glareFraction = glareFraction(frame, union.left, union.top, union.right, union.bottom),
-            )
+            observation = union?.let { fuseWithEdges(frame, it) }
         } finally {
             bitmap.recycle()
         }
+    }
+
+    /** 변별 최근 확정 엣지 직선 — 프레임마다 잡혔다 풀렸다 하며 경계가 널뛰는 것을 막는 스티키 값. */
+    private class StickyEdge(var value: DocLine = DocLine(0f, 0f), var atMs: Long = 0L)
+
+    private val stickyLeft = StickyEdge()
+    private val stickyTop = StickyEdge()
+    private val stickyRight = StickyEdge()
+    private val stickyBottom = StickyEdge()
+
+    /**
+     * 서류 외곽 v1 (2026-08-31): 글자 상자 바깥에서 배경 대비 엣지를 찾아 관측 경계를 실제 서류
+     * 변으로 넓힌다 ([DocumentEdgeFinder]). 대비가 없어 못 찾은 변은 글자 여백 그대로(fail-open).
+     * 반사 판정도 넓어진(실제 서류) 영역 기준으로 다시 잰다.
+     *
+     * 실기기(2026-08-31): 변이 프레임마다 독립적으로 잡혔다 풀렸다 해서 경계가 글자 여백과 실제
+     * 엣지 사이를 널뛰었다 — 면적·중심이 튀며 안내 판정이 계속 리셋됐다. 그래서 한 번 확정된
+     * 변은 [EDGE_STICKY_MS] 동안 유지한다(단, 여전히 현재 글자 상자 바깥에 있을 때만 — 줌·이동
+     * 으로 낡아진 값이 글자 안쪽으로 파고들면 버린다).
+     */
+    private fun fuseWithEdges(frame: CvFrame, union: DocumentObservation): DocumentObservation {
+        val lumaWidth = frame.width / LUMA_DOWNSAMPLE
+        val lumaHeight = frame.height / LUMA_DOWNSAMPLE
+        val edges = if (lumaWidth > 0 && lumaHeight > 0) {
+            DocumentEdgeFinder.find(
+                luma = downsampledLuma(frame, lumaWidth, lumaHeight),
+                width = lumaWidth,
+                height = lumaHeight,
+                textLeft = union.left, textTop = union.top,
+                textRight = union.right, textBottom = union.bottom,
+            )
+        } else {
+            DocumentEdgeFinder.Edges()
+        }
+        val now = union.atMs
+        val left = stickyOrFresh(edges.left, stickyLeft, now) { it.mid <= union.left }
+        val top = stickyOrFresh(edges.top, stickyTop, now) { it.mid <= union.top }
+        val right = stickyOrFresh(edges.right, stickyRight, now) { it.mid >= union.right }
+        val bottom = stickyOrFresh(edges.bottom, stickyBottom, now) { it.mid >= union.bottom }
+        // 네 변이 다 서면 교점 = 모서리 4점 — 기울임(원근) 판정·오버레이·촬영 후 보정의 입력
+        val quad = if (left != null && top != null && right != null && bottom != null) {
+            DocumentQuad.from(left = left, top = top, right = right, bottom = bottom)
+        } else {
+            null
+        }
+        val fused = union.copy(
+            left = (quad?.let { minOf(it.tl.x, it.bl.x) } ?: left?.mid ?: union.left).coerceIn(0f, 1f),
+            top = (quad?.let { minOf(it.tl.y, it.tr.y) } ?: top?.mid ?: union.top).coerceIn(0f, 1f),
+            right = (quad?.let { maxOf(it.tr.x, it.br.x) } ?: right?.mid ?: union.right).coerceIn(0f, 1f),
+            bottom = (quad?.let { maxOf(it.bl.y, it.br.y) } ?: bottom?.mid ?: union.bottom).coerceIn(0f, 1f),
+            edgeLeft = left != null,
+            edgeTop = top != null,
+            edgeRight = right != null,
+            edgeBottom = bottom != null,
+            corners = quad,
+        )
+        if (fused.edgeSides > 0) {
+            Log.i(
+                TAG,
+                "서류 외곽 융합: 엣지 ${fused.edgeSides}변 " +
+                    "(L=${fused.edgeLeft} T=${fused.edgeTop} R=${fused.edgeRight} B=${fused.edgeBottom}, " +
+                    "이번 프레임 ${edges.count}변" +
+                    (quad?.let { ", 수렴 V=%.2f H=%.2f".format(it.verticalConvergence, it.horizontalConvergence) } ?: "") +
+                    ")",
+            )
+        }
+        return fused.copy(
+            glareFraction = glareFraction(frame, fused.left, fused.top, fused.right, fused.bottom),
+        )
+    }
+
+    /**
+     * 이번 프레임에 변이 잡혔으면 그 값을 쓰고 스티키를 갱신, 안 잡혔으면 [EDGE_STICKY_MS] 안의
+     * 최근 확정값을 재사용한다 — 단 [stillOutside] (현재 글자 상자 바깥)일 때만.
+     */
+    private inline fun stickyOrFresh(
+        fresh: DocLine?,
+        sticky: StickyEdge,
+        nowMs: Long,
+        stillOutside: (DocLine) -> Boolean,
+    ): DocLine? {
+        if (fresh != null) {
+            sticky.value = fresh
+            sticky.atMs = nowMs
+            return fresh
+        }
+        if (sticky.atMs != 0L && nowMs - sticky.atMs <= EDGE_STICKY_MS && stillOutside(sticky.value)) {
+            return sticky.value
+        }
+        return null
+    }
+
+    /** RGB 프레임 → [LUMA_DOWNSAMPLE] 배 축소 루마(0..255). 640×480 기준 320×240, 수 ms. */
+    private fun downsampledLuma(frame: CvFrame, lumaWidth: Int, lumaHeight: Int): IntArray {
+        val luma = IntArray(lumaWidth * lumaHeight)
+        var index = 0
+        for (y in 0 until lumaHeight) {
+            val srcY = y * LUMA_DOWNSAMPLE
+            for (x in 0 until lumaWidth) {
+                val src = (srcY * frame.width + x * LUMA_DOWNSAMPLE) * 3
+                val r = frame.rgb[src].toInt() and 0xFF
+                val g = frame.rgb[src + 1].toInt() and 0xFF
+                val b = frame.rgb[src + 2].toInt() and 0xFF
+                luma[index++] = (r + g + g + b) shr 2
+            }
+        }
+        return luma
     }
 
     /** 서류 영역(정규화 상자) 안에서 거의 포화된 픽셀의 비율 — 서브샘플링이라 수 ms. */
@@ -114,6 +225,10 @@ class DocumentTextTracker(
         const val TAG = "DocumentText"
         const val DETECT_TIMEOUT_MS = 1_500L
         const val SAMPLE_STRIDE = 7
+        /** 엣지 탐색용 루마 축소 배수 — 640×480 → 320×240. */
+        const val LUMA_DOWNSAMPLE = 2
+        /** 확정된 변을 재확정 없이 유지하는 시간 — 검출 널뛰기로 경계·판정이 튀는 것 방지 (2026-08-31). */
+        const val EDGE_STICKY_MS = 1_500L
         /** 이 밝기(0..255) 이상이면 포화(반사)로 센다. */
         const val GLARE_LUMA_THRESHOLD = 245
     }

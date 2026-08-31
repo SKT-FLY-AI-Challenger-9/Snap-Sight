@@ -24,6 +24,16 @@ CONFIDENCE_THRESHOLD = 0.6
 # frontend cv/SlotParser.kt 의 COMPOSITION_KEYWORDS 와 항목·순서가 같아야 한다.
 COMPOSITION_KEYWORDS = ("구도", "멋지게", "멋있게", "예쁘게", "이쁘게", "감성", "분위기", "상반신")
 
+# 인물 요청 (2026-08-31): "사람 찍고 싶다"가 신호 0개로 needs_clarification 에 떨어져 일반
+# 촬영 모드가 되던 문제 — subject_type 기본값이 PERSON 이라 "사람"이라는 명시가 신호로 세지지
+# 않았다. 인물 단어를 주체 신호로 센다 (subject_type 은 그대로 PERSON). 사물 키워드가 먼저
+# 매칭되므로 "아이스크림"의 "아이" 같은 포함 관계는 사물이 이긴다. 2글자 미만 금지 규칙 공유.
+# frontend cv/SlotParser.kt 의 PERSON_KEYWORDS 와 항목·순서가 같아야 한다.
+PERSON_KEYWORDS = (
+    "사람", "인물", "친구", "가족", "아기", "아이", "엄마", "아빠",
+    "할머니", "할아버지", "언니", "오빠", "누나", "동생",
+)
+
 COUNT_WORDS = {
     "혼자": 1, "한 명": 1, "한명": 1,
     "두 명": 2, "두명": 2, "둘": 2,
@@ -400,7 +410,11 @@ def parse_target_spec(
             framing = candidate_framing
             break
 
-    subject_matched = subject_type is not SubjectType.PERSON or object_label is not None
+    subject_matched = (
+        subject_type is not SubjectType.PERSON
+        or object_label is not None
+        or any(keyword in text for keyword in PERSON_KEYWORDS)
+    )
     count_matched = subject_count is not None
     framing_matched = framing is not Framing.FULL_BODY
     composition_matched = any(keyword in text for keyword in COMPOSITION_KEYWORDS)
