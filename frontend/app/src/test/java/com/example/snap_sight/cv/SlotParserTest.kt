@@ -103,7 +103,8 @@ class SlotParserTest {
         assertNull(spec.objectLabel)
         assertEquals(2, spec.subjectCount)
         assertEquals(TargetSpec.Framing.CLOSEUP, spec.framing)
-        assertEquals(0.8f, spec.confidence)
+        // "친구"가 인물 주체 신호로도 세어져 주체+인원수+프레이밍 3개 매칭 (2026-08-31)
+        assertEquals(1.0f, spec.confidence)
     }
 
     @Test
@@ -205,6 +206,18 @@ class SlotParserTest {
         assertEquals(0.4f, spec.confidence)
         assertEquals(TargetSpec.Status.NEEDS_CLARIFICATION, spec.status)
         assertEquals(false, spec.isActionable)
+    }
+
+    @Test
+    fun `explicit person word alone is a subject signal`() {
+        // "사람 찍고 싶다"가 신호 0개로 needs_clarification(→일반 촬영 모드)에 떨어지던 회귀
+        // 방지 (2026-08-31) — 인물 단어 명시는 주체 신호로 세고 subjectType 은 PERSON 유지.
+        for (text in listOf("사람 찍고 싶다", "인물 찍어줘", "친구 찍어줘")) {
+            val spec = SlotParser.parse(text, sessionId = "sess_person")
+            assertEquals(text, TargetSpec.SubjectType.PERSON, spec.subjectType)
+            assertEquals(0.6f, spec.confidence)
+            assertEquals(text, TargetSpec.Status.OK, spec.status)
+        }
     }
 
     @Test
