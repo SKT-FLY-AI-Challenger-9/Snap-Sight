@@ -29,6 +29,11 @@ package com.example.snap_sight.ux
  * 뜨는데 촬영은 안 된다"는 불일치가 있었다. case 2 에서는 인정하지 않는다 — 아직 멀리
  * 있어도 일반 구도만 맞으면 줌을 걸기도 전에 곧장 촬영돼버리기 때문(사용자 요청 2026-08-28
  * — "거기까지 안 가고 멀어도 지금 촬영이 자꾸 되잖아 클로즈업을 안 하고").
+ *
+ * 줌은 피사체가 **정지해 있을 때만** 건다(엔드유저 피드백 2026-08-30 — "아기·강아지처럼
+ * 움직이는 피사체는 줌하면 화면에서 벗어난다"). [onJudgment] 의 `subjectMoving`
+ * ([SubjectMotionDetector] 판정)이 true 인 동안은 case 2 라도 줌 스텝을 요청하지 않고
+ * 기다린다 — 이미 걸린 배율을 되돌리지는 않는다.
  */
 internal class PersonFramingController {
 
@@ -73,6 +78,9 @@ internal class PersonFramingController {
      *        case 1(bboxFitsFrame=false)에서만 도달 인정에 쓴다. case 2 에서는 무시한다 —
      *        아직 멀리 있어도 인정하면 줌을 걸기도 전에 촬영돼버리기 때문(사용자 요청
      *        2026-08-28).
+     * @param subjectMoving 피사체가 움직이는 중([SubjectMotionDetector]) — true 면 case 2 의
+     *        줌 스텝을 보류한다(줌은 정지 피사체에만, 2026-08-30). 목표 도달·촬영 판정에는
+     *        영향을 주지 않는다.
      */
     fun onJudgment(
         bboxFitsFrame: Boolean,
@@ -81,6 +89,7 @@ internal class PersonFramingController {
         bboxHeightRatio: Float?,
         generalReady: Boolean,
         nowMs: Long,
+        subjectMoving: Boolean = false,
     ): Outcome {
         if (fired) return Outcome()
 
@@ -108,6 +117,9 @@ internal class PersonFramingController {
         if (!onTarget) {
             holdSinceMs = null
             if (!bboxFitsFrame || closeEnough) return Outcome() // case 1, 또는 이미 충분히 큼 — 줌 없음
+            // 움직이는 피사체에는 줌을 걸지 않는다 — 멈출 때까지 기다린다 (2026-08-30).
+            // zoomStarted 는 그대로 둔다: 첫 실제 스텝에서 진동하는 규약을 유지하기 위해.
+            if (subjectMoving) return Outcome()
             val firstStep = !zoomStarted
             zoomStarted = true
             return Outcome(Action.RequestZoomStep, vibrate = firstStep)

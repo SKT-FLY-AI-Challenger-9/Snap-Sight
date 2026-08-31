@@ -94,6 +94,18 @@ def test_no_keywords_falls_back_to_defaults():
     assert spec.confidence == 0.4
 
 
+def test_document_keywords_set_subject_type_to_document():
+    """서류·종이·신분증류 (2026-08-30) — 앱이 bbox 대신 텍스트 영역으로 프레이밍하는 서류 모드."""
+    for utterance in ("신분증 찍어줘", "이 서류 찍어줄래", "종이에 있는 글자 찍어줘", "영수증 찍어"):
+        spec = parse_target_spec(utterance, session_id="sess_doc")
+
+        assert spec.subject_type is SubjectType.DOCUMENT, utterance
+        assert spec.object_label is None
+        assert spec.framing is Framing.FULL_BODY
+        assert spec.status is TargetSpecStatus.OK
+        assert spec.confidence == 0.6
+
+
 def test_landscape_subject_type_and_wide_framing_parsed():
     spec = parse_target_spec("풍경 위주로 찍어줘", session_id="sess_3")
 

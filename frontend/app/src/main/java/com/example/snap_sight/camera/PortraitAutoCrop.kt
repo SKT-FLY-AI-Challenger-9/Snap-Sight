@@ -145,7 +145,8 @@ object PortraitAutoCrop {
         return Box(left, top, cropW, cropH)
     }
 
-    private fun exifRotationDegrees(file: File): Int = try {
+    /** EXIF orientation → upright 로 만들기 위한 회전(0/90/180/270). [HorizonStraightener] 도 쓴다. */
+    internal fun exifRotationDegrees(file: File): Int = try {
         when (
             ExifInterface(file.absolutePath).getAttributeInt(
                 ExifInterface.TAG_ORIENTATION,

@@ -261,6 +261,61 @@ class PersonFramingControllerTest {
         assertEquals(PersonFramingController.Action.RequestZoomStep, outcome.action)
     }
 
+    // ---- 줌은 정지 피사체에만 (엔드유저 피드백 2026-08-30 — "움직이는 피사체는 줌하면 놓친다") ----
+
+    @Test
+    fun `case2 withholds the zoom step while the subject is moving and resumes once static`() {
+        val controller = PersonFramingController()
+        val moving = controller.onJudgment(
+            bboxFitsFrame = true, headY = 0.5f, footY = 0.9f, bboxHeightRatio = 0.3f,
+            generalReady = false, nowMs = 0, subjectMoving = true,
+        )
+        assertEquals(PersonFramingController.Action.None, moving.action)
+        assertFalse(moving.vibrate)
+
+        // 멈추면 그때 첫 스텝 — 첫 실제 스텝에서 진동하는 규약 유지
+        val settled = controller.onJudgment(
+            bboxFitsFrame = true, headY = 0.5f, footY = 0.9f, bboxHeightRatio = 0.3f,
+            generalReady = false, nowMs = 1_500, subjectMoving = false,
+        )
+        assertEquals(PersonFramingController.Action.RequestZoomStep, settled.action)
+        assertTrue(settled.vibrate)
+
+        // 다시 움직이면 다시 보류 — 이미 시작한 줌을 되돌리지는 않는다(액션 없음)
+        val movingAgain = controller.onJudgment(
+            bboxFitsFrame = true, headY = 0.4f, footY = 0.85f, bboxHeightRatio = 0.4f,
+            generalReady = false, nowMs = 2_000, subjectMoving = true,
+        )
+        assertEquals(PersonFramingController.Action.None, movingAgain.action)
+    }
+
+    @Test
+    fun `a moving subject can still reach the target bands and capture without zoom`() {
+        val controller = PersonFramingController()
+        val reached = controller.onJudgment(
+            bboxFitsFrame = true, headY = 0.10f, footY = 0.70f, bboxHeightRatio = 0.65f,
+            generalReady = false, nowMs = 0, subjectMoving = true,
+        )
+        assertEquals(PersonFramingController.Action.None, reached.action)
+        assertTrue(reached.vibrate)
+        val fired = controller.onJudgment(
+            bboxFitsFrame = true, headY = 0.10f, footY = 0.70f, bboxHeightRatio = 0.65f,
+            generalReady = false, nowMs = PersonFramingController.HOLD_MS, subjectMoving = true,
+        )
+        assertEquals(PersonFramingController.Action.Capture, fired.action)
+    }
+
+    @Test
+    fun `subject motion does not change case1 behaviour`() {
+        val controller = PersonFramingController()
+        val outcome = controller.onJudgment(
+            bboxFitsFrame = false, headY = 0.20f, footY = null, bboxHeightRatio = null,
+            generalReady = false, nowMs = 0, subjectMoving = true,
+        )
+        assertEquals(PersonFramingController.Action.None, outcome.action)
+        assertTrue(outcome.vibrate)
+    }
+
     @Test
     fun `general ready short-circuits case1 head band wait too`() {
         val controller = PersonFramingController()

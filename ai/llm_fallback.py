@@ -38,7 +38,7 @@ SYSTEM_PROMPT = """당신은 카메라 촬영 의도 발화에서 구조화된 �
 
 사용자가 한국어로 짧게 말한 촬영 요청에서 아래 필드를 추출하십시오.
 
-- subject_type: "person"(인물) / "object"(사물) / "landscape"(풍경) 중 하나
+- subject_type: "person"(인물) / "object"(사물) / "landscape"(풍경) / "document"(서류·종이·신분증) 중 하나
 - object_label: subject_type이 "object"일 때만 사용. 아래 허용 목록 중 정확히 일치하는
   영문 표기 하나, 또는 목록에 없거나 확신할 수 없으면 반드시 null. 목록에 없는 값을
   지어내지 마십시오.

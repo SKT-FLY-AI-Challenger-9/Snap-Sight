@@ -135,6 +135,19 @@ class SlotParserTest {
     }
 
     @Test
+    fun `document keywords set subject type to document`() {
+        // 서류·종이·신분증류 (2026-08-30) — bbox 조준 대신 서류 모드(텍스트 영역 프레이밍)로 간다
+        for (utterance in listOf("신분증 찍어줘", "이 서류 찍어줄래", "종이에 있는 글자 찍어줘", "영수증 찍어")) {
+            val spec = SlotParser.parse(utterance, sessionId = "sess_doc")
+            assertEquals(utterance, TargetSpec.SubjectType.DOCUMENT, spec.subjectType)
+            assertNull(spec.objectLabel)
+            assertEquals(TargetSpec.Framing.FULL_BODY, spec.framing)
+            assertEquals(TargetSpec.Status.OK, spec.status)
+            assertEquals(0.6f, spec.confidence)
+        }
+    }
+
+    @Test
     fun `object label sets subject type to object`() {
         val spec = SlotParser.parse("저 머그컵 예쁘게 찍어줘", sessionId = "sess_4")
 

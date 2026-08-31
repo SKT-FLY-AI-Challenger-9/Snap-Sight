@@ -28,7 +28,7 @@ object MissingSubjectNotice {
         koreanLabels: Map<String, String>,
     ): String? {
         if (spec == null || !spec.isActionable) return null
-        if (spec.subjectType == TargetSpec.SubjectType.LANDSCAPE) return null
+        if (spec.subjectType.sceneOnly) return null
         if (!hasFreshVerdict) return null
         if (subjectDetected) return null
         return targetName(spec, koreanLabels)

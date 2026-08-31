@@ -1,5 +1,6 @@
 package com.example.snap_sight.ux
 
+import com.example.snap_sight.camera.PhoneRoll
 import com.example.snap_sight.cv.DeviationResult
 import com.example.snap_sight.cv.CanonicalReadinessEvaluator
 import com.example.snap_sight.cv.CompositionProfile
@@ -35,8 +36,13 @@ import kotlin.math.roundToInt
  */
 internal sealed interface GuidanceAction {
     data class Speak(val text: String) : GuidanceAction
-    /** 지정 피사체가 화면에 잡혀 있는 동안의 연속 진동 시작/정지 (사용자 요청 2026-08-24). */
-    object PresenceVibrationStart : GuidanceAction
+    /**
+     * 지정 피사체가 화면에 잡혀 있는 동안의 연속 진동 (사용자 요청 2026-08-24). [level] 은
+     * 0(목표에서 멂 — 느린 펄스) .. [GuidancePolicy.PRESENCE_LEVELS]-1(목표 범위 안 — 빠른
+     * 펄스)로, 가까워질수록 빨라진다(엔드유저 피드백 2026-08-30). 시작할 때와 단계가 바뀔
+     * 때만 나온다.
+     */
+    data class PresenceVibrationLevel(val level: Int) : GuidanceAction
     object PresenceVibrationStop : GuidanceAction
     object Vibrate : GuidanceAction
     object WarningTone : GuidanceAction
@@ -75,6 +81,14 @@ internal sealed class GuidanceDirection(val utterance: String) {
     // TODO: 노션 스크립트 미확정 임시 문구 — 확정되면 SpeechCatalog 음원과 함께 갱신 (그 전까지 TTS 폴백).
     object TILT_TOP_TOWARD : GuidanceDirection("폰 윗부분을 몸 쪽으로 기울여 주세요.")
     object TILT_TOP_AWAY : GuidanceDirection("폰 윗부분을 바깥쪽으로 기울여 주세요.")
+
+    // 좌우 수평 (2026-08-30, 엔드유저 피드백 "폰이 좌우로 기울어진 경우") — 풍경 모드
+    // [LandscapeGuide] 와 같은 문구·부호 규약([com.example.snap_sight.camera.PhoneRoll], 실기기
+    // 확정 2026-08-28: 폰을 왼쪽(반시계)으로 돌리면 roll 이 +). +편차 = 왼쪽으로 지나침 →
+    // 오른쪽으로 되돌리기.
+    // TODO: 노션 스크립트 미확정 임시 문구 — 확정되면 SpeechCatalog 음원과 함께 갱신 (그 전까지 TTS 폴백).
+    object ROLL_TURN_LEFT : GuidanceDirection("폰이 기울었어요. 왼쪽으로 조금 돌려 주세요.")
+    object ROLL_TURN_RIGHT : GuidanceDirection("폰이 기울었어요. 오른쪽으로 조금 돌려 주세요.")
 }
 
 /** 한 번의 canonical 평가에서 나온 최종 verdict와 렌더링 액션. */
@@ -129,6 +143,13 @@ internal class GuidancePolicy(
     // ---- 존재 확인 진동 — 피사체가 잡혀 있는 동안 연속 햅틱 (사용자 요청 2026-08-24) ----
     private var presenceSinceMs: Long? = null
     private var presenceVibrationOn = false
+    /** 마지막으로 내보낸 존재 진동 단계 — 꺼져 있으면 -1. */
+    private var presenceLevel = -1
+
+    // ---- 좌우 수평 안내 (2026-08-30) — 진입 [PhoneRoll.ENTER_DEG]/해제 [PhoneRoll.EXIT_DEG] 히스테리시스 ----
+    private var rollActive = false
+    /** 기울기가 임계값을 넘기 시작한 시각 — [ROLL_DEBOUNCE_MS] 이상 이어져야 말한다. */
+    private var rollOverSinceMs: Long? = null
 
     // ---- LOST 중 "마지막으로 보였던 방향" 추적 (사용자 요청 2026-08-27) ----
     // 화면 안에 보이는 동안은 카메라 반화각(~33도) 안에서만 방향이 나오지만(11시~1시 근처),
@@ -161,6 +182,9 @@ internal class GuidancePolicy(
         // 진동 정지는 액션으로 못 내보내므로 GuidanceFeedback.resetSession 이 직접 끈다
         presenceSinceMs = null
         presenceVibrationOn = false
+        presenceLevel = -1
+        rollActive = false
+        rollOverSinceMs = null
         lastKnownRightRad = null
         lastKnownOrientationRad = null
         lastSearchDirectionAtMs = Long.MIN_VALUE / 2
@@ -192,6 +216,7 @@ internal class GuidancePolicy(
         phonePitchDeg: Float? = null,
         cameraOrientationRad: Pair<Float, Float>? = null,
         personSession: Boolean = false,
+        phoneRollDeg: Float? = null,
     ): List<GuidanceAction> = processJudgment(
         state = state,
         result = result,
@@ -202,6 +227,7 @@ internal class GuidancePolicy(
         phonePitchDeg = phonePitchDeg,
         cameraOrientationRad = cameraOrientationRad,
         personSession = personSession,
+        phoneRollDeg = phoneRollDeg,
     ).actions
 
     /**
@@ -214,6 +240,10 @@ internal class GuidancePolicy(
      * @param cameraOrientationRad AIMING 시작 이후 누적 카메라 회전량(라디안, yaw to pitch) —
      *        null이 아니면 시계 방향 안내를 "화면 속 위치"가 아니라 "카메라 켜진 순간(12시)
      *        기준으로 실제 얼마나 돌았는지 + 남은 보정"으로 계산한다 (사용자 요청 2026-08-27).
+     * @param phoneRollDeg 현재 폰 좌우 기울기(도, TiltSensorMonitor.rollDegrees 규약 — [PhoneRoll]
+     *        참고). 가장 가까운 파지 스냅(0/±90/180°)에서 [PhoneRoll.ENTER_DEG] 이상 벗어난 채
+     *        [ROLL_DEBOUNCE_MS] 이어지면 다른 축보다 먼저 수평 문구를 말하고, [PhoneRoll.EXIT_DEG]
+     *        안으로 돌아오면 [LEVEL_UTTERANCE] 1회 (2026-08-30). null 이면 수평 안내 없음.
      */
     @Synchronized
     fun processJudgment(
@@ -226,45 +256,93 @@ internal class GuidancePolicy(
         phonePitchDeg: Float? = null,
         cameraOrientationRad: Pair<Float, Float>? = null,
         personSession: Boolean = false,
+        phoneRollDeg: Float? = null,
     ): GuidanceDecision {
         val readiness = readinessEvaluator.evaluate(result, nowMs)
         // 존재 확인 진동 — 어떤 안내 분기든 상관없이 매 판정마다 갱신한다
-        val presence = presenceActions(state.detected, nowMs)
+        val presence = presenceActions(state, result, nowMs)
         val actions = judge(
             state, result, readiness, nowMs, zoomHandlesDistance, readyBlockedReason,
-            pitchDeviationDeg, phonePitchDeg, cameraOrientationRad, personSession,
+            pitchDeviationDeg, phonePitchDeg, cameraOrientationRad, personSession, phoneRollDeg,
         )
         return GuidanceDecision(readiness, presence + actions)
+    }
+
+    private sealed interface RollGuidance {
+        /** 교정 문구를 말해야 한다 (방향 안내 게이팅을 탄다). */
+        data class Correct(val direction: GuidanceDirection) : RollGuidance
+        /** 방금 수평으로 돌아왔다 — 복귀 확인 1회. */
+        object Leveled : RollGuidance
+    }
+
+    /**
+     * 좌우 수평 안내 (2026-08-30) — 풍경 모드 [LandscapeGuide.onRoll] 과 같은 규약. 가장 가까운
+     * 파지 스냅으로부터의 편차([PhoneRoll.deviationFromNearestSnap])가 [PhoneRoll.ENTER_DEG] 이상으로
+     * [ROLL_DEBOUNCE_MS] 이어지면 시작하고, 한 번 시작하면 [PhoneRoll.EXIT_DEG] 안으로 돌아올 때까지
+     * 유지한다(히스테리시스 — 임계값 하나로는 경계에서 "돌려 주세요/침묵"이 반복된다). 돌아오면
+     * [RollGuidance.Leveled] 를 1회 돌려준다. 디바운스는 풍경에는 없는 추가 조건 — 피사체를
+     * 조준하는 세션은 손이 더 많이 움직여 순간 기울기가 잦다.
+     */
+    private fun rollGuidance(rollDeg: Float?, nowMs: Long): RollGuidance? {
+        if (rollDeg == null || !rollDeg.isFinite()) {
+            rollActive = false
+            rollOverSinceMs = null
+            return null
+        }
+        val deviation = PhoneRoll.deviationFromNearestSnap(rollDeg)
+        val magnitude = abs(deviation)
+        if (rollActive && magnitude <= PhoneRoll.EXIT_DEG) {
+            rollActive = false
+            rollOverSinceMs = null
+            return RollGuidance.Leveled
+        }
+        if (!rollActive) {
+            if (magnitude < PhoneRoll.ENTER_DEG) {
+                rollOverSinceMs = null
+                return null
+            }
+            val since = rollOverSinceMs ?: nowMs.also { rollOverSinceMs = it }
+            if (nowMs - since < ROLL_DEBOUNCE_MS) return null
+            rollActive = true
+        }
+        // +편차 = 왼쪽(반시계)으로 지나침 → 오른쪽으로 되돌리기 (실기기 확정 2026-08-28)
+        val direction = if (deviation > 0f) GuidanceDirection.ROLL_TURN_RIGHT else GuidanceDirection.ROLL_TURN_LEFT
+        return RollGuidance.Correct(direction)
     }
 
     /**
      * 지정 피사체가 [PRESENCE_VIBRATION_AFTER_MS] 이상 연속으로 화면에 잡혀 있으면 연속 진동을
      * 켜고, 화면에서 벗어나는 순간 끈다 — "지금 잡혀 있다"를 손으로 느끼는 채널.
+     *
+     * 펄스 빠르기는 목표 범위까지의 거리([presenceDeviationScore])로 정한다 — 멀수록 느리고
+     * 가까워질수록 빨라진다(엔드유저 피드백 2026-08-30, "목표에서 얼마나 벗어났는지를 진동으로").
+     * 단계는 시작할 때와 바뀔 때만 액션으로 내보내고, 경계 근처의 손떨림으로 단계가
+     * 왔다갔다하지 않게 히스테리시스([PRESENCE_LEVEL_HYSTERESIS])를 둔다.
      */
-    private fun presenceActions(detected: Boolean, nowMs: Long): List<GuidanceAction> {
+    private fun presenceActions(
+        state: GuidanceState,
+        result: DeviationResult,
+        nowMs: Long,
+    ): List<GuidanceAction> {
         // 지정된 대상이 없으면 존재 진동을 켜지 않는다 — "지정한 피사체" 전용 채널
-        if (!subjectDesignated) {
+        if (!subjectDesignated || !state.detected) {
             presenceSinceMs = null
             if (presenceVibrationOn) {
                 presenceVibrationOn = false
-                return listOf(GuidanceAction.PresenceVibrationStop)
-            }
-            return emptyList()
-        }
-        if (!detected) {
-            presenceSinceMs = null
-            if (presenceVibrationOn) {
-                presenceVibrationOn = false
+                presenceLevel = -1
                 return listOf(GuidanceAction.PresenceVibrationStop)
             }
             return emptyList()
         }
         val since = presenceSinceMs ?: nowMs.also { presenceSinceMs = it }
-        if (!presenceVibrationOn && nowMs - since >= PRESENCE_VIBRATION_AFTER_MS) {
+        if (!presenceVibrationOn) {
+            if (nowMs - since < PRESENCE_VIBRATION_AFTER_MS) return emptyList()
             presenceVibrationOn = true
-            return listOf(GuidanceAction.PresenceVibrationStart)
         }
-        return emptyList()
+        val level = presenceLevelFor(presenceDeviationScore(result), presenceLevel)
+        if (level == presenceLevel) return emptyList()
+        presenceLevel = level
+        return listOf(GuidanceAction.PresenceVibrationLevel(level))
     }
 
     private fun judge(
@@ -278,6 +356,7 @@ internal class GuidancePolicy(
         phonePitchDeg: Float? = null,
         cameraOrientationRad: Pair<Float, Float>? = null,
         personSession: Boolean = false,
+        phoneRollDeg: Float? = null,
     ): List<GuidanceAction> {
         if (!state.detected) {
             // 첫 검출 전에는 "사라졌어요"(LOST)가 아니라 탐색 안내(t2/t3)를 쓴다 — 비프 없음
@@ -321,6 +400,24 @@ internal class GuidancePolicy(
         if (refound && subjectDesignated) {
             lastSpokenAtMs = nowMs
             return listOf(GuidanceAction.Speak(REFIND_UTTERANCE))
+        }
+
+        // 좌우 수평 (2026-08-30): 다른 축과 독립이고 중력 기준이라 눈 없이도 손목으로 1초면
+        // 고쳐지므로 위치·피치보다 먼저 말한다 — 기울어진 채로 위치를 맞춰봐야 사진이 기울어져
+        // 있다. 피치 분기처럼 대상 검출 뒤에만 온다.
+        when (val roll = rollGuidance(phoneRollDeg, nowMs)) {
+            is RollGuidance.Correct -> {
+                readySpokenThisEpisode = false
+                return speakDirectionIfDue(roll.direction, nowMs)
+            }
+            RollGuidance.Leveled -> {
+                // 풍경 모드와 같은 복귀 확인 1회. 다음 방향 안내는 최소 간격 뒤에 이어진다.
+                lastDirection = null
+                lastDirectionAtMs = nowMs
+                lastSpokenAtMs = nowMs
+                return listOf(GuidanceAction.Speak(LEVEL_UTTERANCE))
+            }
+            null -> Unit
         }
 
         // 음식 피치 (2026-08-25): 폰 각도가 목표를 벗어나 있으면 구도·READY 안내보다 먼저
@@ -602,6 +699,50 @@ internal class GuidancePolicy(
         /** 피사체가 이만큼 연속으로 잡혀 있으면 존재 확인 연속 진동 시작. */
         const val PRESENCE_VIBRATION_AFTER_MS = 1_500L
 
+        // ---- 존재 진동 단계 (2026-08-30) — 목표 범위에 가까워질수록 펄스가 빨라진다 ----
+
+        /** 존재 진동 펄스 단계 수 — 0(목표에서 멂·느림) .. PRESENCE_LEVELS-1(목표 범위 안·빠름). */
+        const val PRESENCE_LEVELS = 4
+
+        /**
+         * 단계별 편차 점수 상한(미만). 점수 = max(|x|/x 허용치, |y|/y 허용치) — 1.0 미만이면
+         * 위치가 목표 범위 안이다. 인덱스가 단계: [3]=1.0(범위 안), [2]=1.5, [1]=2.0, [0]=무한.
+         * x 허용치 0.20 기준으로 |x| < 0.2 / 0.3 / 0.4 / 그 이상에 해당한다.
+         */
+        private val PRESENCE_LEVEL_UPPER_BOUNDS =
+            floatArrayOf(Float.POSITIVE_INFINITY, 2.0f, 1.5f, 1.0f)
+
+        /** 단계 경계 히스테리시스(점수 단위) — 경계 위에서 손떨림으로 단계가 튀지 않게. */
+        const val PRESENCE_LEVEL_HYSTERESIS = 0.15f
+
+        /**
+         * 목표 범위까지의 거리 점수 — 좌우·상하 중 더 벗어난 축의 (편차 / 허용치). 크기(거리)
+         * 편차는 넣지 않는다 — bbox 면적 기반 거리 판단은 부정확해 음성 안내에서도 제외돼 있다.
+         */
+        fun presenceDeviationScore(result: DeviationResult): Float {
+            val goal = result.goal ?: CompositionProfile.DEFAULT.goalFor(result.framing)
+            val x = abs(result.xDeviation ?: 0f) / goal.maxAbsXDeviation.coerceAtLeast(1e-6f)
+            val y = abs(result.yDeviation ?: 0f) / goal.maxAbsYDeviation.coerceAtLeast(1e-6f)
+            return max(x, y)
+        }
+
+        /**
+         * 점수 → 단계. [currentLevel] 이 유효하면(0..PRESENCE_LEVELS-1) 경계에
+         * [PRESENCE_LEVEL_HYSTERESIS] 만큼 여유를 두고서만 옮긴다 — 올라가려면 상한보다 그만큼
+         * 더 안쪽, 내려가려면 그만큼 더 바깥쪽이어야 한다. 유효하지 않으면(진동 시작) 여유 없이
+         * 바로 해당 단계를 고른다.
+         */
+        fun presenceLevelFor(score: Float, currentLevel: Int): Int {
+            val top = PRESENCE_LEVELS - 1
+            if (currentLevel !in 0..top) {
+                return (top downTo 0).first { score < PRESENCE_LEVEL_UPPER_BOUNDS[it] }
+            }
+            var level = currentLevel
+            while (level < top && score < PRESENCE_LEVEL_UPPER_BOUNDS[level + 1] - PRESENCE_LEVEL_HYSTERESIS) level++
+            while (level > 0 && score >= PRESENCE_LEVEL_UPPER_BOUNDS[level] + PRESENCE_LEVEL_HYSTERESIS) level--
+            return level
+        }
+
         // 좌우는 3칸이 아니라 프레임을 가로로 5등분(각 1/5)한 열로 판정한다(사용자 요청
         // 2026-08-28: "3*3이지만 중심을 못 맞추는 거 같아서 3*5로 더 나누고"). 왼쪽부터
         // 1열=10시, 2열=11시, 3열=정중앙(제자리 → 다른 축도 맞으면 촬영 안내), 4열=1시,
@@ -614,6 +755,13 @@ internal class GuidancePolicy(
 
         /** 음식 피치 목표각 허용 오차 — 이 안이면 각도 안내를 멈추고 구도 안내로 넘어간다. */
         const val PITCH_TOLERANCE_DEG = 12f
+
+        // 좌우 수평 안내 (2026-08-30). 임계값·스냅 규약은 [PhoneRoll](풍경 모드와 공용). 안내 임계값
+        // 아래의 작은 기울기는 저장 시 수평 보정(HorizonStraightener, ≤12°)이 조용히 고친다.
+        /** 수평 복귀 확인 — 풍경 모드([LandscapeGuide])와 같은 문구. */
+        const val LEVEL_UTTERANCE = "수평이 맞았어요."
+        /** 기울기가 진입 임계값을 이만큼 연속으로 넘어야 말한다 — 순간적인 손 움직임은 무시. */
+        const val ROLL_DEBOUNCE_MS = 1_000L
 
         /**
          * 일반 세션에서 수직 이동 안내를 기울기 문구로 바꾸는 최소 폰 피치 (2026-08-25).

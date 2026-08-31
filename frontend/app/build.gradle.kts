@@ -99,6 +99,8 @@ dependencies {
 
     implementation(libs.mlkit.face.detection)
     implementation(libs.mlkit.pose.detection)
+    // 서류 모드(2026-08-30) — 텍스트 영역으로 서류를 찾고 프레이밍한다 (DocumentTextTracker). 온디바이스.
+    implementation(libs.mlkit.text.recognition.korean)
     testImplementation(libs.junit)
     testImplementation(libs.json)
     androidTestImplementation(platform(libs.androidx.compose.bom))

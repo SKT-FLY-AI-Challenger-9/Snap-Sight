@@ -26,6 +26,9 @@ class SubjectType(StrEnum):
     PERSON = "person"
     OBJECT = "object"
     LANDSCAPE = "landscape"
+    # 서류·종이·신분증 (2026-08-30) — bbox 조준 대상이 없고 앱이 텍스트 영역으로 프레이밍한다.
+    # 사진은 기기 밖으로 나가지 않는다(앱이 업로드를 생략).
+    DOCUMENT = "document"
 
 
 class Framing(StrEnum):

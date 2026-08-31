@@ -31,8 +31,20 @@ FRAMING_KEYWORDS = {
 }
 
 # subjectType이 person도 object도 아닌 경우만 다룬다 (object는 OBJECT_LABEL_KEYWORDS로 판정).
+# 서류(DOCUMENT, 2026-08-30): 서류·종이·신분증류 단어가 있으면 서류 모드 — 앱이 bbox 대신
+# 텍스트 영역으로 프레이밍한다. 짧은 키워드가 다른 단어에 우연히 포함되지 않게 2글자 이상만 쓴다.
+# frontend cv/SlotParser.kt 의 SUBJECT_TYPE_KEYWORDS 와 항목·순서가 같아야 한다.
 SUBJECT_TYPE_KEYWORDS = {
     "풍경": SubjectType.LANDSCAPE, "경치": SubjectType.LANDSCAPE,
+    "서류": SubjectType.DOCUMENT, "문서": SubjectType.DOCUMENT,
+    "종이": SubjectType.DOCUMENT, "신분증": SubjectType.DOCUMENT,
+    "주민등록증": SubjectType.DOCUMENT, "주민증": SubjectType.DOCUMENT,
+    "면허증": SubjectType.DOCUMENT, "여권": SubjectType.DOCUMENT,
+    "명함": SubjectType.DOCUMENT, "영수증": SubjectType.DOCUMENT,
+    "계약서": SubjectType.DOCUMENT, "청구서": SubjectType.DOCUMENT,
+    "고지서": SubjectType.DOCUMENT, "증명서": SubjectType.DOCUMENT,
+    "학생증": SubjectType.DOCUMENT, "안내문": SubjectType.DOCUMENT,
+    "편지": SubjectType.DOCUMENT, "처방전": SubjectType.DOCUMENT,
 }
 
 # 값은 ai/taxonomy(OBJECTS365_YOLO26)의 canonical label과 정확히 일치해야 한다.

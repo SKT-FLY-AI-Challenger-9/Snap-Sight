@@ -395,16 +395,64 @@ class GuidancePolicyTest {
         policy.setSubject("강아지") // 존재 진동은 지정한 피사체 전용
         assertTrue(
             policy.feed(result(0.3f, 0f), now = 0)
-                .none { it == GuidanceAction.PresenceVibrationStart },
+                .none { it is GuidanceAction.PresenceVibrationLevel },
         )
         val start = policy.feed(
             result(0.3f, 0f),
             now = GuidancePolicy.PRESENCE_VIBRATION_AFTER_MS,
         )
-        assertTrue(start.contains(GuidanceAction.PresenceVibrationStart))
+        assertTrue(start.any { it is GuidanceAction.PresenceVibrationLevel })
         // 벗어나는 순간 즉시 정지 — LOST 디바운스를 기다리지 않는다
         val stop = policy.feed(lostResult, now = GuidancePolicy.PRESENCE_VIBRATION_AFTER_MS + 100)
         assertTrue(stop.contains(GuidanceAction.PresenceVibrationStop))
+    }
+
+    // ---- 존재 진동 단계 — 가까워질수록 빠르게 (엔드유저 피드백 2026-08-30) ----
+
+    private fun presenceLevels(actions: List<GuidanceAction>) =
+        actions.filterIsInstance<GuidanceAction.PresenceVibrationLevel>().map { it.level }
+
+    @Test
+    fun `presence vibration level rises step by step as the subject nears the target band`() {
+        val policy = GuidancePolicy()
+        policy.setSubject("강아지")
+        val t0 = GuidancePolicy.PRESENCE_VIBRATION_AFTER_MS
+        policy.feed(result(x = 0.45f, size = 0f), now = 0)
+        // |x|=0.45 / 허용치 0.20 = 2.25 → 가장 먼 단계 0 으로 시작
+        assertEquals(listOf(0), presenceLevels(policy.feed(result(x = 0.45f, size = 0f), now = t0)))
+        // 같은 단계가 이어지면 다시 내보내지 않는다
+        assertTrue(presenceLevels(policy.feed(result(x = 0.45f, size = 0f), now = t0 + 100)).isEmpty())
+        // 1.75 → 1단계, 1.25 → 2단계, 0.5(목표 범위 안) → 3단계
+        assertEquals(listOf(1), presenceLevels(policy.feed(result(x = 0.35f, size = 0f), now = t0 + 200)))
+        assertEquals(listOf(2), presenceLevels(policy.feed(result(x = 0.25f, size = 0f), now = t0 + 300)))
+        assertEquals(listOf(3), presenceLevels(policy.feed(result(x = 0.10f, size = 0f), now = t0 + 400)))
+        // 벗어나면 정지, 다시 잡히면 유지 시간 뒤 새로 시작
+        assertTrue(policy.feed(lostResult, now = t0 + 500).contains(GuidanceAction.PresenceVibrationStop))
+    }
+
+    @Test
+    fun `presence level uses the worse of the horizontal and vertical axes`() {
+        // x 는 범위 안(0.05)이지만 y 가 크게 벗어남(0.5 / 허용치 ≈ 0.18~0.25 ≥ 2.0) → 0단계
+        val far = result(x = 0.05f, size = 0f, y = 0.5f)
+        assertEquals(0, GuidancePolicy.presenceLevelFor(GuidancePolicy.presenceDeviationScore(far), -1))
+        val near = result(x = 0.05f, size = 0f, y = 0.05f)
+        assertEquals(3, GuidancePolicy.presenceLevelFor(GuidancePolicy.presenceDeviationScore(near), -1))
+    }
+
+    @Test
+    fun `presence level changes only past the hysteresis margin`() {
+        // 2단계(상한 1.5)에서 1.55 는 여유(0.15) 안이라 유지, 1.65 이상이면 내려간다
+        assertEquals(2, GuidancePolicy.presenceLevelFor(1.55f, currentLevel = 2))
+        assertEquals(1, GuidancePolicy.presenceLevelFor(1.70f, currentLevel = 2))
+        // 1단계에서 2단계로 올라가려면 상한 1.5 보다 여유만큼 더 안쪽(1.35 미만)이어야 한다
+        assertEquals(1, GuidancePolicy.presenceLevelFor(1.40f, currentLevel = 1))
+        assertEquals(2, GuidancePolicy.presenceLevelFor(1.30f, currentLevel = 1))
+        // 시작(현재 단계 없음)은 여유 없이 바로 해당 단계
+        assertEquals(3, GuidancePolicy.presenceLevelFor(0.99f, currentLevel = -1))
+        assertEquals(0, GuidancePolicy.presenceLevelFor(9f, currentLevel = -1))
+        // 한 번에 여러 단계도 건너뛴다
+        assertEquals(3, GuidancePolicy.presenceLevelFor(0.2f, currentLevel = 0))
+        assertEquals(0, GuidancePolicy.presenceLevelFor(5f, currentLevel = 3))
     }
 
     @Test
@@ -420,7 +468,7 @@ class GuidancePolicyTest {
             result(0.3f, 0f),
             now = GuidancePolicy.SEARCH_HINT_AFTER_MS + 1_100 + GuidancePolicy.PRESENCE_VIBRATION_AFTER_MS,
         )
-        assertTrue(held.none { it == GuidanceAction.PresenceVibrationStart })
+        assertTrue(held.none { it is GuidanceAction.PresenceVibrationLevel })
         // 이탈해도 "사라졌어요" 없음 (경고음만)
         val lost = policy.feed(lostResult, now = 10_000)
         val lostLater = policy.feed(lostResult, now = 10_000 + GuidancePolicy.LOST_SPEAK_AFTER_MS)
@@ -430,7 +478,7 @@ class GuidancePolicyTest {
     /** 존재 진동 시작/정지 액션을 뺀 나머지 — 오래 잡혀 있는 시나리오의 "그 외 침묵" 단언용. */
     private fun nonPresence(actions: List<GuidanceAction>): List<GuidanceAction> =
         actions.filterNot {
-            it == GuidanceAction.PresenceVibrationStart || it == GuidanceAction.PresenceVibrationStop
+            it is GuidanceAction.PresenceVibrationLevel || it == GuidanceAction.PresenceVibrationStop
         }
 
     // ---- 탐색 안내 (노션 스크립트 상태 3, 2026-08-24) ----

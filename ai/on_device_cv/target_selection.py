@@ -105,7 +105,7 @@ class TargetSelector:
                 TargetCountStatus.NOT_APPLICABLE,
             )
 
-        if target_spec.subject_type is SubjectType.LANDSCAPE:
+        if target_spec.subject_type in (SubjectType.LANDSCAPE, SubjectType.DOCUMENT):
             return self._result(
                 target_spec,
                 TargetSelectionState.SCENE_ONLY,

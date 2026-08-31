@@ -105,6 +105,14 @@ class CaptureSessionManager(
     /** 조준 루프 동안만 동작하는 기울기 센서. ③ 판정·⑥ 수평 피드백이 소비. */
     val tiltMonitor: TiltSensorMonitor = TiltSensorMonitor(context)
 
+    /**
+     * 마지막 셔터 순간의 폰 좌우 기울기(도, [TiltSensorMonitor.rollDegrees] 규약) — 저장 전
+     * 수평 보정([HorizonStraightener])의 입력 (2026-08-30). 셔터 요청 시점에 고정된다.
+     */
+    @Volatile
+    var shutterRollDegrees: Float = 0f
+        private set
+
     interface Listener {
         /** 상태가 바뀔 때마다 호출. ⑥은 여기서 낭독/햅틱/사운드를 렌더링한다. */
         fun onStateChanged(state: SessionState)
@@ -362,6 +370,9 @@ class CaptureSessionManager(
     private fun shutter(burstCount: Int = 1, isAuto: Boolean = false) {
         val token = activeToken ?: return
         lastCaptureWasAuto = isAuto
+        // 셔터 순간의 좌우 기울기를 고정해 둔다 — 아래 moveTo(CAPTURING) 이 센서를 멈추고,
+        // 연사 채점 스레드의 수평 보정([HorizonStraightener])이 나중에 이 값을 읽는다.
+        shutterRollDegrees = tiltMonitor.rollDegrees
         bundleAssembler.begin(token)
         moveTo(SessionState.CAPTURING)
         val accepted = ringBuffer.requestCandidates(SystemClock.elapsedRealtime()) { candidates ->

@@ -30,6 +30,28 @@ class GuidanceFeedbackSettingsMapperTest {
         assertEquals(1f, GuidanceFeedbackSettingsMapper.clampVibrationIntensity(1.7f), 1e-6f)
     }
 
+    // --- presencePulseOffMs (존재 진동 — 가까워질수록 빠르게, 2026-08-30) ---
+
+    @Test
+    fun presencePulseGapShrinksAsTheLevelRises() {
+        val gaps = (0 until GuidancePolicy.PRESENCE_LEVELS)
+            .map { GuidanceFeedbackSettingsMapper.presencePulseOffMs(it) }
+        assertEquals(gaps.sortedDescending(), gaps)
+        assertEquals(gaps.distinct().size, gaps.size)
+    }
+
+    @Test
+    fun presencePulseGapClampsOutOfRangeLevels() {
+        assertEquals(
+            GuidanceFeedbackSettingsMapper.presencePulseOffMs(0),
+            GuidanceFeedbackSettingsMapper.presencePulseOffMs(-3),
+        )
+        assertEquals(
+            GuidanceFeedbackSettingsMapper.presencePulseOffMs(GuidancePolicy.PRESENCE_LEVELS - 1),
+            GuidanceFeedbackSettingsMapper.presencePulseOffMs(99),
+        )
+    }
+
     // --- vibrationAmplitude (진동 0 = 무음 처리) ---
 
     @Test

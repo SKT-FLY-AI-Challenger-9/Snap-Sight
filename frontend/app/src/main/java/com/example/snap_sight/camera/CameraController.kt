@@ -121,6 +121,9 @@ class CameraController(private val context: Context) {
     @Volatile
     var burstFinisher: ((File) -> File?)? = null
 
+    /** 후면 카메라인가 — 수평 보정([HorizonStraightener]) 등 부호가 렌즈 방향에 묶인 후처리의 게이트. */
+    val isBackLens: Boolean get() = lensFacing == CameraSelector.LENS_FACING_BACK
+
     var lensFacing: Int = CameraSelector.LENS_FACING_BACK
         private set
 

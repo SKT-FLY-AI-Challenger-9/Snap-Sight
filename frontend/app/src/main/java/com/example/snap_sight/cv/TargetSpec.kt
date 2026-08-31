@@ -36,7 +36,16 @@ data class TargetSpec(
     enum class SubjectType(val wire: String) {
         PERSON("person"),
         OBJECT("object"),
-        LANDSCAPE("landscape");
+        LANDSCAPE("landscape"),
+        /** 서류·종이·신분증 등 (2026-08-30) — bbox 조준 대상이 없고 텍스트 영역으로 프레이밍한다. */
+        DOCUMENT("document");
+
+        /**
+         * Objects365 bbox 로 조준할 단일 피사체가 없는 종류(풍경·서류) — 타겟 선택·편차 계산·
+         * LOST 안내를 건너뛰고 전용 안내([com.example.snap_sight.ux.LandscapeGuide] /
+         * [com.example.snap_sight.ux.DocumentGuide])가 맡는다.
+         */
+        val sceneOnly: Boolean get() = this == LANDSCAPE || this == DOCUMENT
 
         companion object {
             fun fromWire(value: String): SubjectType? = entries.firstOrNull { it.wire == value }
