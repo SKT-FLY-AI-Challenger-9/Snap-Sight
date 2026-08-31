@@ -13,10 +13,16 @@ from ai.target_spec import Framing, SubjectType, TargetSpec, TargetSpecSource, T
 # STT는 숫자를 한글이 아닌 아라비아 숫자로 인식하는 경우가 많다 (예: "2명").
 DIGIT_COUNT_PATTERN = re.compile(r"(\d+)\s*명")
 
-# confidence는 0.4/0.6/0.8/1.0 네 값만 가능하다 (신호 0~3개 매칭). 임계값은 실측 근거 없는
-# 추정치이지만, 이 이산값 구조상 0.4~0.6 사이 어떤 값을 넣어도 "신호 0개 매칭"만 걸러내는
-# 것과 동일해 실질적으로는 "신호가 하나도 안 잡혔는가"를 구분하는 경계다.
+# confidence는 0.4/0.6/0.8/1.0 네 값만 가능하다 (신호 0~4개 매칭, 1.0 상한). 임계값은 실측
+# 근거 없는 추정치이지만, 이 이산값 구조상 0.4~0.6 사이 어떤 값을 넣어도 "신호 0개 매칭"만
+# 걸러내는 것과 동일해 실질적으로는 "신호가 하나도 안 잡혔는가"를 구분하는 경계다.
 CONFIDENCE_THRESHOLD = 0.6
+
+# 구도 요청 (2026-08-31): "구도 좋게 찍어줘"처럼 피사체 단어가 없어도 촬영 의도가 명확한
+# 발화 — 매칭 신호로 세어 needs_clarification 으로 떨어지지 않게 한다 (실기기에서 이 발화가
+# 0.4 로 떨어져 조준이 아예 시작되지 않는 문제). 앱은 이 키워드로 구도 모드도 무장한다.
+# frontend cv/SlotParser.kt 의 COMPOSITION_KEYWORDS 와 항목·순서가 같아야 한다.
+COMPOSITION_KEYWORDS = ("구도", "멋지게", "멋있게", "예쁘게", "이쁘게", "감성", "분위기", "상반신")
 
 COUNT_WORDS = {
     "혼자": 1, "한 명": 1, "한명": 1,
@@ -397,8 +403,9 @@ def parse_target_spec(
     subject_matched = subject_type is not SubjectType.PERSON or object_label is not None
     count_matched = subject_count is not None
     framing_matched = framing is not Framing.FULL_BODY
-    matched = sum([subject_matched, count_matched, framing_matched])
-    confidence = round(0.4 + 0.2 * matched, 2)
+    composition_matched = any(keyword in text for keyword in COMPOSITION_KEYWORDS)
+    matched = sum([subject_matched, count_matched, framing_matched, composition_matched])
+    confidence = round(min(1.0, 0.4 + 0.2 * matched), 2)
     status = (
         TargetSpecStatus.OK
         if confidence >= CONFIDENCE_THRESHOLD

@@ -53,6 +53,10 @@ demo_outputs/
 # Local voice test recordings (personal audio, not for commit)
 ai/samples/
 
+# 구도 데이터셋 (수집 사진·통계) 과 MediaPipe .task 모델
+dataset/
+*.task
+
 # OS
 .DS_Store
 Thumbs.db

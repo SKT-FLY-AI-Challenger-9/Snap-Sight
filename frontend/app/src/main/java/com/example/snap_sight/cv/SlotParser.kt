@@ -16,10 +16,17 @@ object SlotParser {
     // STT는 숫자를 한글이 아닌 아라비아 숫자로 인식하는 경우가 많다 (예: "2명").
     private val DIGIT_COUNT_PATTERN = Regex("""(\d+)\s*명""")
 
-    // confidence는 0.4/0.6/0.8/1.0 네 값만 가능하다 (신호 0~3개 매칭). 임계값은 실측 근거 없는
-    // 추정치이지만, 이 이산값 구조상 0.4~0.6 사이 어떤 값을 넣어도 "신호 0개 매칭"만 걸러내는
-    // 것과 동일해 실질적으로는 "신호가 하나도 안 잡혔는가"를 구분하는 경계다.
+    // confidence는 0.4/0.6/0.8/1.0 네 값만 가능하다 (신호 0~4개 매칭, 1.0 상한). 임계값은 실측
+    // 근거 없는 추정치이지만, 이 이산값 구조상 0.4~0.6 사이 어떤 값을 넣어도 "신호 0개 매칭"만
+    // 걸러내는 것과 동일해 실질적으로는 "신호가 하나도 안 잡혔는가"를 구분하는 경계다.
     private const val CONFIDENCE_THRESHOLD = 0.6f
+
+    // 구도 요청 (2026-08-31): "구도 좋게 찍어줘"처럼 피사체 단어가 없어도 촬영 의도가 명확한
+    // 발화 — 매칭 신호로 세어 needs_clarification 으로 떨어지지 않게 한다 (실기기에서 이 발화가
+    // 0.4 로 떨어져 조준이 아예 시작되지 않았다). MainActivity 는 이 키워드로 구도 모드도 무장한다.
+    // `ai/slot_parser.py` 의 COMPOSITION_KEYWORDS 와 항목·순서가 같아야 한다.
+    internal val COMPOSITION_KEYWORDS =
+        listOf("구도", "멋지게", "멋있게", "예쁘게", "이쁘게", "감성", "분위기", "상반신")
 
     private val COUNT_WORDS = linkedMapOf(
         "혼자" to 1, "한 명" to 1, "한명" to 1,
@@ -413,9 +420,12 @@ object SlotParser {
         val subjectMatched = subjectType != TargetSpec.SubjectType.PERSON || objectLabel != null
         val countMatched = subjectCount != null
         val framingMatched = framing != TargetSpec.Framing.FULL_BODY
-        val matched = listOf(subjectMatched, countMatched, framingMatched).count { it }
+        val compositionMatched = COMPOSITION_KEYWORDS.any { it in text }
+        val matched = listOf(subjectMatched, countMatched, framingMatched, compositionMatched)
+            .count { it }
         // (40 + 20 * matched) / 100f 는 0.4/0.6/0.8/1.0 을 부동소수 누적 오차 없이 만든다.
-        val confidence = (40 + 20 * matched) / 100f
+        // 신호 4개가 다 잡혀도 1.0 상한 (Python 미러의 min(1.0, ...) 과 동일).
+        val confidence = minOf(100, 40 + 20 * matched) / 100f
         val status = if (confidence >= CONFIDENCE_THRESHOLD) {
             TargetSpec.Status.OK
         } else {

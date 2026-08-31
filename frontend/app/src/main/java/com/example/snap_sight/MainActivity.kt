@@ -326,6 +326,34 @@ class MainActivity : ComponentActivity() {
     @Volatile
     private var personFramingSession = false
 
+    /**
+     * 구도 세션 (2026-08-31) — 인물 세션 발화에 "구도"류 키워드([COMPOSITION_KEYWORDS])가
+     * 있으면 [PersonFramingController] 의 목표 밴드를 큐레이션 사진 실측 분포로 바꾼다.
+     */
+    @Volatile
+    private var compositionSession = false
+
+    /** 구도 세션의 촬영 범위 — 하반신까지 보이면 물어보고([askCompositionScope]) 정한다. */
+    @Volatile
+    private var compositionScope = PersonFramingController.CompositionScope.FULL_BODY
+
+    private enum class CompositionQuestion { NOT_ASKED, PENDING, DONE }
+
+    /** "상반신에 집중해서 찍을까요?" 질문 진행 상태 — PENDING 동안은 줌·촬영을 보류한다. */
+    @Volatile
+    private var compositionQuestion = CompositionQuestion.NOT_ASKED
+
+    /**
+     * 줌-후 촬영 확인 (2026-08-31) — 목표 도달 시 인물 위치("오른쪽/왼쪽/가운데")를 말하고
+     * "이대로 찍을까요?"를 묻는다. RE_GUIDE 는 "아니" 대답 후 시계 안내로 중앙 유도 중 —
+     * 중앙에 오면 재질문 없이 "좋아요. 지정하신 대로 찍을게요" 하고 찍는다. FIRING 은 확정
+     * 발화~셔터 사이(중복 방지).
+     */
+    private enum class CaptureConfirm { NOT_ASKED, PENDING, RE_GUIDE, FIRING }
+
+    @Volatile
+    private var captureConfirm = CaptureConfirm.NOT_ASKED
+
     /** 인물(subjectType=person 또는 등록 이름) 세션 — 자동촬영 승자 컷에 3분할 크롭 적용. */
     @Volatile
     private var portraitCropEligible = false
@@ -654,6 +682,14 @@ class MainActivity : ComponentActivity() {
         // 인물 세션 감지 (사용자 요청 2026-08-27) — 머리·발이 잘릴 만큼 가까우면 "뒤로 가라"를
         // 촬영자가 아니라 피사체에게 전달하라고 안내한다.
         guidanceFeedback.personSession = { portraitCropEligible }
+        // 구도 범위 질문("상반신에 집중해서 찍을까요?")·촬영 확인 질문("이대로 찍을까요?")과
+        // 시계 안내가 겹치지 않게, 질문~대답·확정 발화 동안은 방향·READY 발화를 삼킨다
+        // (사용자 요청 2026-08-31). 진동·경고음은 유지된다.
+        guidanceFeedback.holdGuidanceSpeech = {
+            compositionQuestion == CompositionQuestion.PENDING ||
+                captureConfirm == CaptureConfirm.PENDING ||
+                captureConfirm == CaptureConfirm.FIRING
+        }
         // 좌우 수평 (2026-08-30, 엔드유저 피드백) — 10° 이상 기울어져 있으면 다른 축보다 먼저
         // "폰 오른쪽/왼쪽을 조금 올려 주세요". 센서는 조준 중에만 돌고(tiltMonitor.start),
         // 멈춰 있을 땐 마지막 값이 남지만 안내는 조준 중 판정에서만 나간다.
@@ -1783,6 +1819,139 @@ class MainActivity : ComponentActivity() {
 
             override fun onError(message: String) {} // 자동으로 건 마이크 — 못 들었다고 재촉하지 않는다
         })
+    }
+
+    /**
+     * 구도 세션에서 하반신까지 다 보일 때 촬영 범위를 물어본다 (2026-08-31 사용자 요청 —
+     * "사람이 전체적으로 나오고 있어요. 상반신에 집중해서 찍을까요?"). 대답이 오기 전까지는
+     * 프레이밍 판정 쪽([compositionQuestion] PENDING 게이트)이 줌·촬영을 보류한다.
+     */
+    private fun askCompositionScope(sessionId: String) {
+        if (sessionManager.sessionId != sessionId || sessionManager.state != SessionState.AIMING) {
+            compositionQuestion = CompositionQuestion.DONE
+            return
+        }
+        // interrupt: 진행 중인 방향 안내를 끊고 확실히 들리게 한다 — 같은 우선순위 발화가
+        // 재생 중이면 질문이 조용히 버려져(프리셋 모드) 마이크만 켜지던 문제 방지 (2026-08-31).
+        guidanceFeedback.announce(
+            COMPOSITION_SCOPE_QUESTION,
+            onDone = { listenForCompositionScope(sessionId) },
+            priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT,
+            interrupt = true,
+        )
+    }
+
+    /** [askCompositionScope] 의 대답을 듣는다 — 못 들으면 전신 유지(기본값)로 조용히 진행. */
+    private fun listenForCompositionScope(sessionId: String) {
+        if (sessionManager.sessionId != sessionId || sessionManager.state != SessionState.AIMING) {
+            compositionQuestion = CompositionQuestion.DONE
+            return
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED || !searchRecognizer.isAvailable
+        ) {
+            compositionQuestion = CompositionQuestion.DONE
+            return
+        }
+        searchRecognizer.start(object : SpeechToTextRecognizer.Listener {
+            override fun onRecognized(utterance: String) {
+                if (sessionManager.sessionId != sessionId) return
+                val squashed = utterance.replace(" ", "")
+                // "아니(아니오/아니야)"가 "네"를 포함하는 오탐("아니네")을 막기 위해 부정을 먼저 본다
+                val wantsFullBody = COMPOSITION_FULL_BODY_ANSWERS.any { squashed.contains(it) }
+                val wantsUpperBody = !wantsFullBody &&
+                    COMPOSITION_UPPER_BODY_ANSWERS.any { squashed.contains(it) }
+                compositionScope = if (wantsUpperBody) {
+                    PersonFramingController.CompositionScope.UPPER_BODY
+                } else {
+                    PersonFramingController.CompositionScope.FULL_BODY
+                }
+                compositionQuestion = CompositionQuestion.DONE
+                guidanceFeedback.announce(
+                    if (wantsUpperBody) COMPOSITION_UPPER_BODY_CONFIRM else COMPOSITION_FULL_BODY_CONFIRM,
+                    priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT,
+                    interrupt = true,
+                )
+            }
+
+            override fun onError(message: String) {
+                // 못 들었으면 기본값(전신)으로 진행 — 재촉하면 촬영 흐름이 끊긴다
+                compositionQuestion = CompositionQuestion.DONE
+            }
+        })
+    }
+
+    /**
+     * 줌-후 촬영 확인 (2026-08-31) — 인물이 화면 어느 열에 있는지 말해주고 "이대로
+     * 찍을까요?"를 1.2배속으로 묻는다. "네"류·무응답이면 확정 발화 후 촬영, "아니"류면
+     * 시계 안내로 중앙 유도를 재개하고([CaptureConfirm.RE_GUIDE]) 중앙 도달 시 재질문
+     * 없이 찍는다.
+     */
+    private fun askCaptureConfirm(sessionId: String, positionQuestion: String) {
+        if (sessionManager.sessionId != sessionId || sessionManager.state != SessionState.AIMING) {
+            captureConfirm = CaptureConfirm.NOT_ASKED
+            return
+        }
+        // interrupt: 방향 안내 꼬리와 겹치거나(체감상 목소리 겹침) 같은 우선순위에 밀려 조용히
+        // 버려지지 않게, 진행 중 발화를 끊고 확실히 묻는다 (2026-08-31).
+        guidanceFeedback.announce(
+            positionQuestion,
+            onDone = { listenForCaptureConfirm(sessionId) },
+            priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT,
+            interrupt = true,
+            rateOverride = CAPTURE_CONFIRM_SPEECH_RATE,
+        )
+    }
+
+    private fun listenForCaptureConfirm(sessionId: String) {
+        if (sessionManager.sessionId != sessionId || sessionManager.state != SessionState.AIMING) {
+            captureConfirm = CaptureConfirm.NOT_ASKED
+            return
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED || !searchRecognizer.isAvailable
+        ) {
+            fireConfirmedCapture(sessionId) // 못 물으면 기존 자동촬영과 같은 결정 — 그대로 찍는다
+            return
+        }
+        searchRecognizer.start(object : SpeechToTextRecognizer.Listener {
+            override fun onRecognized(utterance: String) {
+                if (sessionManager.sessionId != sessionId) return
+                val squashed = utterance.replace(" ", "")
+                if (CAPTURE_DECLINE_ANSWERS.any { squashed.contains(it) }) {
+                    // "아니" — 시계 안내로 중앙 유도 재개, 중앙 도달 시 재질문 없이 촬영
+                    captureConfirm = CaptureConfirm.RE_GUIDE
+                    return
+                }
+                fireConfirmedCapture(sessionId)
+            }
+
+            override fun onError(message: String) {
+                if (sessionManager.sessionId != sessionId) return
+                // 무응답도 촬영 — 원래 자동촬영이던 흐름이라 침묵은 동의로 본다
+                fireConfirmedCapture(sessionId)
+            }
+        })
+    }
+
+    /** "좋아요. 지정하신 대로 찍을게요."(1.2배속) 한 번 말하고 셔터. */
+    private fun fireConfirmedCapture(sessionId: String) {
+        if (sessionManager.sessionId != sessionId || sessionManager.state != SessionState.AIMING) {
+            captureConfirm = CaptureConfirm.NOT_ASKED
+            return
+        }
+        captureConfirm = CaptureConfirm.FIRING
+        guidanceFeedback.announce(
+            CAPTURE_CONFIRM_ANNOUNCE,
+            onDone = {
+                if (sessionManager.sessionId == sessionId) {
+                    sessionManager.autoShutter(sessionId)
+                }
+            },
+            priority = GuidanceFeedback.SpeechPriority.READY,
+            interrupt = true,
+            rateOverride = CAPTURE_CONFIRM_SPEECH_RATE,
+        )
     }
 
     private fun isCurrentCapture(sessionId: String, localGeneration: Long): Boolean =
@@ -2962,6 +3131,10 @@ class MainActivity : ComponentActivity() {
         foodPitchSession = false
         portraitCropEligible = false
         personFramingSession = false
+        compositionSession = false
+        compositionScope = PersonFramingController.CompositionScope.FULL_BODY
+        compositionQuestion = CompositionQuestion.NOT_ASKED
+        captureConfirm = CaptureConfirm.NOT_ASKED
         personFramingPose.reset()
         personFraming.reset()
         subjectMotion.reset()
@@ -3067,6 +3240,49 @@ class MainActivity : ComponentActivity() {
         // 사물은 제외한다(머리·발 랜드마크가 안 잡혀 줌이 끝없이 계속되는 것을 막기 위함).
         personFramingSession = effectiveSpec?.subjectType == TargetSpec.SubjectType.PERSON
         personFramingPose.enabled = personFramingSession
+        // 구도 세션 (2026-08-31) — 인물 세션의 기본 동작이다 (사용자 요청 2026-08-31: "사람
+        // 찍어줘 했을 때랑 원래 인물에서 돌아가던 걸 저걸로 바꿔줘"). 목표 밴드는 큐레이션
+        // 사진 실측 분포를 쓰고, 하반신까지 보이면 상반신/전신을 물어 분기한다. "구도"류
+        // 키워드([COMPOSITION_KEYWORDS])는 이제 진입 안내 발화 여부만 가른다.
+        val wasCompositionSession = compositionSession
+        val explicitComposition =
+            COMPOSITION_KEYWORDS.any { (localRawText ?: serverRawText).contains(it) }
+        compositionSession = personFramingSession
+        if (compositionSession && !wasCompositionSession) {
+            // 발화에 범위가 이미 있으면("상반신"/"전신") 질문을 건너뛰고 곧장 그 범위로 간다
+            // (실기기 피드백 2026-08-31 — "상반신 찍어줘"가 질문 없이 바로 상반신으로).
+            val rawForScope = localRawText ?: serverRawText
+            when {
+                rawForScope.contains("상반신") -> {
+                    compositionScope = PersonFramingController.CompositionScope.UPPER_BODY
+                    compositionQuestion = CompositionQuestion.DONE
+                    guidanceFeedback.announce(
+                        COMPOSITION_UPPER_BODY_CONFIRM,
+                        priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT,
+                    )
+                }
+                rawForScope.contains("전신") -> {
+                    compositionScope = PersonFramingController.CompositionScope.FULL_BODY
+                    compositionQuestion = CompositionQuestion.DONE
+                    guidanceFeedback.announce(
+                        COMPOSITION_FULL_BODY_CONFIRM,
+                        priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT,
+                    )
+                }
+                else -> {
+                    compositionScope = PersonFramingController.CompositionScope.FULL_BODY
+                    compositionQuestion = CompositionQuestion.NOT_ASKED
+                    // "구도"류 키워드를 명시한 발화에만 모드 진입을 알린다 — 일반 "사람
+                    // 찍어줘"까지 매번 "구도 모드예요"라고 하면 시끄럽다 (기본 동작이므로).
+                    if (explicitComposition) {
+                        guidanceFeedback.announce(
+                            COMPOSITION_MODE_GUIDANCE,
+                            priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT,
+                        )
+                    }
+                }
+            }
+        }
         // 서류 세션(2026-08-30) — 텍스트 인식을 켜고, 사진은 서버로 보내지 않는다(신분증 프라이버시).
         documentSession = effectiveSpec?.subjectType == TargetSpec.SubjectType.DOCUMENT
         documentText.enabled = documentSession
@@ -3349,10 +3565,29 @@ class MainActivity : ComponentActivity() {
                     // 슬라이더 튜닝 확인용 실측값 표시 (사용자 요청 2026-08-28 — "화면에 머리
                     // 위치도 뜨게 해줘"). 좌표는 %로, bbox 높이도 함께 보여준다. 움직임 판정으로
                     // 줌이 보류 중이면 "이동중"을 덧붙인다.
+                    // 상반신 구도의 줌 종료 조건용 bbox 넓이(화면 대비 면적) — 세로·가로 보이는
+                    // 비율의 곱 (사용자 요청 2026-08-31 — "전체 넓이가 화면에 65% 이상").
+                    val bboxAreaRatio = visibility?.let {
+                        (1f - it.topMargin - it.bottomMargin).coerceAtLeast(0f) *
+                            (1f - it.leftMargin - it.rightMargin).coerceAtLeast(0f)
+                    }
                     personFramingDebugLabel = "머리 ${headYForFrame?.let { "%.0f%%".format(it * 100) } ?: "?"} " +
                         "발 ${footYForFrame?.let { "%.0f%%".format(it * 100) } ?: "?"} " +
-                        "H ${bboxHeightRatio?.let { "%.0f%%".format(it * 100) } ?: "?"}" +
+                        "H ${bboxHeightRatio?.let { "%.0f%%".format(it * 100) } ?: "?"} " +
+                        "A ${bboxAreaRatio?.let { "%.0f%%".format(it * 100) } ?: "?"}" +
                         (if (subjectMoving) " 이동중" else "")
+                    // 구도 세션에서 하반신(발목)까지 다 보이면 촬영 범위를 물어본다 (2026-08-31 —
+                    // "상반신에 집중해서 찍을까요?"). 대답이 올 때까지는 줌·촬영을 보류한다.
+                    // 질문은 좌우가 중앙에 맞은 뒤에만 꺼낸다 — 먼저 시계 안내로 가운데에 오게
+                    // 하고, 그 다음에 물어야 안내 발화와 겹치지 않는다 (사용자 요청 2026-08-31).
+                    val horizontallyCentered = ReadinessBlocker.HORIZONTAL !in readiness.blockers
+                    if (compositionSession && compositionQuestion == CompositionQuestion.NOT_ASKED &&
+                        footYForFrame != null && bboxFitsFrame && horizontallyCentered
+                    ) {
+                        compositionQuestion = CompositionQuestion.PENDING
+                        val expectedSessionId = sessionManager.sessionId
+                        runOnUiThread { askCompositionScope(expectedSessionId) }
+                    }
                     personFraming.onJudgment(
                         bboxFitsFrame = bboxFitsFrame,
                         headY = headYForFrame,
@@ -3361,23 +3596,72 @@ class MainActivity : ComponentActivity() {
                         generalReady = readiness.ready,
                         nowMs = output.timestampMs,
                         subjectMoving = subjectMoving,
+                        composition = if (compositionSession) {
+                            compositionScope
+                        } else {
+                            PersonFramingController.CompositionScope.OFF
+                        },
+                        bboxAreaRatio = bboxAreaRatio,
                     )
                 } else {
                     personFramingDebugLabel = ""
                     null
                 }
                 if (personFramingOutcome != null) {
-                    if (personFramingOutcome.action == PersonFramingController.Action.RequestZoomStep) {
-                        if (autoZoom.requestZoomStep() != null) guidanceFeedback.playScanTick()
+                    // 질문(범위·촬영 확인) 대기~확정 발화 동안은 줌·진동·촬영을 모두 보류한다 —
+                    // 대답에 따라 목표·셔터가 달라지므로 그 전의 판정으로 움직이면 안 된다.
+                    val questionBusy = compositionQuestion == CompositionQuestion.PENDING ||
+                        captureConfirm == CaptureConfirm.PENDING ||
+                        captureConfirm == CaptureConfirm.FIRING
+                    if (questionBusy) {
+                        // no-op
+                    } else if (personFramingOutcome.action == PersonFramingController.Action.RequestZoomStep) {
+                        // 상반신 구도는 하반신을 프레임 밖으로 밀어내야 해서 기본 3배 상한으로
+                        // 모자라다 (실기기 피드백 2026-08-31) — 전용 상한(6배)을 쓴다.
+                        val zoomCeiling = if (compositionSession &&
+                            compositionScope == PersonFramingController.CompositionScope.UPPER_BODY
+                        ) {
+                            AutoZoomController.UPPER_BODY_MAX_ZOOM
+                        } else {
+                            AutoZoomController.MAX_ZOOM
+                        }
+                        if (autoZoom.requestZoomStep(maxZoom = zoomCeiling) != null) {
+                            guidanceFeedback.playScanTick()
+                        }
                     }
-                    if (personFramingOutcome.vibrate) guidanceFeedback.vibrateConfirm()
-                    if (personFramingOutcome.action == PersonFramingController.Action.Capture) {
+                    if (personFramingOutcome.vibrate && !questionBusy) guidanceFeedback.vibrateConfirm()
+                    if (personFramingOutcome.action == PersonFramingController.Action.Capture && !questionBusy) {
                         val expectedSessionId = sessionManager.sessionId
                         val generation = output.targetIntentGeneration
                         runOnUiThread {
                             if (cvProcessor.isCurrentTargetIntentGeneration(generation)) {
                                 sessionManager.autoShutter(expectedSessionId)
                             }
+                        }
+                    }
+                    // 줌-후 목표 도달 (2026-08-31): 3초 유지 대신 인물 위치를 말해주고 "이대로
+                    // 찍을까요?"를 묻는다. "아니" 뒤(RE_GUIDE)에는 시계 안내가 중앙으로 유도하고,
+                    // 중앙(3열) 도달 시 재질문 없이 확정 발화 후 촬영한다.
+                    if (personFramingOutcome.targetReached) {
+                        val centeredNow = readiness != null &&
+                            ReadinessBlocker.HORIZONTAL !in readiness.blockers
+                        when (captureConfirm) {
+                            CaptureConfirm.NOT_ASKED -> {
+                                captureConfirm = CaptureConfirm.PENDING
+                                val question = when {
+                                    centeredNow -> CAPTURE_POS_CENTER_QUESTION
+                                    (dev?.offsetX ?: 0f) > 0f -> CAPTURE_POS_RIGHT_QUESTION
+                                    else -> CAPTURE_POS_LEFT_QUESTION
+                                }
+                                val expectedSessionId = sessionManager.sessionId
+                                runOnUiThread { askCaptureConfirm(expectedSessionId, question) }
+                            }
+                            CaptureConfirm.RE_GUIDE -> if (centeredNow) {
+                                captureConfirm = CaptureConfirm.FIRING
+                                val expectedSessionId = sessionManager.sessionId
+                                runOnUiThread { fireConfirmedCapture(expectedSessionId) }
+                            }
+                            else -> Unit // PENDING(대답 대기)·FIRING(확정 발화~셔터)
                         }
                     }
                 } else if (dev != null && readiness != null) {
@@ -4035,6 +4319,42 @@ class MainActivity : ComponentActivity() {
 
         /** 인물 프레이밍 줌 중 bbox 가장자리 "닿음" 판정 여백 (사용자 요청 2026-08-28). */
         private const val PERSON_FRAMING_EDGE_TOUCH_MARGIN = 0.02f
+
+        /**
+         * 구도 세션 무장 키워드 (2026-08-31) — 인물 발화 원문에 이 중 하나가 있으면 목표 밴드를
+         * 큐레이션 사진 실측 분포로 바꾼다. "잘 찍어줘"의 "잘"은 한 글자라 오탐이 많아 제외.
+         * SlotParser 도 같은 목록을 매칭 신호로 세어 이 발화가 needs_clarification 으로
+         * 떨어지지 않게 한다 — 목록은 한 곳([SlotParser.COMPOSITION_KEYWORDS])만 고친다.
+         */
+        private val COMPOSITION_KEYWORDS = SlotParser.COMPOSITION_KEYWORDS
+
+        /** 구도 세션 진입 안내 (2026-08-31). */
+        private const val COMPOSITION_MODE_GUIDANCE =
+            "구도 모드예요. 잘 찍힌 사진들의 배치에 맞춰 안내할게요."
+
+        /** 구도 세션에서 하반신까지 다 보일 때의 촬영 범위 질문 (2026-08-31 사용자 요청). */
+        private const val COMPOSITION_SCOPE_QUESTION =
+            "사람이 전체적으로 나오고 있어요. 상반신에 집중해서 찍을까요?"
+
+        /** [COMPOSITION_SCOPE_QUESTION] 의 긍정 대답 — 상반신 구도로 전환한다 (공백 제거 후 포함 비교). */
+        private val COMPOSITION_UPPER_BODY_ANSWERS = listOf("네", "예", "응", "그래", "좋아", "상반신")
+
+        /** 부정·전신 유지 대답 — 긍정보다 먼저 검사한다 ("아니네" 같은 오탐 방지). */
+        private val COMPOSITION_FULL_BODY_ANSWERS = listOf("아니", "전신", "전체", "그대로", "싫어")
+
+        private const val COMPOSITION_UPPER_BODY_CONFIRM = "상반신에 집중해서 찍을게요."
+        private const val COMPOSITION_FULL_BODY_CONFIRM = "전신이 나오게 찍을게요."
+
+        // 줌-후 촬영 확인 (2026-08-31) — 목표 도달 시 인물 위치를 말하고 "이대로 찍을까요?".
+        // 텍스트는 SpeechCatalog(q5~q8)와 완전 일치해야 프리셋 음원으로 나간다. 1.2배속.
+        private const val CAPTURE_POS_RIGHT_QUESTION = "지금 인물이 화면 안 오른쪽에 있어요. 이대로 찍을까요?"
+        private const val CAPTURE_POS_LEFT_QUESTION = "지금 인물이 화면 안 왼쪽에 있어요. 이대로 찍을까요?"
+        private const val CAPTURE_POS_CENTER_QUESTION = "지금 인물이 가운데에 있어요. 이대로 찍을까요?"
+        private const val CAPTURE_CONFIRM_ANNOUNCE = "좋아요. 지정하신 대로 찍을게요."
+        private const val CAPTURE_CONFIRM_SPEECH_RATE = 1.2f
+
+        /** "이대로 찍을까요?"의 거부 대답 — 그 외(긍정·무응답)는 전부 촬영으로 본다. */
+        private val CAPTURE_DECLINE_ANSWERS = listOf("아니", "잠깐", "잠시", "기다려", "멈춰", "다시")
 
         /** 인물 3분할 크롭 on/off — 2026-08-28 사용자 요청으로 일단 꺼둠. */
         private const val PORTRAIT_CROP_ENABLED = false

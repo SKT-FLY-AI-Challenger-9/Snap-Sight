@@ -120,7 +120,8 @@ def test_object_label_sets_subject_type_to_object():
 
     assert spec.subject_type is SubjectType.OBJECT
     assert spec.object_label == "cup"
-    assert spec.confidence == 0.6
+    # "예쁘게"가 구도 신호로도 세어져 주체+구도 2개 매칭 (2026-08-31)
+    assert spec.confidence == 0.8
 
 
 def test_count_keyword_matching_default_framing_value():
@@ -174,6 +175,34 @@ def test_at_least_one_signal_matched_sets_status_ok():
     spec = parse_target_spec("혼자 찍어줘", session_id="sess_15")
 
     assert spec.confidence == 0.6
+    assert spec.status is TargetSpecStatus.OK
+
+
+def test_composition_keyword_counts_as_a_signal():
+    """"구도 좋게 찍어줘"는 피사체 단어가 없어도 촬영 의도가 명확하다 — 구도 키워드가 매칭
+    신호로 세어져 OK(0.6)가 되어야 한다 (2026-08-31 실기기에서 0.4로 떨어져 조준이 아예
+    시작되지 않던 문제의 회귀 방지)."""
+    spec = parse_target_spec("구도 좋게 찍어줘", session_id="sess_31")
+
+    assert spec.subject_type is SubjectType.PERSON
+    assert spec.confidence == 0.6
+    assert spec.status is TargetSpecStatus.OK
+
+
+def test_upper_body_utterance_parses_ok_as_person_composition_request():
+    """"상반신 찍어줘" — 프레이밍 사전엔 없지만 구도 신호로 세어져 OK 가 돼야 한다
+    (실기기 2026-08-31: 0.4로 떨어져 조준이 시작되지 않았다). SlotParserTest.kt 미러."""
+    spec = parse_target_spec("상반신 찍어줘", session_id="sess_33")
+
+    assert spec.subject_type is SubjectType.PERSON
+    assert spec.status is TargetSpecStatus.OK
+
+
+def test_confidence_is_capped_at_one_with_all_four_signals():
+    """주체+인원수+프레이밍+구도, 4개 신호가 다 잡혀도 confidence는 1.0을 넘지 않는다."""
+    spec = parse_target_spec("머그컵 든 사람 2명 얼굴 멋지게 찍어줘", session_id="sess_32")
+
+    assert spec.confidence == 1.0
     assert spec.status is TargetSpecStatus.OK
 
 
