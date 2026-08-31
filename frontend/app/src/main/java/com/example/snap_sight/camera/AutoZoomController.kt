@@ -65,12 +65,18 @@ class AutoZoomController(private val cameraController: CameraController) {
      * 톤·진동 여부를 판단한다).
      *
      * @param factor 한 스텝에 곱할 배율 (기본 10% 확대).
+     * @param maxZoom 이 호출에서 허용할 배율 상한 — 상반신 구도(2026-08-31)는 하반신을
+     *        프레임 밖으로 밀어내야 해서 기본 상한 3배로 모자라 [UPPER_BODY_MAX_ZOOM] 을
+     *        넘긴다. 기기 max 가 더 작으면 그 값.
      */
-    fun requestZoomStep(factor: Float = PERSON_FRAMING_ZOOM_STEP): Float? {
+    fun requestZoomStep(
+        factor: Float = PERSON_FRAMING_ZOOM_STEP,
+        maxZoom: Float = MAX_ZOOM,
+    ): Float? {
         val now = System.currentTimeMillis()
         if (now - lastZoomAtMs < COOLDOWN_MS) return null
         val current = cameraController.zoomRatio
-        val ceiling = effectiveMaxZoom(cameraController.maxZoomRatio)
+        val ceiling = minOf(maxZoom, cameraController.maxZoomRatio)
         if (current >= ceiling - ZOOM_EPS) return null
         val next = (current * factor).coerceAtMost(ceiling)
         if (abs(next - current) < ZOOM_EPS) return null
@@ -162,6 +168,12 @@ class AutoZoomController(private val cameraController: CameraController) {
         const val ZOOM_IN_ENABLED = false
         /** 이 이상 확대하지 않는다 — 화질·손떨림 악화. 기기 max 가 더 작으면 그 값. */
         const val MAX_ZOOM = 3.0f
+        /**
+         * 상반신 구도([requestZoomStep] maxZoom 인자) 전용 상한 (2026-08-31) — 하반신을
+         * 프레임 밖으로 밀어내려면 3배로 모자라는 거리가 흔하다(실기기 피드백: "3배 줌
+         * 제한이 걸려서 상반신이 안 찍힌다"). 화질 저하와의 절충으로 6배.
+         */
+        const val UPPER_BODY_MAX_ZOOM = 6.0f
         /** 한 번에 이 배율 이상 건너뛰지 않는다 (0.6 → 2.0 같은 급격한 변화 방지). */
         const val MAX_STEP = 1.5f
         /** 목표 − 이 값보다 작을 때만 줌인한다 — READY 의 size 허용 오차와 같은 값. */
