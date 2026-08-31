@@ -279,24 +279,36 @@ def _gemini_adapter(model_name: str):
     key = os.environ["GEMINI_API_KEY"]
 
     def detect(frame):
+        import time as _time
+
         payload = base64.standard_b64encode(_encode_for_vlm(frame)).decode()
-        response = rq.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent",
-            headers={"x-goog-api-key": key},
-            json={
-                "contents": [{
-                    "parts": [
-                        {"inline_data": {"mime_type": "image/jpeg", "data": payload}},
-                        {"text": _VLM_PROMPT},
-                    ],
-                }],
-                "generationConfig": {"maxOutputTokens": 512},
-            },
-            timeout=60,
-        )
-        response.raise_for_status()
-        parts = response.json()["candidates"][0]["content"]["parts"]
-        return _parse_vlm_persons("".join(p.get("text", "") for p in parts))
+        body = {
+            "contents": [{
+                "parts": [
+                    {"inline_data": {"mime_type": "image/jpeg", "data": payload}},
+                    {"text": _VLM_PROMPT},
+                ],
+            }],
+            "generationConfig": {"maxOutputTokens": 512},
+        }
+        # 무료 티어 RPM 한도 대비 — 429/5xx 면 지수 백오프로 재시도한다.
+        for attempt in range(5):
+            response = rq.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent",
+                headers={"x-goog-api-key": key},
+                json=body,
+                timeout=60,
+            )
+            if response.status_code in (429, 500, 503):
+                _time.sleep(2 ** attempt * 4)
+                continue
+            response.raise_for_status()
+            candidates = response.json().get("candidates", [])
+            if not candidates:
+                return []
+            parts = candidates[0].get("content", {}).get("parts", [])
+            return _parse_vlm_persons("".join(p.get("text", "") for p in parts))
+        return []
 
     return detect, 0
 
