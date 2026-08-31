@@ -61,6 +61,7 @@ SUBJECT_TYPE_KEYWORDS = {
     "고지서": SubjectType.DOCUMENT, "증명서": SubjectType.DOCUMENT,
     "학생증": SubjectType.DOCUMENT, "안내문": SubjectType.DOCUMENT,
     "편지": SubjectType.DOCUMENT, "처방전": SubjectType.DOCUMENT,
+    "통장": SubjectType.DOCUMENT,
 }
 
 # 값은 ai/taxonomy(OBJECTS365_YOLO26)의 canonical label과 정확히 일치해야 한다.

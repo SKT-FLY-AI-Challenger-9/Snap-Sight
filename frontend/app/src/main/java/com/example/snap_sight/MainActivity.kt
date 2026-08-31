@@ -296,6 +296,10 @@ class MainActivity : ComponentActivity() {
     /** 서류 세션으로 찍힌 촬영의 세션 ID — 결과 화면이 이 ID 면 서류 흐름(서버 TTS·설명 없음)을 탄다. */
     @Volatile
     private var documentCaptureSessionId: String? = null
+
+    /** 발화에서 파악한 서류 종류("통장"·"주민등록증" 등) — 외곽 오버레이 라벨 (2026-08-31). */
+    @Volatile
+    private var documentTypeLabel: String = ""
     /** 촬영본 OCR 본문 — 인식 전 null, 인식은 됐지만 글자가 없으면 빈 [DocumentText]. */
     @Volatile
     private var documentCaptureText: DocumentText? = null
@@ -362,6 +366,16 @@ class MainActivity : ComponentActivity() {
      */
     @Volatile
     private var captureDeclinedAtMs = 0L
+
+    /** 중앙 유도(RE_GUIDE) 중 좌우 이동 발화의 마지막 시각 — 반복 간격 게이트. */
+    @Volatile
+    private var reGuideDirectionAtMs = 0L
+
+    /** 촬영 확인 대답으로 지정한 목표 구역 (2026-08-31 — "오른쪽에 있게 찍어줘"). 15열 기준. */
+    private enum class CaptureZone { LEFT, CENTER, RIGHT }
+
+    @Volatile
+    private var captureTargetZone = CaptureZone.CENTER
 
     /** 화면 문구용 인물 프레이밍 국면 — CV 판정 스레드가 갱신, 하단 안내 카드가 읽는다. */
     private enum class FramingPhase { NONE, ZOOMING, REACHED }
@@ -747,10 +761,11 @@ class MainActivity : ComponentActivity() {
         // 등록 이름이 든 문장은 서버로 보내지 않는다(프라이버시 계약) — 그 문장만 내장 TTS.
         guidanceFeedback.dynamicSpeechFetcher = { text, voice -> speechSynthClient.fetch(text, voice) }
         guidanceFeedback.dynamicSpeechGate = { text ->
-            // 서류 결과(OCR 본문·요약·답변)는 서버 합성으로도 내보내지 않는다 — 내장 TTS 로만 (2026-08-30)
-            val documentResult = documentCaptureSessionId != null &&
-                documentCaptureSessionId == lastCapturedSessionId
-            !documentResult && (registeredPeople + registeredObjects).none { name ->
+            // 서류 결과(요약·답변)도 아리아 목소리로 낸다 (사용자 요청 2026-08-31 — "설명도
+            // 아리아로"). 서버로 나가기 전 식별번호는 코드로 강제 마스킹돼 있다
+            // ([DocumentText.maskSensitive]/[DocumentTextRedactor], 주민·카드·계좌번호). 등록
+            // 이름(마스킹 대상이 아닌 개인 식별자)만은 서버로 내보내지 않는다.
+            (registeredPeople + registeredObjects).none { name ->
                 name.isNotBlank() && text.contains(name)
             }
         }
@@ -1240,6 +1255,7 @@ class MainActivity : ComponentActivity() {
                                         cvObjects = overlayObjects,
                                         identities = overlayIdentities,
                                         documentOutline = documentOverlayOutline,
+                                        documentTypeLabel = documentTypeLabel,
                                         // 등록 중엔 조준 UI 없이 미리보기+탐지 상자만 보여준다
                                         showOverlays = !homeVisible && !showResult && !enrollmentActive,
                                         onLensChanged = { isFront -> onLensChanged(isFront) },
@@ -1793,17 +1809,34 @@ class MainActivity : ComponentActivity() {
         // 결과 화면 "음성 다시 듣기" 버튼·"다시 들려줘"도 이 요약을 다시 읽는다 (마스킹 포함)
         val spoken = "서류를 읽었어요. " + DocumentText.maskSensitive(text.summary())
         lastManualCaptureDescription = spoken
-        guidanceFeedback.announceDynamic(
-            spoken,
+        // 탐지 안내(발화 종류로 확정, 고정 문장 → 프리셋 아리아 음원)를 먼저 내고, 그 뒤에
+        // OCR 요약을 이어 읽는다 (사용자 요청 2026-08-31 — "화면에서 서류를 탐지했어요"). 요약·
+        // 명령 응답은 마스킹된 채 서버(아리아)로 합성된다 ([dynamicSpeechGate] 완화).
+        val detected = detectAnnounce(documentTypeLabel.ifBlank { "서류" })
+        guidanceFeedback.announce(
+            detected,
             onDone = {
-                guidanceFeedback.announce(
-                    DOCUMENT_GUIDE_PROMPT,
-                    onDone = { listenForDocumentCommand(sessionId) },
+                guidanceFeedback.announceDynamic(
+                    spoken,
+                    onDone = {
+                        guidanceFeedback.announce(
+                            DOCUMENT_GUIDE_PROMPT,
+                            onDone = { listenForDocumentCommand(sessionId) },
+                            priority = GuidanceFeedback.SpeechPriority.CAPTURE,
+                        )
+                    },
                     priority = GuidanceFeedback.SpeechPriority.CAPTURE,
                 )
             },
             priority = GuidanceFeedback.SpeechPriority.CAPTURE,
         )
+    }
+
+    /** "화면에서 <종류>을/를 탐지했어요." — SpeechCatalog d01~d18 과 문장이 정확히 일치해야 한다. */
+    private fun detectAnnounce(label: String): String {
+        val last = label.lastOrNull()
+        val josa = if (last != null && last in '가'..'힣' && (last.code - 0xAC00) % 28 != 0) "을" else "를"
+        return "화면에서 $label$josa 탐지했어요."
     }
 
     /**
@@ -1940,29 +1973,58 @@ class MainActivity : ComponentActivity() {
             override fun onRecognized(utterance: String) {
                 if (sessionManager.sessionId != sessionId) return
                 val squashed = utterance.replace(" ", "")
+                // 위치 지정을 가장 먼저 본다 (실기기 2026-08-31 — "오른쪽에 있게 찍어줘"의
+                // "찍어"가 긍정으로 잡혀 그 자리에서 찍혔다). 지정 구역으로 유도한 뒤 찍는다.
+                val requestedZone = when {
+                    squashed.contains("오른쪽") -> CaptureZone.RIGHT
+                    squashed.contains("왼쪽") -> CaptureZone.LEFT
+                    squashed.contains("가운데") || squashed.contains("중앙") -> CaptureZone.CENTER
+                    else -> null
+                }
+                if (requestedZone != null) {
+                    captureTargetZone = requestedZone
+                    captureDeclinedAtMs = System.currentTimeMillis()
+                    captureConfirm = CaptureConfirm.RE_GUIDE
+                    guidanceFeedback.announce(
+                        "조금만 더 맞출게요.",
+                        priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT,
+                        interrupt = true,
+                    )
+                    return
+                }
                 // 부정을 먼저 본다 — "아니네"의 "네" 오탐 방지 (범위 질문과 같은 규칙)
                 if (CAPTURE_DECLINE_ANSWERS.any { squashed.contains(it) }) {
                     // "아니" — 시계 안내로 중앙 유도 재개, 중앙 도달 시 재질문 없이 촬영.
                     // 거절 시각을 남겨 이미 중앙이어도 곧바로 찍지 않게 한다 (2026-08-31).
                     captureDeclinedAtMs = System.currentTimeMillis()
+                    captureTargetZone = CaptureZone.CENTER
                     captureConfirm = CaptureConfirm.RE_GUIDE
                     return
                 }
-                if (squashed.isBlank() || CAPTURE_ACCEPT_ANSWERS.any { squashed.contains(it) }) {
+                if (CAPTURE_ACCEPT_ANSWERS.any { squashed.contains(it) }) {
                     fireConfirmedCapture(sessionId)
                     return
                 }
-                // 뭔가 말했는데 긍정도 부정도 아니면 촬영을 밀어붙이지 않는다 (실기기 2026-08-31 —
-                // "아니"가 애니·어니 등으로 오인식돼 그대로 찍혔다). 중앙 유도로 돌리면 중앙 도달
-                // 시 재질문 없이 찍으므로 흐름이 막히지 않는다. 침묵·인식 실패는 기존대로 동의.
+                // 명확한 "네"가 아니면 촬영을 밀어붙이지 않는다 (실기기 2026-08-31 — "그대로
+                // 그 위치에서 찍힌다") — 중앙 유도로 돌리고, 가운데 3열 도달 시 재질문 없이
+                // 찍으므로 흐름은 막히지 않는다. 유도 전환은 음성으로 알린다.
                 captureDeclinedAtMs = System.currentTimeMillis()
+                captureTargetZone = CaptureZone.CENTER
                 captureConfirm = CaptureConfirm.RE_GUIDE
+                guidanceFeedback.announce(
+                    "조금만 더 맞출게요.",
+                    priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT,
+                    interrupt = true,
+                )
             }
 
             override fun onError(message: String) {
                 if (sessionManager.sessionId != sessionId) return
-                // 무응답도 촬영 — 원래 자동촬영이던 흐름이라 침묵은 동의로 본다
-                fireConfirmedCapture(sessionId)
+                // 무응답도 "그 자리에서 바로 촬영"하지 않는다 (실기기 2026-08-31) — 중앙 유도로
+                // 돌린다. 이미 가운데면 유예 뒤 그대로 찍히므로 결과적으로 기존 자동촬영과 같다.
+                captureDeclinedAtMs = System.currentTimeMillis()
+                captureTargetZone = CaptureZone.CENTER
+                captureConfirm = CaptureConfirm.RE_GUIDE
             }
         })
     }
@@ -3169,6 +3231,8 @@ class MainActivity : ComponentActivity() {
         compositionQuestion = CompositionQuestion.NOT_ASKED
         captureConfirm = CaptureConfirm.NOT_ASKED
         captureDeclinedAtMs = 0L
+        reGuideDirectionAtMs = 0L
+        captureTargetZone = CaptureZone.CENTER
         personFramingPhase = FramingPhase.NONE
         personFramingPose.reset()
         personFraming.reset()
@@ -3178,6 +3242,7 @@ class MainActivity : ComponentActivity() {
         landscapeLuminance = null
         landscapeLuminanceSampling = false
         documentSession = false
+        documentTypeLabel = ""
         documentText.enabled = false
         documentText.reset()
         documentGuide.reset()
@@ -3320,6 +3385,12 @@ class MainActivity : ComponentActivity() {
         }
         // 서류 세션(2026-08-30) — 텍스트 인식을 켜고, 사진은 서버로 보내지 않는다(신분증 프라이버시).
         documentSession = effectiveSpec?.subjectType == TargetSpec.SubjectType.DOCUMENT
+        // 발화에서 서류 종류를 뽑아 외곽 라벨로 보여준다 (사용자 요청 2026-08-31 — "통장이라고
+        // 글씨 뜨게"). 긴 키워드 우선(주민등록증 ⊃ 주민증 아님, 안전하게 선언 순서 = 길이순).
+        documentTypeLabel = if (!documentSession) "" else run {
+            val raw = localRawText ?: serverRawText
+            DOCUMENT_TYPE_LABELS.firstOrNull { raw.contains(it) } ?: "서류"
+        }
         documentText.enabled = documentSession
         guidanceFeedback.setSessionSubject(identityName ?: subjectKorean)
         synchronized(targetIntentLock) {
@@ -3683,31 +3754,59 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     // 줌-후 목표 도달 (2026-08-31): 3초 유지 대신 인물 위치를 말해주고 "이대로
-                    // 찍을까요?"를 묻는다. "아니" 뒤(RE_GUIDE)에는 시계 안내가 중앙으로 유도하고,
-                    // 중앙(3열) 도달 시 재질문 없이 확정 발화 후 촬영한다.
+                    // 찍을까요?"를 묻는다. 좌우 판정은 화면 15열 기준(사용자 요청 2026-08-31) —
+                    // 1~6열 왼쪽, 7~9열 가운데(40~60%), 10~15열 오른쪽. "아니" 뒤(RE_GUIDE)에는
+                    // 시계 안내가 유도하고, 가운데 3열에 오면 재질문 없이 확정 발화 후 촬영한다.
                     if (personFramingOutcome.targetReached) {
-                        val centeredNow = readiness != null &&
-                            ReadinessBlocker.HORIZONTAL !in readiness.blockers
+                        val offsetXNow = dev?.offsetX ?: 0f
+                        val centeredNow = kotlin.math.abs(offsetXNow) <= CAPTURE_POS_CENTER_HALF_WIDTH
                         when (captureConfirm) {
                             CaptureConfirm.NOT_ASKED -> {
                                 captureConfirm = CaptureConfirm.PENDING
                                 val question = when {
                                     centeredNow -> CAPTURE_POS_CENTER_QUESTION
-                                    (dev?.offsetX ?: 0f) > 0f -> CAPTURE_POS_RIGHT_QUESTION
+                                    offsetXNow > 0f -> CAPTURE_POS_RIGHT_QUESTION
                                     else -> CAPTURE_POS_LEFT_QUESTION
                                 }
                                 val expectedSessionId = sessionManager.sessionId
                                 runOnUiThread { askCaptureConfirm(expectedSessionId, question) }
                             }
-                            CaptureConfirm.RE_GUIDE -> if (centeredNow &&
-                                System.currentTimeMillis() - captureDeclinedAtMs >= CAPTURE_RE_GUIDE_MIN_MS
-                            ) {
-                                // 거절 직후엔 이미 중앙이어도 바로 찍지 않는다 — "아니"라고 했는데
-                                // 같은 프레임에 촬영되던 문제 (2026-08-31). 유예 동안 시계 안내로
-                                // 구도를 고칠 수 있고, 그 뒤 중앙이면 재질문 없이 찍는다.
-                                captureConfirm = CaptureConfirm.FIRING
-                                val expectedSessionId = sessionManager.sessionId
-                                runOnUiThread { fireConfirmedCapture(expectedSessionId) }
+                            CaptureConfirm.RE_GUIDE -> {
+                                // 목표 구역(15열: 왼쪽 1~6·가운데 7~9·오른쪽 10~15) 도달 판정 —
+                                // 대답으로 구역을 지정했으면("오른쪽에 있게") 그 구역이 목표다.
+                                val inTargetZone = when (captureTargetZone) {
+                                    CaptureZone.LEFT -> offsetXNow < -CAPTURE_POS_CENTER_HALF_WIDTH
+                                    CaptureZone.RIGHT -> offsetXNow > CAPTURE_POS_CENTER_HALF_WIDTH
+                                    CaptureZone.CENTER -> centeredNow
+                                }
+                                if (inTargetZone &&
+                                    System.currentTimeMillis() - captureDeclinedAtMs >= CAPTURE_RE_GUIDE_MIN_MS
+                                ) {
+                                    // 거절 직후엔 이미 목표 구역이어도 바로 찍지 않는다 — "아니"라고
+                                    // 했는데 같은 프레임에 촬영되던 문제 (2026-08-31). 유예 뒤 목표
+                                    // 구역이면 재질문 없이 찍는다.
+                                    captureConfirm = CaptureConfirm.FIRING
+                                    val expectedSessionId = sessionManager.sessionId
+                                    runOnUiThread { fireConfirmedCapture(expectedSessionId) }
+                                } else if (!inTargetZone) {
+                                    // 유도 발화를 직접 낸다 (실기기 2026-08-31 — "가이드도 안 하고
+                                    // 그대로 찍힌다"). 발화 방향 = 카메라를 팬할 방향: 피사체가
+                                    // 화면에서 더 왼쪽에 보여야 하면 오른쪽으로 팬한다.
+                                    val panRight = when (captureTargetZone) {
+                                        CaptureZone.LEFT -> true
+                                        CaptureZone.RIGHT -> false
+                                        CaptureZone.CENTER -> offsetXNow > 0f
+                                    }
+                                    val now = System.currentTimeMillis()
+                                    if (now - reGuideDirectionAtMs >= RE_GUIDE_DIRECTION_REPEAT_MS) {
+                                        reGuideDirectionAtMs = now
+                                        guidanceFeedback.announce(
+                                            if (panRight) "조금 오른쪽으로 이동해 주세요."
+                                            else "조금 왼쪽으로 이동해 주세요.",
+                                            priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT,
+                                        )
+                                    }
+                                }
                             }
                             else -> Unit // PENDING(대답 대기)·FIRING(확정 발화~셔터)
                         }
@@ -4183,6 +4282,12 @@ class MainActivity : ComponentActivity() {
      * 셔터 순간 화면에 없었다면 그 사실을 덧붙인다 (막지 않고 알리기만 — 2026-08-21 결정).
      */
     private fun captureHeadline(): String {
+        // 서류 세션은 피사체 판정(YOLO)이 아니라 발화로 종류가 확정됐다 — 결과 화면 밑에도
+        // "화면에서 서류를 탐지했어요"를 그대로 띄운다 (사용자 요청 2026-08-31). 잘못된
+        // "피사체를 확실히 구분하지 못했어요" 폴백이 뜨지 않게 한다.
+        if (documentCaptureSessionId != null && documentCaptureSessionId == lastCapturedSessionId) {
+            return detectAnnounce(documentTypeLabel.ifBlank { "서류" })
+        }
         val summary = instantCaptureSummary()
         val missing = shutterMissingTarget ?: return summary
         return "$summary 다만 요청하신 $missing${CaptureAnnouncementBuilder.topicParticle(missing)} 화면에서 찾지 못했어요."
@@ -4423,11 +4528,26 @@ class MainActivity : ComponentActivity() {
 
         // 줌-후 촬영 확인 (2026-08-31) — 목표 도달 시 인물 위치를 말하고 "이대로 찍을까요?".
         // 텍스트는 SpeechCatalog(q5~q8)와 완전 일치해야 프리셋 음원으로 나간다. 1.2배속.
-        private const val CAPTURE_POS_RIGHT_QUESTION = "지금 인물이 화면 안 오른쪽에 있어요. 이대로 찍을까요?"
-        private const val CAPTURE_POS_LEFT_QUESTION = "지금 인물이 화면 안 왼쪽에 있어요. 이대로 찍을까요?"
+        private const val CAPTURE_POS_RIGHT_QUESTION = "지금 인물이 화면 오른쪽에 있어요. 이대로 찍을까요?"
+        private const val CAPTURE_POS_LEFT_QUESTION = "지금 인물이 화면 왼쪽에 있어요. 이대로 찍을까요?"
         private const val CAPTURE_POS_CENTER_QUESTION = "지금 인물이 가운데에 있어요. 이대로 찍을까요?"
         private const val CAPTURE_CONFIRM_ANNOUNCE = "좋아요. 지정하신 대로 찍을게요."
         private const val CAPTURE_CONFIRM_SPEECH_RATE = 1.2f
+
+        /**
+         * 촬영 확인 질문의 좌우 판정 폭 (2026-08-31) — 화면을 15열로 나눠 7~9열(가로 40~60%)만
+         * 가운데로 본다. offsetX(-1..1) 기준 ±0.2. 1~6열은 왼쪽, 10~15열은 오른쪽.
+         */
+        private const val CAPTURE_POS_CENTER_HALF_WIDTH = 0.2f
+
+        /** 발화에서 찾는 서류 종류 표시어 — 먼저 매칭되는 것을 외곽 라벨로 쓴다 (긴 것 우선). */
+        private val DOCUMENT_TYPE_LABELS = listOf(
+            "주민등록증", "운전면허증", "통장", "신분증", "주민증", "면허증", "여권", "명함",
+            "영수증", "계약서", "청구서", "고지서", "증명서", "학생증", "안내문", "편지", "처방전",
+        )
+
+        /** 중앙 유도 중 좌우 이동 발화의 반복 간격. */
+        private const val RE_GUIDE_DIRECTION_REPEAT_MS = 2_500L
 
         /**
          * "이대로 찍을까요?"의 거부 대답 — 긍정보다 먼저 검사한다. "아뇨"는 "아니"를 포함하지
