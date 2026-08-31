@@ -45,6 +45,7 @@ import com.example.snap_sight.camera.PhotoLibrary
 import com.example.snap_sight.camera.MissingSubjectNotice
 import com.example.snap_sight.camera.HorizonStraightener
 import com.example.snap_sight.camera.PortraitAutoCrop
+import com.example.snap_sight.document.DocumentDewarper
 import com.example.snap_sight.document.DocumentReader
 import com.example.snap_sight.document.DocumentTextTracker
 import com.example.snap_sight.camera.TiltSensorMonitor
@@ -122,6 +123,8 @@ import com.example.snap_sight.ux.ResultScreen
 import com.example.snap_sight.ux.OnboardingPermissionState
 import com.example.snap_sight.ux.OnboardingScreen
 import com.example.snap_sight.ux.DocumentGuide
+import com.example.snap_sight.ux.DocumentObservation
+import com.example.snap_sight.ux.DocumentQuad
 import com.example.snap_sight.ux.DocumentText
 import com.example.snap_sight.ux.DocumentVoiceCommand
 import com.example.snap_sight.ux.LandscapeGuide
@@ -276,10 +279,17 @@ class MainActivity : ComponentActivity() {
     /** 셔터 순간의 글자 줄 각도 — 저장 전 회전 보정([HorizonStraightener.applyTextRotation]) 입력. */
     @Volatile
     private var documentShutterAngleDeg: Float? = null
+
+    /** 셔터 순간의 서류 모서리 4점 — 저장 전 원근 보정([DocumentDewarper]) 입력 (외곽 v2). */
+    @Volatile
+    private var documentShutterQuad: DocumentQuad? = null
     /** 마지막으로 움직임 판정에 넣은 서류 관측 시각 — 같은 관측을 두 번 넣지 않게. */
     private var lastDocumentObservationFedMs = 0L
     /** 서류 모드 화면 카드 문구 — [DocumentGuide.Outcome.statusText]. */
     private var documentGuidanceText by mutableStateOf(DocumentGuide.STATUS_SEARCHING)
+
+    /** 서류 외곽 오버레이 (2026-08-31) — 신선한 관측일 때만, 아니면 null(표시 안 함). */
+    private var documentOverlayOutline by mutableStateOf<DocumentObservation?>(null)
 
     // ---- 서류 결과 1단계 (2026-08-30): 촬영본 원본 OCR → 낭독·요약·금액/날짜/단어 찾기, 전부 온디바이스 ----
     /** 서류 세션으로 찍힌 촬영의 세션 ID — 결과 화면이 이 ID 면 서류 흐름(서버 TTS·설명 없음)을 탄다. */
@@ -662,10 +672,12 @@ class MainActivity : ComponentActivity() {
         // 튜닝 중 원본 그대로 확인하려고.
         cameraController.burstFinisher = { file ->
             val documentAngle = documentShutterAngleDeg
+            val documentQuad = documentShutterQuad
             val leveled = when {
-                // 서류(2026-08-30): 중력이 아니라 글자 줄 각도로 되돌린다 — 벽·거치대 어디든 서류 변 기준
-                documentSession && documentAngle != null ->
-                    HorizonStraightener.applyTextRotation(file, documentAngle)
+                // 서류: ① 모서리 4점이 있으면 사다리꼴을 직사각형으로 편다 (외곽 v2, 2026-08-31)
+                //       ② 없으면 글자 줄 각도 회전 보정 (2026-08-30) — 벽·거치대 어디든 서류 변 기준
+                documentSession -> documentQuad?.let { DocumentDewarper.apply(file, it) }
+                    ?: documentAngle?.let { HorizonStraightener.applyTextRotation(file, it) }
                 HORIZON_LEVEL_ENABLED && cameraController.isBackLens ->
                     HorizonStraightener.apply(file, sessionManager.shutterRollDegrees)
                 else -> null
@@ -859,14 +871,16 @@ class MainActivity : ComponentActivity() {
                         documentCaptureText = null
                         documentResultSaveAnnounced = false
                         documentResultAnnounced = false
-                        // 서류 모드: 셔터 순간 글자 줄 각도를 고정해 둔다 — 저장 전 회전 보정 입력
-                        documentShutterAngleDeg = if (documentSession) {
+                        // 서류 모드: 셔터 순간 관측(글자 각도·모서리 4점)을 고정해 둔다 — 저장 전
+                        // 원근/회전 보정 입력. 자동촬영이 정지 유지에서만 발동하므로 촬영본과 맞다.
+                        val shutterDocObservation = if (documentSession) {
                             documentText.observation
                                 ?.takeIf { System.currentTimeMillis() - it.atMs <= DocumentGuide.FRESH_MS }
-                                ?.angleDegrees
                         } else {
                             null
                         }
+                        documentShutterAngleDeg = shutterDocObservation?.angleDegrees
+                        documentShutterQuad = shutterDocObservation?.corners
                         guidanceFeedback.playShutter()
                     }
                     SessionState.SAVED -> {
@@ -1174,6 +1188,7 @@ class MainActivity : ComponentActivity() {
                                         onCancel = { cancelSessionToHome() },
                                         cvObjects = overlayObjects,
                                         identities = overlayIdentities,
+                                        documentOutline = documentOverlayOutline,
                                         // 등록 중엔 조준 UI 없이 미리보기+탐지 상자만 보여준다
                                         showOverlays = !homeVisible && !showResult && !enrollmentActive,
                                         onLensChanged = { isFront -> onLensChanged(isFront) },
@@ -2959,8 +2974,10 @@ class MainActivity : ComponentActivity() {
         documentText.reset()
         documentGuide.reset()
         documentShutterAngleDeg = null
+        documentShutterQuad = null
         lastDocumentObservationFedMs = 0L
         documentGuidanceText = DocumentGuide.STATUS_SEARCHING
+        documentOverlayOutline = null
         currentIdentities = emptyMap()
         synchronized(cvSnapshotLock) {
             latestObservedObjects = emptyList()
@@ -3407,6 +3424,9 @@ class MainActivity : ComponentActivity() {
             // 강제하지 않는다 — 서류가 책상·벽·거치대 어디에 있든 이미지 기준으로 판정한다.
             if (guidanceMode == AimingGuidanceMode.DOCUMENT && sessionManager.state == SessionState.AIMING) {
                 val observation = documentText.observation
+                // 화면 오버레이 (2026-08-31) — 신선한 관측만 그린다 (오래되면 지움)
+                documentOverlayOutline = observation
+                    ?.takeIf { output.timestampMs - it.atMs <= DocumentGuide.FRESH_MS }
                 if (observation != null && observation.atMs != lastDocumentObservationFedMs) {
                     // 손에 든 신분증처럼 움직이는 서류는 유지 시간이 쌓이지 않게 — 관측이 새로 올 때만 넣는다
                     lastDocumentObservationFedMs = observation.atMs

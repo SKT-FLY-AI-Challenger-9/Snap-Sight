@@ -1,9 +1,9 @@
 // 이 파일: 서류(DOCUMENT) 모드 전용 안내·자동촬영 로직 (2026-08-30, 사용자 요청 "서류·종이·신분증
 // 등을 말하면 서류 모드"). 서류는 YOLO bbox 로 잡히지 않으므로 텍스트 줄들의 합집합
 // ([DocumentObservation])으로 프레이밍한다. 서류가 책상 위·벽·거치대 어디에 어떤 각도로
-// 있든 성립해야 하므로 중력 센서로 자세를 강제하지 않고, 회전은 글자 줄 각도로 잰다
-// (사용자 지적 2026-08-30). 정면(수직)은 사용자가 맞추는 것으로 본다 — 글자 높이 기울기로
-// 재는 수직 판정은 제목·본문 글자 크기 차이와 구분이 안 돼 꺼 두었다([TILT_GUIDANCE_ENABLED]).
+// 있든 성립해야 하므로 중력 센서로 자세를 강제하지 않고, 회전은 글자 줄 각도로, 기울임(원근)은
+// 모서리 4점의 변 길이 수렴비([DocumentQuad], 외곽 v2 2026-08-31)로 잰다 — 글자 높이 방식은
+// 제목·본문 크기 차이에 오판해 폐기했다.
 // android.* 의존이 없고 시각(nowMs)을 주입받아 JVM 단위 테스트한다.
 package com.example.snap_sight.ux
 
@@ -148,20 +148,36 @@ internal class DocumentGuide {
         relaxed: Boolean,
     ): Problem? {
         val factor = if (relaxed) RELAX_FACTOR else 1f
+        val edgeMargin = if (relaxed) EDGE_MARGIN_HOLD else EDGE_MARGIN
         val leftMargin = o.left
         val rightMargin = 1f - o.right
         val topMargin = o.top
         val bottomMargin = 1f - o.bottom
-        val clippedH = leftMargin < EDGE_MARGIN && rightMargin < EDGE_MARGIN
-        val clippedV = topMargin < EDGE_MARGIN && bottomMargin < EDGE_MARGIN
+        val clippedH = leftMargin < edgeMargin && rightMargin < edgeMargin
+        val clippedV = topMargin < edgeMargin && bottomMargin < edgeMargin
         if (clippedH || clippedV) {
             return if (zoomOutAvailable) Problem(STATUS_ZOOMING_OUT, zoom = Zoom.OUT)
             else Problem(STATUS_TOO_CLOSE, FARTHER_UTTERANCE)
         }
-        if (leftMargin < EDGE_MARGIN) return Problem(STATUS_CLIPPED, SHIFT_LEFT_UTTERANCE)
-        if (rightMargin < EDGE_MARGIN) return Problem(STATUS_CLIPPED, SHIFT_RIGHT_UTTERANCE)
-        if (topMargin < EDGE_MARGIN) return Problem(STATUS_CLIPPED, SHIFT_UP_UTTERANCE)
-        if (bottomMargin < EDGE_MARGIN) return Problem(STATUS_CLIPPED, SHIFT_DOWN_UTTERANCE)
+        if (leftMargin < edgeMargin) return Problem(STATUS_CLIPPED, SHIFT_LEFT_UTTERANCE)
+        if (rightMargin < edgeMargin) return Problem(STATUS_CLIPPED, SHIFT_RIGHT_UTTERANCE)
+        if (topMargin < edgeMargin) return Problem(STATUS_CLIPPED, SHIFT_UP_UTTERANCE)
+        if (bottomMargin < edgeMargin) return Problem(STATUS_CLIPPED, SHIFT_DOWN_UTTERANCE)
+
+        // 세 변은 엣지로 확정됐는데 한 변만 안 잡히는 경우 (실기기 2026-08-31: 기울임을 고치자
+        // 서류 윗변이 프레임 밖으로 나갔는데 글자 여백은 통과라 보정 없이 찍혔다) — 그 변이
+        // 프레임 밖일 공산이 크므로 여백이 [MISSING_EDGE_MARGIN] 안이면 그쪽으로 옮기라고
+        // 안내한다. 여백이 그 이상이면 대비가 없는 변(흰 배경)으로 보고 통과 (fail-open 유지).
+        if (o.edgeSides == 3) {
+            val missing = when {
+                !o.edgeLeft && leftMargin < MISSING_EDGE_MARGIN -> SHIFT_LEFT_UTTERANCE
+                !o.edgeTop && topMargin < MISSING_EDGE_MARGIN -> SHIFT_UP_UTTERANCE
+                !o.edgeRight && rightMargin < MISSING_EDGE_MARGIN -> SHIFT_RIGHT_UTTERANCE
+                !o.edgeBottom && bottomMargin < MISSING_EDGE_MARGIN -> SHIFT_DOWN_UTTERANCE
+                else -> null
+            }
+            if (missing != null) return Problem(STATUS_CLIPPED, missing)
+        }
 
         // 크기: 줌으로 채우는 게 기본. 통과 상태에서는 목표까지 다시 줌하지 않는다(히스테리시스).
         if (!relaxed && o.area < ZOOM_TARGET_FILL && zoomInAvailable) {
@@ -182,10 +198,17 @@ internal class DocumentGuide {
             return Problem(STATUS_OFF_CENTER, utterance)
         }
 
-        if (TILT_GUIDANCE_ENABLED) {
-            // 수직: 아랫줄 글자가 더 크면(양수) 아래가 가깝고 위가 멀다 = 폰 윗부분이 젖혀짐
-            if (o.heightGradient > TILT_TOLERANCE * factor) return Problem(STATUS_TILTED, TILT_TOP_TOWARD_UTTERANCE)
-            if (o.heightGradient < -TILT_TOLERANCE * factor) return Problem(STATUS_TILTED, TILT_TOP_AWAY_UTTERANCE)
+        // 기울임(원근) — 모서리 4점이 있을 때만, 변 길이 수렴비로 판정한다 (2026-08-31, 외곽 v2).
+        // 글자 크기와 무관한 순수 기하라 제목·본문 크기 차이에 속지 않는다. 네 변이 다 안 잡히면
+        // 판정하지 않는다(fail-open — 못 재는 걸 억지로 말하지 않는다).
+        o.corners?.let { quad ->
+            val limit = if (relaxed) KEYSTONE_MIN_RATIO - KEYSTONE_HYSTERESIS else KEYSTONE_MIN_RATIO
+            val vertical = quad.verticalConvergence
+            if (vertical < limit) return Problem(STATUS_TILTED, TILT_TOP_TOWARD_UTTERANCE)
+            if (vertical > 1f / limit) return Problem(STATUS_TILTED, TILT_TOP_AWAY_UTTERANCE)
+            val horizontal = quad.horizontalConvergence
+            if (horizontal < limit) return Problem(STATUS_TILTED, TILT_LEFT_TOWARD_UTTERANCE)
+            if (horizontal > 1f / limit) return Problem(STATUS_TILTED, TILT_RIGHT_TOWARD_UTTERANCE)
         }
 
         val rotation = PhoneRoll.deviationFromNearestSnap(o.angleDegrees)
@@ -229,8 +252,15 @@ internal class DocumentGuide {
         const val FRESH_MS = 1_200L
         /** 서류로 인정할 최소 글자 줄 수 — 한 줄은 간판·라벨일 수 있다. */
         const val MIN_LINES = 2
-        /** 글자 영역이 가장자리에서 이 안이면 잘린 것으로 본다. */
-        const val EDGE_MARGIN = 0.015f
+        /**
+         * 서류 경계가 가장자리에서 이 안이면 잘린 것으로 본다 (진입 기준, 2026-08-31 1.5%→3% —
+         * 여백이 빠듯하면 서류 변이 프레임 밖에 걸쳐 모서리 4점·원근 보정을 놓쳤다).
+         */
+        const val EDGE_MARGIN = 0.03f
+        /** 통과 상태에서의 잘림 여백 하한 (히스테리시스) — 경계에서 안내가 튀지 않게. */
+        const val EDGE_MARGIN_HOLD = 0.015f
+        /** 한 변만 엣지 미검출일 때, 그쪽 여백이 이 안이면 "프레임 밖"으로 보고 옮기라고 한다. */
+        const val MISSING_EDGE_MARGIN = 0.08f
         /** 글자 영역이 프레임의 이 비율 미만이면 줌인으로 채운다 (여유가 있을 때). */
         const val ZOOM_TARGET_FILL = 0.45f
         /** 줌을 다 써도 이 비율 미만이면 "가까이" — 글자가 읽힐 해상도 하한. */
@@ -238,12 +268,14 @@ internal class DocumentGuide {
         /** 중심이 이 이상 벗어나면 옮기라고 한다 (프레임 단위). */
         const val POSITION_TOLERANCE = 0.12f
         /**
-         * 글자 높이 기울기 기반 수직 안내 on/off — **off** (2026-08-30 실기기: 제목·본문 글자 크기
-         * 차이를 기울기로 오인해 정면인데도 "기울여 주세요"가 나왔다). 정면은 사용자가 맞춘다.
-         * 모서리 검출이 붙으면 사다리꼴 비율로 다시 켠다.
+         * 기울임(원근) 허용 수렴비 하한 (2026-08-31, 외곽 v2) — 짧은 변/긴 변이 이 미만이면
+         * 카메라가 그 축으로 젖혀진 것. 글자 높이 방식(2026-08-30, 제목·본문 크기 차이에 오판)
+         * 을 대체한다. 촬영 후 사다리꼴 보정([com.example.snap_sight.document.DocumentDewarper])이
+         * 흡수 가능한 범위보다 안쪽으로 잡는다.
          */
-        const val TILT_GUIDANCE_ENABLED = false
-        const val TILT_TOLERANCE = 0.18f
+        const val KEYSTONE_MIN_RATIO = 0.92f
+        /** 통과 상태에서의 수렴비 추가 여유 (히스테리시스). */
+        const val KEYSTONE_HYSTERESIS = 0.04f
         /** 글자 줄 회전 허용치(도, 스냅 편차). */
         const val ROTATION_TOLERANCE_DEG = 5f
         /** ML Kit 줄 각도 → 돌릴 방향 부호. 실기기에서 반대로 안내되면 이것만 뒤집는다. */
@@ -274,6 +306,8 @@ internal class DocumentGuide {
         const val SHIFT_DOWN_UTTERANCE = "폰을 아래로 조금 옮겨 주세요."
         const val TILT_TOP_TOWARD_UTTERANCE = "폰 윗부분을 서류 쪽으로 기울여 주세요."
         const val TILT_TOP_AWAY_UTTERANCE = "폰 윗부분을 바깥쪽으로 기울여 주세요."
+        const val TILT_LEFT_TOWARD_UTTERANCE = "폰 왼쪽 부분을 서류 쪽으로 기울여 주세요."
+        const val TILT_RIGHT_TOWARD_UTTERANCE = "폰 오른쪽 부분을 서류 쪽으로 기울여 주세요."
         const val GLARE_UTTERANCE = "빛이 반사돼요. 폰을 조금 기울이거나 자리를 옮겨 주세요."
         const val READY_UTTERANCE = "좋아요. 그대로 잠시 멈춰 주세요."
 

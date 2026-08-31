@@ -30,6 +30,9 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.doOnLayout
 import androidx.lifecycle.LifecycleOwner
 import com.example.snap_sight.cv.FrameProcessor
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -79,14 +82,23 @@ class CameraController(private val context: Context) {
 
     private val captureGeneration = AtomicLong(0L)
 
-    // ---- 가로모드 (2026-08-24) ----
+    // ---- 가로모드 (2026-08-24, 분석 스트림 확장 2026-08-31) ----
     // UI(Activity)는 세로 고정이지만, 기기를 가로로 눕혀 찍으면 사진은 든 방향대로
     // 똑바로 저장돼야 한다. 화면 회전이 잠겨 있어 display rotation 이 항상 0 이므로,
-    // 물리 방향 센서로 ImageCapture.targetRotation 만 따라가게 한다.
-    // 분석 스트림(CV·링 버퍼)은 그대로 둔다 — 조준 안내·오버레이 좌표계는 세로 기준 유지.
+    // 물리 방향 센서로 ImageCapture.targetRotation 을 따라가게 한다.
+    // 분석 스트림(ImageAnalysis)도 같은 회전을 따른다 (2026-08-31) — 가로로 들면 YOLO·ML Kit 이
+    // 90° 누운 피사체를 봐서 인식률이 무너지고, 서류 quad 좌표가 촬영본과 어긋나던 문제의 근본
+    // 원인. 이제 CV 프레임(rotationDegrees 반영 후)은 항상 사용자 기준 정방향이고, 좌표계가
+    // 촬영본(EXIF upright)과 일치한다. 오버레이는 UprightFrameMapping 으로 화면 좌표로 되돌린다.
 
     /** 마지막으로 관측된 기기 물리 방향의 Surface 회전값. 재바인딩 시 초기값으로도 쓴다. */
     private var deviceRotation: Int = Surface.ROTATION_0
+
+    // 촬영 화면 UI 요소 제자리 회전용 (2026-08-31) — 촬영 회전과 같은 센서 판정을 그대로 노출해
+    // "찍히는 방향"과 "화면 요소가 도는 방향"이 어긋나지 않게 한다. 센서는 카메라가 바인딩된
+    // 동안(start~shutdown)만 켜져 있으므로 자연히 촬영 중에만 갱신된다.
+    private val _deviceRotationFlow = MutableStateFlow(Surface.ROTATION_0)
+    val deviceRotationFlow: StateFlow<Int> = _deviceRotationFlow.asStateFlow()
 
     private val orientationListener by lazy {
         object : OrientationEventListener(context) {
@@ -100,8 +112,10 @@ class CameraController(private val context: Context) {
                 }
                 if (rotation == deviceRotation) return
                 deviceRotation = rotation
-                Log.i(TAG, "기기 방향 변경 → 촬영 회전 ${rotation * 90}°")
+                _deviceRotationFlow.value = rotation
+                Log.i(TAG, "기기 방향 변경 → 촬영·분석 회전 ${rotation * 90}°")
                 imageCapture?.targetRotation = rotation
+                imageAnalysis?.targetRotation = rotation
             }
         }
     }
@@ -225,7 +239,10 @@ class CameraController(private val context: Context) {
             // targetRotation 기준으로 해석돼 기기가 1:1 스트림을 고르는 일이 있었고, ViewPort(FIT)가
             // 세 use case 버퍼의 교집합을 공통 크롭으로 삼기 때문에 **사진까지 3060x3060 정사각**으로
             // 잘려 저장됐다. 분석 버퍼가 4:3 이면 교집합 = 센서 전체(4:3)라 사진이 원본 비율로 나온다.
+            // targetRotation 은 rotationDegrees 메타데이터만 바꾼다 — ResolutionSelector 는 센서
+            // 좌표 기준이라 위 4:3 고정(정사각 사진 회귀)과는 무관하다.
             ImageAnalysis.Builder()
+                .setTargetRotation(deviceRotation)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setResolutionSelector(
                     ResolutionSelector.Builder()
