@@ -16,7 +16,11 @@ import kotlin.math.sqrt
  * 가속도계 기반 기울기 측정 (기술 스택: "노출·기울기 — IMU(가속도계)").
  *
  * 세로 파지 기준:
- *  - [rollDegrees]  좌우 기울기. 0° = 수평. 양수 = 시계방향으로 기울어짐 → 수평 맞추기 판정용
+ *  - [rollDegrees]  좌우 기울기. 0° = 수평. 부호 (실기기 확정 2026-08-28): 폰을 **왼쪽(반시계)
+ *    으로 돌리면 +**, 오른쪽(시계)으로 돌리면 −. 가로 파지(±90°)도 정상 자세이므로 소비자는
+ *    절대값이 아니라 [PhoneRoll.deviationFromNearestSnap] 편차를 쓴다. 소비자: 풍경 안내
+ *    ([com.example.snap_sight.ux.LandscapeGuide]), 인물·사물 세션 수평 안내
+ *    ([com.example.snap_sight.ux.GuidancePolicy]), 저장 시 수평 보정([HorizonStraightener]).
  *  - [pitchDegrees] 앞뒤 기울기. 0° = 폰이 지면과 수직(카메라가 정면). 양수 = 하늘 쪽
  *
  * 값은 저역 통과 필터로 손떨림을 걸러낸 뒤, 0.5° 이상 변할 때만 리스너에 전달한다.

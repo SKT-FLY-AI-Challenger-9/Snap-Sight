@@ -43,7 +43,10 @@ import com.example.snap_sight.camera.FrameScorer
 import com.example.snap_sight.camera.GalleryPhoto
 import com.example.snap_sight.camera.PhotoLibrary
 import com.example.snap_sight.camera.MissingSubjectNotice
+import com.example.snap_sight.camera.HorizonStraightener
 import com.example.snap_sight.camera.PortraitAutoCrop
+import com.example.snap_sight.document.DocumentReader
+import com.example.snap_sight.document.DocumentTextTracker
 import com.example.snap_sight.camera.TiltSensorMonitor
 import com.example.snap_sight.camera.RingFrameBuffer
 import com.example.snap_sight.camera.SessionState
@@ -118,7 +121,12 @@ import com.example.snap_sight.ux.HomeScreen
 import com.example.snap_sight.ux.ResultScreen
 import com.example.snap_sight.ux.OnboardingPermissionState
 import com.example.snap_sight.ux.OnboardingScreen
+import com.example.snap_sight.ux.DocumentGuide
+import com.example.snap_sight.ux.DocumentText
+import com.example.snap_sight.ux.DocumentVoiceCommand
+import com.example.snap_sight.ux.LandscapeGuide
 import com.example.snap_sight.ux.PersonFramingController
+import com.example.snap_sight.ux.SubjectMotionDetector
 import com.example.snap_sight.ux.SettingsRepository
 import com.example.snap_sight.ux.SettingsScreen
 import com.example.snap_sight.ux.SettingsUiState
@@ -134,6 +142,7 @@ import com.example.snap_sight.ux.TapGrammarActions
 import com.example.snap_sight.ux.appTapGrammar
 import androidx.compose.runtime.CompositionLocalProvider
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 import com.example.snap_sight.ui.theme.SnapSightTheme
 import java.util.concurrent.Executors
 
@@ -242,6 +251,46 @@ class MainActivity : ComponentActivity() {
 
     /** 인물 프레이밍 상태 기계 — case 1/2 분기·줌 스텝·3초 확정 촬영 ([PersonFramingController] 참고). */
     private val personFraming = PersonFramingController()
+    /** 피사체 움직임 판정 — 줌은 정지 피사체에만 건다 (엔드유저 피드백 2026-08-30, [SubjectMotionDetector]). */
+    private val subjectMotion = SubjectMotionDetector()
+
+    /** 풍경 전용 안내 — 수평(roll)·역광·장면 낭독 ([LandscapeGuide], 2026-08-28; dev 반영 2026-08-30). */
+    private val landscapeGuide = LandscapeGuide()
+
+    /** 분석 스레드가 채우는 최근 프레임의 (아주 밝은 비율, 아주 어두운 비율) — 역광 판정 재료. */
+    @Volatile
+    private var landscapeLuminance: Pair<Float, Float>? = null
+
+    /** 풍경 조준 중에만 밝기 샘플링을 켠다 — 다른 모드에서 프레임당 비용을 없앤다. */
+    @Volatile
+    private var landscapeLuminanceSampling = false
+
+    // ---- 서류 모드 (2026-08-30, 사용자 요청 "서류·종이·신분증을 말하면 서류 모드") ----
+    /** 서류 안내·자동촬영 상태 기계 — 텍스트 영역 기반 ([DocumentGuide]). */
+    private val documentGuide = DocumentGuide()
+    /** ML Kit 텍스트 인식 관측기 — 서류 세션에서만 돈다. */
+    private val documentText = DocumentTextTracker()
+    /** subjectType 이 DOCUMENT 인 세션. 셔터 시점에도 유효(리셋은 세션 리셋에서). */
+    @Volatile
+    private var documentSession = false
+    /** 셔터 순간의 글자 줄 각도 — 저장 전 회전 보정([HorizonStraightener.applyTextRotation]) 입력. */
+    @Volatile
+    private var documentShutterAngleDeg: Float? = null
+    /** 마지막으로 움직임 판정에 넣은 서류 관측 시각 — 같은 관측을 두 번 넣지 않게. */
+    private var lastDocumentObservationFedMs = 0L
+    /** 서류 모드 화면 카드 문구 — [DocumentGuide.Outcome.statusText]. */
+    private var documentGuidanceText by mutableStateOf(DocumentGuide.STATUS_SEARCHING)
+
+    // ---- 서류 결과 1단계 (2026-08-30): 촬영본 원본 OCR → 낭독·요약·금액/날짜/단어 찾기, 전부 온디바이스 ----
+    /** 서류 세션으로 찍힌 촬영의 세션 ID — 결과 화면이 이 ID 면 서류 흐름(서버 TTS·설명 없음)을 탄다. */
+    @Volatile
+    private var documentCaptureSessionId: String? = null
+    /** 촬영본 OCR 본문 — 인식 전 null, 인식은 됐지만 글자가 없으면 빈 [DocumentText]. */
+    @Volatile
+    private var documentCaptureText: DocumentText? = null
+    /** "사진을 저장했어요" 안내가 끝났는가 / 서류 결과를 이미 읽어줬는가 — 둘이 만나야 낭독한다. */
+    private var documentResultSaveAnnounced = false
+    private var documentResultAnnounced = false
 
     /**
      * 자동촬영 중재자 (2026-08-24) — 등록 이름·objectLabel 로 대상이 명확한 세션에서
@@ -274,8 +323,14 @@ class MainActivity : ComponentActivity() {
     /** 인물 인식 + 사물 인식 + 셀카 시선 판정을 한 훅으로 묶는다 (분석 스레드에서 순차 실행). */
     private val faceAnalyzers = object : FaceFrameAnalyzer {
         override fun analyze(frame: CvFrame, frameResult: FrameResult): Map<Int, String> {
+            // 풍경 역광 판정용 밝기 분포 — 서브샘플링이라 프레임당 수 ms (2026-08-28)
+            if (landscapeLuminanceSampling) {
+                landscapeLuminance =
+                    LandscapeGuide.luminanceFractions(frame.rgb, frame.width, frame.height)
+            }
             selfieGaze.onFrame(frame)
             personFramingPose.onFrame(frame, frameResult)
+            documentText.onFrame(frame) // 서류 세션에서만 실제로 돈다
             // person track 은 얼굴, 나머지 track 은 사물 — 대상이 겹치지 않아 합쳐도 안전하다
             val people = faceIdentifier.analyze(frame, frameResult)
             val objects = objectIdentifier.analyze(frame, frameResult)
@@ -589,18 +644,50 @@ class MainActivity : ComponentActivity() {
         // 인물 세션 감지 (사용자 요청 2026-08-27) — 머리·발이 잘릴 만큼 가까우면 "뒤로 가라"를
         // 촬영자가 아니라 피사체에게 전달하라고 안내한다.
         guidanceFeedback.personSession = { portraitCropEligible }
-        // 인물 세션의 자동촬영 승자 컷은 얼굴 3분할 크롭으로 마무리한다 (연사 채점 스레드에서 호출)
+        // 좌우 수평 (2026-08-30, 엔드유저 피드백) — 10° 이상 기울어져 있으면 다른 축보다 먼저
+        // "폰 오른쪽/왼쪽을 조금 올려 주세요". 센서는 조준 중에만 돌고(tiltMonitor.start),
+        // 멈춰 있을 땐 마지막 값이 남지만 안내는 조준 중 판정에서만 나간다.
+        guidanceFeedback.phoneRoll = { sessionManager.tiltMonitor.rollDegrees }
+        // TalkBack 이 켜져 있어도 촬영 세션 중(발화 대기~저장)의 안내는 낸다 (엔드유저 피드백
+        // 2026-08-30) — 방향·READY·세션 흐름은 TalkBack 이 대신 읽어줄 수 없는 실시간 정보다.
+        // 홈·갤러리·설정처럼 TalkBack 이 화면을 읽어주는 곳은 기존대로 잠근다.
+        guidanceFeedback.screenReaderSpeechAllowed = {
+            currentScreen == AppScreen.MAIN && sessionManager.state != SessionState.IDLE
+        }
+        // 자동촬영 승자 컷 후처리 (연사 채점 스레드에서 호출), 순서대로:
+        //  1. 수평 보정(HorizonStraightener, 2026-08-30) — 셔터 순간 roll 2°~12° 를 되돌린다.
+        //     후면 카메라 전용(전면은 미러링·광축 때문에 부호가 달라 제외).
+        //  2. 인물 3분할 크롭(PortraitAutoCrop) — 1 의 결과 위에 적용한다.
         // PORTRAIT_CROP_ENABLED: 2026-08-28 사용자 요청으로 일단 꺼둠 — 인물 프레이밍 줌/캡처
         // 튜닝 중 원본 그대로 확인하려고.
         cameraController.burstFinisher = { file ->
-            if (PORTRAIT_CROP_ENABLED && portraitCropEligible) PortraitAutoCrop.apply(file) else null
+            val documentAngle = documentShutterAngleDeg
+            val leveled = when {
+                // 서류(2026-08-30): 중력이 아니라 글자 줄 각도로 되돌린다 — 벽·거치대 어디든 서류 변 기준
+                documentSession && documentAngle != null ->
+                    HorizonStraightener.applyTextRotation(file, documentAngle)
+                HORIZON_LEVEL_ENABLED && cameraController.isBackLens ->
+                    HorizonStraightener.apply(file, sessionManager.shutterRollDegrees)
+                else -> null
+            }
+            val cropped = if (PORTRAIT_CROP_ENABLED && portraitCropEligible) {
+                PortraitAutoCrop.apply(leveled ?: file)
+            } else {
+                null
+            }
+            // 크롭까지 됐으면 중간 산출물(수평 보정본)은 캐시에 남기지 않는다
+            if (cropped != null && leveled != null) runCatching { leveled.delete() }
+            cropped ?: leveled
         }
         guidanceFeedback.applySettings(settingsUiState) // 저장된 설정값을 시작부터 반영
         // 동적 문장(촬영 요약·사진 설명)도 프리셋 보이스로 — 백엔드 SKT 프록시 즉석 합성 연결.
         // 등록 이름이 든 문장은 서버로 보내지 않는다(프라이버시 계약) — 그 문장만 내장 TTS.
         guidanceFeedback.dynamicSpeechFetcher = { text, voice -> speechSynthClient.fetch(text, voice) }
         guidanceFeedback.dynamicSpeechGate = { text ->
-            (registeredPeople + registeredObjects).none { name ->
+            // 서류 결과(OCR 본문·요약·답변)는 서버 합성으로도 내보내지 않는다 — 내장 TTS 로만 (2026-08-30)
+            val documentResult = documentCaptureSessionId != null &&
+                documentCaptureSessionId == lastCapturedSessionId
+            !documentResult && (registeredPeople + registeredObjects).none { name ->
                 name.isNotBlank() && text.contains(name)
             }
         }
@@ -754,7 +841,8 @@ class MainActivity : ComponentActivity() {
                                 .distinct(),
                             knownSubjects = knownSubjects,
                             peopleAtShutter = shutterIdentities,
-                            serverAiEnabled = settingsUiState.serverAiDescriptionEnabled,
+                            // 서류·신분증 세션은 사진을 기기 밖으로 보내지 않는다 (2026-08-30)
+                            serverAiEnabled = settingsUiState.serverAiDescriptionEnabled && !documentSession,
                             isGeneralModeManual = !sessionManager.lastCaptureWasAuto &&
                                 shutterGuidanceMode == AimingGuidanceMode.GENERAL_WAITING,
                         )
@@ -766,6 +854,19 @@ class MainActivity : ComponentActivity() {
                                 lastAimingVerdictAtMs <= VERDICT_FRESH_MS,
                             koreanLabels = KOREAN_LABELS,
                         )
+                        // 서류 결과 흐름의 시작점 — 이 촬영이 서류 세션이었는지 스냅샷 (2026-08-30)
+                        documentCaptureSessionId = if (documentSession) captureSessionId else null
+                        documentCaptureText = null
+                        documentResultSaveAnnounced = false
+                        documentResultAnnounced = false
+                        // 서류 모드: 셔터 순간 글자 줄 각도를 고정해 둔다 — 저장 전 회전 보정 입력
+                        documentShutterAngleDeg = if (documentSession) {
+                            documentText.observation
+                                ?.takeIf { System.currentTimeMillis() - it.atMs <= DocumentGuide.FRESH_MS }
+                                ?.angleDegrees
+                        } else {
+                            null
+                        }
                         guidanceFeedback.playShutter()
                     }
                     SessionState.SAVED -> {
@@ -795,6 +896,11 @@ class MainActivity : ComponentActivity() {
                             },
                             onDone = {
                                 when {
+                                    // 서류(2026-08-30): 서버 설명 대신 촬영본 OCR 본문을 읽어준다 — 온디바이스
+                                    documentCaptureSessionId == captureSessionId -> {
+                                        documentResultSaveAnnounced = true
+                                        maybeAnnounceDocumentResult(captureSessionId)
+                                    }
                                     // 결과는 pollCaptureUnderstanding -> announceGeneralModeCaptureResult가 이어받는다
                                     isGeneralModeManual -> Unit
                                     isManualCapture -> announceManualCaptureDescription(captureSessionId)
@@ -815,12 +921,14 @@ class MainActivity : ComponentActivity() {
                         )
                         autoZoom.reset() // 촬영이 끝나면 세션 시작 배율로 (현재 1.0배 고정)
                         personFraming.reset()
+                        subjectMotion.reset()
                     }
                     SessionState.ERROR -> {
                         // 노션 확정 스크립트 문장 (5-6 촬영 실패)
                         guidanceFeedback.announce("저장하지 못했어요. 다시 촬영할까요?")
                         autoZoom.reset()
                         personFraming.reset()
+                        subjectMotion.reset()
                     }
                     else -> Unit
                 }
@@ -970,6 +1078,7 @@ class MainActivity : ComponentActivity() {
                 }, "SnapSight-IndexInsert").start()
                 showResultScreen(uri)
                 maybeUploadFrames(sessionId)
+                if (documentCaptureSessionId == sessionId) startDocumentRecognition(sessionId, uri)
             }
 
             override fun onCandidatesCollected(
@@ -999,7 +1108,8 @@ class MainActivity : ComponentActivity() {
                                     onTripleTap = {
                                         guidanceFeedback.announce(
                                             "찍고 싶은 장면을 말하면 사운드와 진동으로 방향과 거리를 " +
-                                                "안내합니다. 화면을 두 번 탭해 촬영할 수 있어요"
+                                                "안내합니다. 화면을 두 번 탭해 촬영할 수 있어요",
+                                            interrupt = true,
                                         )
                                     },
                                     onLongPress = { /* 첫 화면 — 돌아갈 곳 없음 */ },
@@ -1108,7 +1218,8 @@ class MainActivity : ComponentActivity() {
                                         // 자동촬영은 온디바이스 즉시 요약 (사용자 요청 2026-08-25/26).
                                         onReplayDescription = {
                                             guidanceFeedback.announceDynamic(
-                                                lastManualCaptureDescription ?: captureHeadline()
+                                                lastManualCaptureDescription ?: captureHeadline(),
+                                                interrupt = true,
                                             )
                                         },
                                         onAddLabel = { startResultLabeling() },
@@ -1161,7 +1272,7 @@ class MainActivity : ComponentActivity() {
                             onGridThicknessChange = {
                                 updateSettings(settingsUiState.copy(gridThicknessDp = it))
                             },
-                            onAnnounceValue = { guidanceFeedback.announce(it) },
+                            onAnnounceValue = { guidanceFeedback.announce(it, interrupt = true) },
                             onVoicePresetChange = { key -> applyVoicePreset(key) },
                             serverAiDescriptionEnabled = settingsUiState.serverAiDescriptionEnabled,
                             onServerAiDescriptionEnabledChange = { enabled ->
@@ -1204,6 +1315,7 @@ class MainActivity : ComponentActivity() {
                                         guidanceFeedback.announce(
                                             GALLERY_INTRO_GUIDANCE,
                                             onDone = { speakCurrentResults() },
+                                            interrupt = true,
                                         )
                                     }
                                 },
@@ -1552,7 +1664,8 @@ class MainActivity : ComponentActivity() {
                         return@ask
                     }
                     guidanceFeedback.announceDynamic(
-                        answer ?: "질문에 답하지 못했어요. 다시 시도해 주세요"
+                        answer ?: "질문에 답하지 못했어요. 다시 시도해 주세요",
+                        interrupt = true, // 사용자 질문의 답 — 앞서 나가던 안내보다 우선
                     )
                 }
             }
@@ -1563,6 +1676,99 @@ class MainActivity : ComponentActivity() {
 
     private fun isCurrentVisibleResult(sessionId: String): Boolean =
         currentScreen == AppScreen.MAIN && showResult && lastCapturedSessionId == sessionId
+
+    // ---- 서류 결과 1단계 (2026-08-30) — 촬영본 OCR 본문 낭독·요약·찾기. 서버·모델 없이 규칙만 ----
+
+    /** 대표 컷이 저장되는 즉시 원본 해상도 OCR 을 백그라운드로 돌린다 (라이브 프레임은 글자가 뭉개짐). */
+    private fun startDocumentRecognition(sessionId: String, uri: Uri) {
+        Thread({
+            val bitmap = runCatching { decodeUprightBitmap(uri) }
+                .onFailure { Log.w(TAG, "서류 촬영본 디코드 실패 [$sessionId]", it) }
+                .getOrNull()
+            val text = bitmap?.let { bmp ->
+                try {
+                    DocumentReader.recognize(bmp)
+                } finally {
+                    bmp.recycle()
+                }
+            }
+            runOnUiThread {
+                if (documentCaptureSessionId != sessionId) return@runOnUiThread
+                documentCaptureText = text ?: DocumentText(emptyList())
+                maybeAnnounceDocumentResult(sessionId)
+            }
+        }, "SnapSight-DocumentOcr").start()
+    }
+
+    /**
+     * "사진을 저장했어요" 안내가 끝나고 OCR 도 끝났을 때 1회 — 요약을 읽고 명령을 듣는다.
+     * 어느 쪽이 먼저 끝나든 나중 쪽이 이 함수를 불러 만난다(폴링 없음).
+     */
+    private fun maybeAnnounceDocumentResult(sessionId: String) {
+        if (!documentResultSaveAnnounced || documentResultAnnounced) return
+        val text = documentCaptureText ?: return
+        documentResultAnnounced = true
+        if (!isCurrentVisibleResult(sessionId)) return
+        if (text.isEmpty) {
+            lastManualCaptureDescription = DOCUMENT_NO_TEXT_GUIDANCE
+            guidanceFeedback.announce(
+                DOCUMENT_NO_TEXT_GUIDANCE,
+                priority = GuidanceFeedback.SpeechPriority.CAPTURE,
+            )
+            return
+        }
+        // 결과 화면 "음성 다시 듣기" 버튼·"다시 들려줘"도 이 요약을 다시 읽는다 (마스킹 포함)
+        val spoken = "서류를 읽었어요. " + DocumentText.maskSensitive(text.summary())
+        lastManualCaptureDescription = spoken
+        guidanceFeedback.announceDynamic(
+            spoken,
+            onDone = {
+                guidanceFeedback.announce(
+                    DOCUMENT_GUIDE_PROMPT,
+                    onDone = { listenForDocumentCommand(sessionId) },
+                    priority = GuidanceFeedback.SpeechPriority.CAPTURE,
+                )
+            },
+            priority = GuidanceFeedback.SpeechPriority.CAPTURE,
+        )
+    }
+
+    /**
+     * 서류 명령을 듣고 답한 뒤 다시 듣는다 — "없어/괜찮아"로 끝낸다. 답은 [DocumentText.answer] 가
+     * 규칙으로 만들고(민감 번호 마스킹 포함), [GuidanceFeedback.dynamicSpeechGate] 가 서류 결과
+     * 중에는 서버 합성을 막으므로 내장 TTS 로만 나간다.
+     */
+    private fun listenForDocumentCommand(sessionId: String) {
+        if (!isCurrentVisibleResult(sessionId)) return
+        val text = documentCaptureText ?: return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED || !searchRecognizer.isAvailable
+        ) {
+            return
+        }
+        searchRecognizer.start(object : SpeechToTextRecognizer.Listener {
+            override fun onRecognized(utterance: String) {
+                if (!isCurrentVisibleResult(sessionId)) return
+                val command = DocumentVoiceCommand.parse(utterance)
+                if (command == DocumentVoiceCommand.None) {
+                    guidanceFeedback.announce(
+                        "알겠어요. 다시 찍으려면 화면을 두 번, 홈으로 가려면 꾹 눌러 주세요",
+                        interrupt = true,
+                    )
+                    return
+                }
+                Log.i(TAG, "서류 명령: $command")
+                guidanceFeedback.announceDynamic(
+                    text.answer(command),
+                    onDone = { listenForDocumentCommand(sessionId) },
+                    priority = GuidanceFeedback.SpeechPriority.CAPTURE,
+                    interrupt = true,
+                )
+            }
+
+            override fun onError(message: String) {} // 자동으로 건 마이크 — 못 들었다고 재촉하지 않는다
+        })
+    }
 
     private fun isCurrentCapture(sessionId: String, localGeneration: Long): Boolean =
         lastCapturedSessionId == sessionId && activeCaptureGeneration == localGeneration
@@ -1717,7 +1923,7 @@ class MainActivity : ComponentActivity() {
                 awaitingGeneralModeChoice = false
                 guidanceFeedback.announce("설명을 다시 들려 드릴게요", onDone = {
                     guidanceFeedback.announceDynamic(lastManualCaptureDescription ?: captureHeadline())
-                })
+                }, interrupt = true)
             }
             // 버튼("음성 다시 듣기")과 동일 — 수동 촬영은 서버 LLM 설명, 자동촬영은
             // 온디바이스 즉시 요약 (사용자 요청 2026-08-25/26).
@@ -1726,7 +1932,7 @@ class MainActivity : ComponentActivity() {
                 val summary = listOf(statusText, guidanceText)
                     .filter { it.isNotBlank() }
                     .joinToString(". ")
-                if (summary.isNotBlank()) guidanceFeedback.announce(summary)
+                if (summary.isNotBlank()) guidanceFeedback.announce(summary, interrupt = true)
             }
             else -> openGallery()
         }
@@ -1747,6 +1953,7 @@ class MainActivity : ComponentActivity() {
                 "서버 AI 사진 설명 ${if (s.serverAiDescriptionEnabled) "켜짐" else "꺼짐"}, " +
                 "촬영 그리드 ${if (s.gridEnabled) "켜짐" else "꺼짐"}입니다",
             onDone = { startSettingsVoiceCommand() },
+            interrupt = true,
         )
     }
 
@@ -1754,7 +1961,8 @@ class MainActivity : ComponentActivity() {
     private fun announceGuidanceHelp() {
         guidanceFeedback.announce(
             "촬영 중 방향과 거리는 사운드와 진동으로 안내하고, " +
-                "대상을 찾았을 때와 촬영 순간에만 짧은 음성을 사용합니다"
+                "대상을 찾았을 때와 촬영 순간에만 짧은 음성을 사용합니다",
+            interrupt = true,
         )
     }
 
@@ -1767,39 +1975,40 @@ class MainActivity : ComponentActivity() {
         // 문장이라 프리셋 음원으로 즉시 재생되고, 기본 프리셋이면 내장 TTS 로 나온다.
         guidanceFeedback.announce(KoreanJosa.changedAnnouncement("안내 목소리", label), onDone = {
             guidanceFeedback.announce("조금 왼쪽으로 이동해 주세요.")
-        })
+        }, interrupt = true)
     }
 
     /** 진동 강도 적용 — 터치(선택 카드)와 음성 두 경로가 같은 확인 문구를 쓴다. */
     private fun applyVibrationIntensity(level: VibrationIntensity) {
         updateSettings(settingsUiState.copy(vibrationIntensity = level.value))
-        guidanceFeedback.announce(KoreanJosa.changedAnnouncement("진동 강도", level.label))
+        guidanceFeedback.announce(KoreanJosa.changedAnnouncement("진동 강도", level.label), interrupt = true)
     }
 
     /** 음성 속도 적용 — 터치(선택 카드)와 음성 두 경로가 같은 확인 문구를 쓴다. */
     private fun applySpeechSpeed(speed: SpeechSpeed) {
         updateSettings(settingsUiState.copy(speechRate = speed.rate))
-        guidanceFeedback.announce(KoreanJosa.changedAnnouncement("음성 속도", speed.label))
+        guidanceFeedback.announce(KoreanJosa.changedAnnouncement("음성 속도", speed.label), interrupt = true)
     }
 
     /** 3×3 그리드 켜기/끄기 적용 — 터치(스위치)와 음성 두 경로가 공유한다. */
     private fun applyGridEnabled(enabled: Boolean) {
         updateSettings(settingsUiState.copy(gridEnabled = enabled))
         guidanceFeedback.announce(
-            KoreanJosa.changedAnnouncement("3×3 그리드", if (enabled) "켜짐" else "꺼짐")
+            KoreanJosa.changedAnnouncement("3×3 그리드", if (enabled) "켜짐" else "꺼짐"),
+            interrupt = true,
         )
     }
 
     /** 그리드 굵기 적용 — 터치(선택 버튼)와 음성 두 경로가 같은 확인 문구를 쓴다. */
     private fun applyGridThickness(thickness: GridThickness) {
         updateSettings(settingsUiState.copy(gridThicknessDp = thickness.dp))
-        guidanceFeedback.announce(KoreanJosa.changedAnnouncement("그리드 굵기", thickness.label))
+        guidanceFeedback.announce(KoreanJosa.changedAnnouncement("그리드 굵기", thickness.label), interrupt = true)
     }
 
     /** 그리드 색 적용 — 터치(색상 스와치)와 음성 두 경로가 같은 확인 문구를 쓴다. */
     private fun applyGridColor(name: String, argb: Int) {
         updateSettings(settingsUiState.copy(gridColorArgb = argb))
-        guidanceFeedback.announce(KoreanJosa.changedAnnouncement("그리드 색", name))
+        guidanceFeedback.announce(KoreanJosa.changedAnnouncement("그리드 색", name), interrupt = true)
     }
 
     /** 서버 AI 사진 설명 켜기/끄기 적용 — 터치(스위치)와 음성 두 경로가 공유한다. */
@@ -1807,7 +2016,8 @@ class MainActivity : ComponentActivity() {
         updateSettings(settingsUiState.copy(serverAiDescriptionEnabled = enabled))
         val base = KoreanJosa.changedAnnouncement("서버 AI 사진 설명", if (enabled) "켜짐" else "꺼짐")
         guidanceFeedback.announce(
-            if (enabled) base else "$base. 촬영 사진은 서버로 보내지 않아요"
+            if (enabled) base else "$base. 촬영 사진은 서버로 보내지 않아요",
+            interrupt = true,
         )
     }
 
@@ -1959,7 +2169,7 @@ class MainActivity : ComponentActivity() {
             finish()
         } else {
             lastHomeBackPressMs = now
-            guidanceFeedback.announce("한 번 더 누르면 앱을 종료합니다")
+            guidanceFeedback.announce("한 번 더 누르면 앱을 종료합니다", interrupt = true)
         }
     }
 
@@ -1976,7 +2186,7 @@ class MainActivity : ComponentActivity() {
             return output.objects.filter { output.identities[it.trackId] == name }
         }
         val spec = output.targetSpec
-        if (spec == null || !spec.isActionable || spec.subjectType == TargetSpec.SubjectType.LANDSCAPE) {
+        if (spec == null || !spec.isActionable || spec.subjectType.sceneOnly) {
             return output.objects
         }
         val selection = output.selection
@@ -2074,6 +2284,7 @@ class MainActivity : ComponentActivity() {
         // 듣기 시작하도록 고쳤다.
         guidanceFeedback.announce(
             "날짜나 저장한 라벨을 말해 사진들을 찾을 수 있어요",
+            interrupt = true,
             onDone = {
                 searchRecognizer.start(object : SpeechToTextRecognizer.Listener {
                     override fun onRecognized(text: String) = handleGalleryQuery(text)
@@ -2491,7 +2702,7 @@ class MainActivity : ComponentActivity() {
         enrollmentScanning = false
         enrollmentActive = false
         updateAnalysisMode()
-        guidanceFeedback.announce(message)
+        guidanceFeedback.announce(message, interrupt = true) // 흐름의 끝 — 이전 안내는 더 이상 유효하지 않다
     }
 
     /** 등록 흐름 취소 (길게 누르기·뒤로가기) — 진행 중인 스캔까지 중단하고 홈으로. */
@@ -2612,7 +2823,8 @@ class MainActivity : ComponentActivity() {
         lastAnnouncedGaze = null
         guidanceFeedback.announce(
             if (isFront) "셀카 모드예요. 화면을 향해 얼굴을 보여 주세요"
-            else "후면 카메라로 전환했어요"
+            else "후면 카메라로 전환했어요",
+            interrupt = true,
         )
     }
 
@@ -2705,11 +2917,17 @@ class MainActivity : ComponentActivity() {
     /**
      * 짧은 안내 문구를 TTS로 재생한다 (재질문·에러 안내 등, 이슈 TTS-1).
      *
+     * 사용자 조작에 대한 직접 응답(사진 열기·목록 복귀·검색 결과·오류 안내)에 쓰므로 진행 중인
+     * 음성을 끊고 바로 말한다(`interrupt`, 엔드유저 피드백 2026-08-30 — 갤러리에서 사진을 바꿔
+     * 눌러도 이전 설명이 이어지고 새 설명이 안 나오던 문제). 자동 안내는 이 함수를 쓰지 않는다.
+     *
      * 실패해도 세션 흐름은 절대 막지 않는다 — 안내 음성 하나 때문에 촬영이 멈추면 안 되므로
      * 실패 시 로그만 남기고 조용히 넘어간다.
      */
     private fun speak(text: String) {
-        guidanceFeedback.announce(text, priority = GuidanceFeedback.SpeechPriority.STATUS)
+        guidanceFeedback.announce(
+            text, priority = GuidanceFeedback.SpeechPriority.STATUS, interrupt = true,
+        )
     }
 
     /**
@@ -2731,7 +2949,18 @@ class MainActivity : ComponentActivity() {
         personFramingSession = false
         personFramingPose.reset()
         personFraming.reset()
+        subjectMotion.reset()
         personFramingDebugLabel = ""
+        landscapeGuide.reset()
+        landscapeLuminance = null
+        landscapeLuminanceSampling = false
+        documentSession = false
+        documentText.enabled = false
+        documentText.reset()
+        documentGuide.reset()
+        documentShutterAngleDeg = null
+        lastDocumentObservationFedMs = 0L
+        documentGuidanceText = DocumentGuide.STATUS_SEARCHING
         currentIdentities = emptyMap()
         synchronized(cvSnapshotLock) {
             latestObservedObjects = emptyList()
@@ -2773,9 +3002,10 @@ class MainActivity : ComponentActivity() {
             effectiveSpec?.subjectType == TargetSpec.SubjectType.PERSON -> "인물"
             effectiveSpec?.subjectType == TargetSpec.SubjectType.OBJECT && effectiveSpec.objectLabel != null -> "사물"
             effectiveSpec?.subjectType == TargetSpec.SubjectType.LANDSCAPE -> "풍경"
+            effectiveSpec?.subjectType == TargetSpec.SubjectType.DOCUMENT -> "서류"
             else -> "일반"
         }
-        val identityName = if (effectiveSpec?.subjectType == TargetSpec.SubjectType.LANDSCAPE) {
+        val identityName = if (effectiveSpec?.subjectType?.sceneOnly == true) {
             null
         } else {
             localRawText?.let(::registeredTargetName)
@@ -2820,6 +3050,9 @@ class MainActivity : ComponentActivity() {
         // 사물은 제외한다(머리·발 랜드마크가 안 잡혀 줌이 끝없이 계속되는 것을 막기 위함).
         personFramingSession = effectiveSpec?.subjectType == TargetSpec.SubjectType.PERSON
         personFramingPose.enabled = personFramingSession
+        // 서류 세션(2026-08-30) — 텍스트 인식을 켜고, 사진은 서버로 보내지 않는다(신분증 프라이버시).
+        documentSession = effectiveSpec?.subjectType == TargetSpec.SubjectType.DOCUMENT
+        documentText.enabled = documentSession
         guidanceFeedback.setSessionSubject(identityName ?: subjectKorean)
         synchronized(targetIntentLock) {
             if (!cvProcessor.isCurrentTargetIntentGeneration(appliedGeneration)) return
@@ -2832,6 +3065,13 @@ class MainActivity : ComponentActivity() {
                 // 풍경은 Objects365 bbox로 조준할 단일 피사체가 없다. 이를 LOST로 오인해 경고하지
                 // 않고, 한 번만 장면 전체를 확인하도록 안내한다.
                 guidanceText = "풍경 모드예요. 장면 전체가 들어오는지 확인해주세요"
+                guidanceFeedback.announce(
+                    guidanceText,
+                    priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT,
+                )
+            } else if (appliedMode == AimingGuidanceMode.DOCUMENT) {
+                // 서류(2026-08-30): bbox 조준 대상이 없다 — 글자 영역으로 안내·자동촬영한다 (DocumentGuide).
+                guidanceText = DOCUMENT_MODE_GUIDANCE
                 guidanceFeedback.announce(
                     guidanceText,
                     priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT,
@@ -3075,11 +3315,27 @@ class MainActivity : ComponentActivity() {
                     val poseFresh = personFramingPose.isFresh(output.timestampMs)
                     val headYForFrame = if (poseFresh) personFramingPose.headY else null
                     val footYForFrame = if (poseFresh) personFramingPose.footY else null
+                    // 줌은 정지 피사체에만 (엔드유저 피드백 2026-08-30): 실관측 프레임의 bbox
+                    // 궤적으로 움직임을 판정한다. 예측/유지 프레임은 등속 가정이라 넣지 않고,
+                    // 줌 배율·카메라 회전량을 같이 넘겨 그 구간은 비교에서 빠진다.
+                    if (dev.observationFreshness == ObservationFreshness.FRESH) {
+                        subjectMotion.onObservation(
+                            centerX = dev.offsetX / 2f + 0.5f,
+                            centerY = dev.offsetY / 2f + 0.5f,
+                            scale = sqrt(dev.areaRatio),
+                            zoomRatio = cameraController.zoomRatio,
+                            cameraOrientationRad = motionEstimator.currentOrientationRad(),
+                            nowMs = output.timestampMs,
+                        )
+                    }
+                    val subjectMoving = !subjectMotion.isStatic(output.timestampMs)
                     // 슬라이더 튜닝 확인용 실측값 표시 (사용자 요청 2026-08-28 — "화면에 머리
-                    // 위치도 뜨게 해줘"). 좌표는 %로, bbox 높이도 함께 보여준다.
+                    // 위치도 뜨게 해줘"). 좌표는 %로, bbox 높이도 함께 보여준다. 움직임 판정으로
+                    // 줌이 보류 중이면 "이동중"을 덧붙인다.
                     personFramingDebugLabel = "머리 ${headYForFrame?.let { "%.0f%%".format(it * 100) } ?: "?"} " +
                         "발 ${footYForFrame?.let { "%.0f%%".format(it * 100) } ?: "?"} " +
-                        "H ${bboxHeightRatio?.let { "%.0f%%".format(it * 100) } ?: "?"}"
+                        "H ${bboxHeightRatio?.let { "%.0f%%".format(it * 100) } ?: "?"}" +
+                        (if (subjectMoving) " 이동중" else "")
                     personFraming.onJudgment(
                         bboxFitsFrame = bboxFitsFrame,
                         headY = headYForFrame,
@@ -3087,6 +3343,7 @@ class MainActivity : ComponentActivity() {
                         bboxHeightRatio = bboxHeightRatio,
                         generalReady = readiness.ready,
                         nowMs = output.timestampMs,
+                        subjectMoving = subjectMoving,
                     )
                 } else {
                     personFramingDebugLabel = ""
@@ -3118,6 +3375,79 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            // 풍경 전용 안내 (2026-08-28, dev 반영 2026-08-30): 구도 안내가 꺼진 풍경 모드에서
+            // 수평(roll)·장면 내용·역광을 안내한다. 자동촬영은 하지 않는다 — 촬영 확정은 두 번 탭 수동.
+            // 인물·사물 세션의 수평 안내는 GuidancePolicy 가 같은 규약(PhoneRoll)으로 맡는다.
+            landscapeLuminanceSampling = guidanceMode == AimingGuidanceMode.LANDSCAPE
+            if (guidanceMode == AimingGuidanceMode.LANDSCAPE && sessionManager.state == SessionState.AIMING) {
+                landscapeGuide.onRoll(
+                    sessionManager.tiltMonitor.rollDegrees, output.timestampMs,
+                )?.let {
+                    guidanceFeedback.announce(it, priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT)
+                }
+                landscapeLuminance?.let { (bright, dark) ->
+                    // STATUS 는 다른 발화 중 조용히 버려질 수 있어 ADJUSTMENT 로 낸다
+                    landscapeGuide.onLuminance(bright, dark, output.timestampMs)?.let {
+                        guidanceFeedback.announce(it, priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT)
+                    }
+                }
+                if (output.analyzed) {
+                    // 장면 내용 낭독 (세션당 1회, 진입 4초 뒤): 실관측만, 라벨은 한국어 명칭으로
+                    val sceneLabels = output.objects
+                        .filter { !it.predicted && it.confidence >= LANDSCAPE_SCENE_MIN_CONFIDENCE }
+                        .map { obj -> KOREAN_LABELS[obj.label.trim().lowercase()] ?: obj.label }
+                    landscapeGuide.sceneSummaryOnce(sceneLabels, output.timestampMs)?.let {
+                        guidanceFeedback.announce(it, priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT)
+                    }
+                }
+            }
+
+            // 서류 전용 안내 (2026-08-30): 텍스트 영역으로 잘림·크기·위치·수직·회전·반사를 차례로
+            // 안내하고, 전부 통과한 채 정지 상태가 유지되면 자동촬영한다. 중력 센서로 자세를
+            // 강제하지 않는다 — 서류가 책상·벽·거치대 어디에 있든 이미지 기준으로 판정한다.
+            if (guidanceMode == AimingGuidanceMode.DOCUMENT && sessionManager.state == SessionState.AIMING) {
+                val observation = documentText.observation
+                if (observation != null && observation.atMs != lastDocumentObservationFedMs) {
+                    // 손에 든 신분증처럼 움직이는 서류는 유지 시간이 쌓이지 않게 — 관측이 새로 올 때만 넣는다
+                    lastDocumentObservationFedMs = observation.atMs
+                    subjectMotion.onObservation(
+                        centerX = observation.centerX,
+                        centerY = observation.centerY,
+                        scale = observation.scale,
+                        zoomRatio = cameraController.zoomRatio,
+                        cameraOrientationRad = motionEstimator.currentOrientationRad(),
+                        nowMs = observation.atMs,
+                    )
+                }
+                val outcome = documentGuide.onJudgment(
+                    observation = observation,
+                    subjectStatic = subjectMotion.isStatic(output.timestampMs),
+                    nowMs = output.timestampMs,
+                    zoomInAvailable = autoZoom.canZoomInFurther,
+                    zoomOutAvailable = autoZoom.canZoomOut,
+                )
+                documentGuidanceText = outcome.statusText
+                outcome.utterance?.let {
+                    guidanceFeedback.announce(it, priority = GuidanceFeedback.SpeechPriority.ADJUSTMENT)
+                }
+                // 크기는 이동 대신 줌으로 맞춘다(사용자 요청 2026-08-30) — 스텝마다 짧은 틱
+                when (outcome.zoom) {
+                    DocumentGuide.Zoom.IN -> if (autoZoom.requestZoomStep() != null) guidanceFeedback.playScanTick()
+                    DocumentGuide.Zoom.OUT -> if (autoZoom.requestZoomOutStep() != null) guidanceFeedback.playScanTick()
+                    null -> Unit
+                }
+                if (outcome.vibrate) guidanceFeedback.vibrateConfirm()
+                if (outcome.capture) {
+                    val expectedSessionId = sessionManager.sessionId
+                    val generation = output.targetIntentGeneration
+                    runOnUiThread {
+                        if (cvProcessor.isCurrentTargetIntentGeneration(generation)) {
+                            sessionManager.autoShutter(expectedSessionId)
+                        }
+                    }
+                }
+            }
+
             // 시안 S3 하단 안내 카드 문구 (#80) — 음성·햅틱(⑥)과 같은 판정을 화면 텍스트로도 보여준다.
             // 셀카 모드에서는 구도가 맞아도 시선이 안 맞으면 그 사유를 대신 보여준다.
             val gazeBlock = if (guidanceMode.allowsCompositionGuidance) {
@@ -3128,6 +3458,7 @@ class MainActivity : ComponentActivity() {
             val text = when (guidanceMode) {
                 AimingGuidanceMode.LANDSCAPE ->
                     "풍경 모드예요. 장면 전체가 들어오는지 확인해주세요"
+                AimingGuidanceMode.DOCUMENT -> documentGuidanceText
                 AimingGuidanceMode.RESOLVING -> "촬영 요청을 확인하고 있어요"
                 AimingGuidanceMode.GENERAL_WAITING -> GENERAL_CAPTURE_WAITING_GUIDANCE
                 AimingGuidanceMode.COMPOSITION -> {
@@ -3687,6 +4018,27 @@ class MainActivity : ComponentActivity() {
 
         /** 인물 3분할 크롭 on/off — 2026-08-28 사용자 요청으로 일단 꺼둠. */
         private const val PORTRAIT_CROP_ENABLED = false
+
+        /** 저장 전 수평 보정([HorizonStraightener]) on/off (2026-08-30). 부호 검증·화질 확인용 스위치. */
+        private const val HORIZON_LEVEL_ENABLED = true
+
+        /** 서류 모드 진입 안내 (2026-08-30). 촬영 확정은 [DocumentGuide] 의 정지 유지 자동촬영. */
+        private const val DOCUMENT_MODE_GUIDANCE =
+            "서류 모드예요. 서류가 화면에 가득 차게 맞추면 자동으로 찍을게요."
+
+        /** 서류 결과 요약 뒤 명령 안내 (1단계, 2026-08-30) — 이 뒤에 바로 듣기 시작한다. */
+        private const val DOCUMENT_GUIDE_PROMPT =
+            "전부 읽어줘, 요약해줘, 금액이나 날짜 찾아줘 라고 말해 보세요. 궁금한 단어를 말하면 그 줄을 찾아 드려요."
+
+        /** 촬영본에서 글자를 못 읽었을 때. */
+        private const val DOCUMENT_NO_TEXT_GUIDANCE =
+            "글자를 읽지 못했어요. 서류를 더 크게 화면에 채워서 다시 찍어 주세요."
+
+        /**
+         * 풍경 장면 낭독에 넣을 검출의 최소 신뢰도. 실기기(2026-08-28)에서 실내 사물 대부분이
+         * 0.26~0.35 로 잡혀 0.45 는 아무것도 못 읽었다 — 오탐 낭독과의 절충으로 0.30.
+         */
+        private const val LANDSCAPE_SCENE_MIN_CONFIDENCE = 0.30f
         const val CV_TAG = "SnapSightCV"
         const val PREFS_NAME = "snap_sight_prefs"
         const val KEY_ONBOARDING_DONE = "onboarding_done"

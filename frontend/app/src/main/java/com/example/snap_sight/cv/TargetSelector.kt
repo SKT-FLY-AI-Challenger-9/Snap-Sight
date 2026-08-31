@@ -116,7 +116,7 @@ class Objects365TargetSelector(
             )
         }
 
-        if (spec.subjectType == TargetSpec.SubjectType.LANDSCAPE) {
+        if (spec.subjectType.sceneOnly) {
             return TargetSelection(
                 state = TargetSelectionState.SCENE_ONLY,
                 candidates = emptyList(),

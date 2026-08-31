@@ -80,6 +80,31 @@ class AutoZoomController(private val cameraController: CameraController) {
     }
 
     /**
+     * 서류 모드(2026-08-30) 축소 스텝 — 글자 영역이 마주보는 두 변에 걸릴 때 [requestZoomStep] 의
+     * 역방향으로 한 단계 줄인다. 기본 배율([BASE_ZOOM]) 아래로는 내려가지 않는다. 쿨다운 안이거나
+     * 이미 기본 배율이면 null.
+     */
+    fun requestZoomOutStep(factor: Float = PERSON_FRAMING_ZOOM_STEP): Float? {
+        val now = System.currentTimeMillis()
+        if (now - lastZoomAtMs < COOLDOWN_MS) return null
+        val current = cameraController.zoomRatio
+        if (current <= BASE_ZOOM + ZOOM_EPS) return null
+        val next = (current / factor).coerceAtLeast(BASE_ZOOM)
+        if (abs(next - current) < ZOOM_EPS) return null
+        lastZoomAtMs = now
+        cameraController.setZoomRatio(next)
+        return next
+    }
+
+    /** 더 확대할 여유가 있는가 (기기·정책 상한 대비) — 서류 모드가 줌인/"가까이"를 가르는 데 쓴다. */
+    val canZoomInFurther: Boolean
+        get() = cameraController.zoomRatio < effectiveMaxZoom(cameraController.maxZoomRatio) - ZOOM_EPS
+
+    /** 기본 배율보다 확대돼 있어 축소할 수 있는가. */
+    val canZoomOut: Boolean
+        get() = cameraController.zoomRatio > BASE_ZOOM + ZOOM_EPS
+
+    /**
      * AIMING 중 타겟을 못 잡은 프레임마다 호출 — 광각(1.0 미만)에서 [NO_TARGET_FRAMES] 연속 실패하면
      * 기본 배율 1.0 으로 복귀한다. 광각은 인식률이 낮아 "못 봐서 광각을 못 벗어나는" 악순환을 끊는 폴백.
      */

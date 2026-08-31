@@ -11,6 +11,8 @@ enum class AimingGuidanceMode(
 ) {
     COMPOSITION(allowsCompositionGuidance = true, allowsAutoZoom = true),
     LANDSCAPE(allowsCompositionGuidance = false, allowsAutoZoom = false),
+    /** 서류·신분증 (2026-08-30) — bbox 구도 안내 대신 텍스트 영역 기반 [com.example.snap_sight.ux.DocumentGuide]. */
+    DOCUMENT(allowsCompositionGuidance = false, allowsAutoZoom = false),
     RESOLVING(allowsCompositionGuidance = false, allowsAutoZoom = false),
     GENERAL_WAITING(allowsCompositionGuidance = false, allowsAutoZoom = false),
 }
@@ -23,6 +25,7 @@ object AimingGuidanceModeResolver {
     ): AimingGuidanceMode = when {
         targetSpecPending && localIdentityName == null -> AimingGuidanceMode.RESOLVING
         spec?.subjectType == TargetSpec.SubjectType.LANDSCAPE -> AimingGuidanceMode.LANDSCAPE
+        spec?.subjectType == TargetSpec.SubjectType.DOCUMENT -> AimingGuidanceMode.DOCUMENT
         localIdentityName != null -> AimingGuidanceMode.COMPOSITION
         spec != null && !spec.isActionable -> AimingGuidanceMode.GENERAL_WAITING
         spec == null && localIdentityName == null -> AimingGuidanceMode.GENERAL_WAITING

@@ -52,9 +52,11 @@ class GuidanceFeedback(context: Context) : DeviationListener {
 
     // ---- TalkBack 공존 (2026-08-24) ----
     // 스크린리더(탐색 터치)가 켜져 있으면 TalkBack 낭독과 우리 앱 음성이 겹쳐 들린다.
-    // 그동안은 앱의 모든 발화를 잠근다 — 진동·earcon·셔터음은 겹침이 없어 그대로 두고,
+    // 그동안은 앱의 발화를 잠근다 — 진동·earcon·셔터음은 겹침이 없어 그대로 두고,
     // 발화 뒤 순서 연쇄(onDone: 안내 후 STT 시작 등)는 즉시 이어가 흐름이 멈추지 않게 한다.
     // 탐색 터치는 TalkBack 류 스크린리더가 켜졌을 때만 활성화되는 신호라 오탐이 적다.
+    // 예외 (엔드유저 피드백 2026-08-30): 촬영 장면의 안내(방향·READY·세션 흐름)는 TalkBack 이
+    // 대신 읽어줄 수 없는 실시간 정보라 잠그지 않는다 — [screenReaderSpeechAllowed] 가 정한다.
     private val accessibilityManager = appContext.getSystemService(Context.ACCESSIBILITY_SERVICE)
         as? android.view.accessibility.AccessibilityManager
 
@@ -76,6 +78,18 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         accessibilityManager?.addTouchExplorationStateChangeListener(touchExplorationListener)
         if (screenReaderActive) Log.i(TAG, "시작 시점에 스크린리더 감지 — 앱 음성 잠금 상태로 시작")
     }
+
+    /**
+     * 스크린리더가 켜져 있어도 앱 음성을 내야 하는 상황인가 — true 면 잠금을 풀고 평소처럼
+     * 말한다 (엔드유저 피드백 2026-08-30: "톡백이 켜져 있어도 촬영 장면 가이드는 나와야").
+     * MainActivity 가 "촬영 세션 진행 중"으로 연결한다. null 이면 항상 잠금(기존 동작).
+     * 분석 스레드·메인 스레드 양쪽에서 호출된다.
+     */
+    @Volatile
+    var screenReaderSpeechAllowed: (() -> Boolean)? = null
+
+    private fun speechMutedByScreenReader(): Boolean =
+        screenReaderActive && screenReaderSpeechAllowed?.invoke() != true
 
     /**
      * true 를 돌려주면 "너무 작음(CLOSER)"은 자동 줌인이 처리 중인 것으로 보고 "가까이"를 말하지 않는다.
@@ -106,6 +120,15 @@ class GuidanceFeedback(context: Context) : DeviationListener {
      */
     @Volatile
     var phonePitch: (() -> Float?)? = null
+
+    /**
+     * 현재 폰 좌우 기울기(도, [TiltSensorMonitor] roll 규약: 음수 = 폰 윗부분이 오른쪽으로 기움)
+     * 를 돌려주는 훅 (2026-08-30). 크게 기울어져 있으면 [GuidancePolicy] 가 다른 축보다 먼저
+     * "폰 오른쪽/왼쪽을 조금 올려 주세요"를 말한다. null 이면 수평 안내 없음.
+     * MainActivity 가 TiltSensorMonitor 로 연결한다. 분석 스레드에서 호출된다.
+     */
+    @Volatile
+    var phoneRoll: (() -> Float?)? = null
 
     /**
      * 조준(AIMING) 시작 이후 누적된 카메라 회전량(라디안, yaw to pitch) — null이면 자이로 없음/
@@ -192,6 +215,13 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     private val utteranceCallbacks = ConcurrentHashMap<String, () -> Unit>()
     private val utterancePriorities = ConcurrentHashMap<String, SpeechPriority>()
     private val utteranceCounter = AtomicLong()
+
+    /**
+     * 발화 세대 — [stopSpeaking] 마다 올라간다. 서버 합성처럼 비동기로 준비되는 발화는 예약
+     * 시점의 세대를 기억했다가, 재생 직전에 세대가 바뀌었으면(그사이 화면 전환·끼어들기가
+     * 있었으면) 조용히 버린다 — 이전 화면의 설명이 뒤늦게 재생되던 문제 대책 (2026-08-30).
+     */
+    private val speechGeneration = AtomicLong()
     @Volatile private var activeUtteranceId: String? = null
     @Volatile private var activeSpeechPriority: SpeechPriority? = null
 
@@ -308,6 +338,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
             phonePitchDeg = phonePitch?.invoke(),
             cameraOrientationRad = cameraOrientationRad?.invoke(),
             personSession = personSession?.invoke() == true,
+            phoneRollDeg = phoneRoll?.invoke(),
         )
         for (action in decision.actions) {
             when (action) {
@@ -318,7 +349,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
                 )
                 GuidanceAction.Vibrate -> vibrateShort()
                 GuidanceAction.WarningTone -> playWarningTone()
-                GuidanceAction.PresenceVibrationStart -> startPresenceVibration()
+                is GuidanceAction.PresenceVibrationLevel -> startPresenceVibration(action.level)
                 GuidanceAction.PresenceVibrationStop -> stopPresenceVibration()
             }
         }
@@ -330,11 +361,24 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     @Volatile
     private var presenceVibrating = false
 
-    private fun startPresenceVibration() {
+    /** 현재 재생 중인 존재 진동 단계 — 꺼져 있으면 -1. 같은 단계 재요청은 패턴을 다시 시작하지 않는다. */
+    @Volatile
+    private var presenceLevel = -1
+
+    /**
+     * 존재 진동 시작 또는 단계 변경. 펄스 길이는 고정([PRESENCE_PULSE_ON_MS])이고 휴지 간격만
+     * 단계에 따라 줄어든다([GuidanceFeedbackSettingsMapper.presencePulseOffMs]) — 진폭 차이는
+     * 기기마다 체감이 다르고 진폭 제어가 없는 기기도 있어, "가까워질수록 빠르게"는 간격으로
+     * 표현한다(엔드유저 피드백 2026-08-30). 모터 과열·소음을 피하려고 가장 빠른 단계도 휴지를 둔다.
+     */
+    private fun startPresenceVibration(level: Int) {
         val amplitude = GuidanceFeedbackSettingsMapper.vibrationAmplitude(vibrationIntensity) ?: return
+        if (presenceVibrating && presenceLevel == level) return
         presenceVibrating = true
-        // 140ms 진동 + 160ms 휴지 반복 — 연속감은 있되 모터 과열·소음을 피하는 패턴
-        val timings = longArrayOf(0, PRESENCE_PULSE_ON_MS, PRESENCE_PULSE_OFF_MS)
+        presenceLevel = level
+        val timings = longArrayOf(
+            0, PRESENCE_PULSE_ON_MS, GuidanceFeedbackSettingsMapper.presencePulseOffMs(level),
+        )
         val effect = if (vibrator.hasAmplitudeControl()) {
             VibrationEffect.createWaveform(timings, intArrayOf(0, amplitude, 0), 0)
         } else {
@@ -351,6 +395,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     fun stopPresenceVibration() {
         if (!presenceVibrating) return
         presenceVibrating = false
+        presenceLevel = -1
         runCatching { vibrator.cancel() }
     }
 
@@ -420,13 +465,21 @@ class GuidanceFeedback(context: Context) : DeviationListener {
      * 안내 음성이 마이크로 들어가 발화로 인식되는 것을 막기 위한 순서 조율용
      * (실사용 피드백 2026-08-22 — "요청에 '말해주세요'가 들어간다").
      * TTS를 못 쓰는 상태여도 onDone은 반드시 호출된다.
+     *
+     * [interrupt] 가 true 면 **사용자 조작에 대한 응답**으로 본다 — 진행 중인 발화·예약된
+     * onDone 연쇄·대기 중인 서버 합성을 전부 끊고([stopSpeaking]) 우선순위와 무관하게 즉시
+     * 말한다 (엔드유저 피드백 2026-08-30: 갤러리에서 사진을 바꿔 눌러도 이전 설명이 이어지고
+     * 새 설명은 안 나옴). 자동 안내(방향·판정·세션 흐름)는 false 로 두어 "말하는 도중에 끊고
+     * 다시 말하지 않는다"는 기존 규칙(2026-08-26)을 유지한다.
      */
     fun announce(
         text: String,
         onDone: (() -> Unit)? = null,
         priority: SpeechPriority = SpeechPriority.STATUS,
+        interrupt: Boolean = false,
     ) {
-        if (screenReaderActive) {
+        if (interrupt) stopSpeaking()
+        if (speechMutedByScreenReader()) {
             // TalkBack 낭독과 겹치지 않게 침묵 — 순서 연쇄(onDone)는 반드시 이어간다.
             // 발화가 없으니 안내 음성이 마이크에 섞일 일도 없다.
             onDone?.let { done -> transitionHandler.post { done() } }
@@ -563,7 +616,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
      * 셔터 직후 온디바이스 요약처럼 "곧 말할 문장"이 정해지는 즉시 호출한다.
      */
     fun prefetchDynamic(text: String) {
-        if (screenReaderActive) return // 어차피 말하지 않을 문장 — 합성 비용 절약
+        if (speechMutedByScreenReader()) return // 어차피 말하지 않을 문장 — 합성 비용 절약
         val voice = dynamicVoiceKey ?: return
         if (text.isBlank() || SpeechCatalog.assetIdFor(text) != null) return
         if (dynamicSpeechGate?.invoke(text) == false) return
@@ -587,7 +640,8 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         text: String,
         onDone: (() -> Unit)? = null,
         priority: SpeechPriority = SpeechPriority.STATUS,
-    ) = announce(text, onDone, priority)
+        interrupt: Boolean = false,
+    ) = announce(text, onDone, priority, interrupt)
 
     /**
      * 이 문장을 서버 합성으로 보내도 되는가 — false 면 즉석 합성을 건너뛰고 내장 TTS.
@@ -615,6 +669,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         if (System.currentTimeMillis() - lastDynamicFailureMs < DYNAMIC_FAILURE_BACKOFF_MS) {
             return false // 최근 실패(오프라인 등) — 바로 TTS 로
         }
+        val generation = speechGeneration.get()
         dynamicFetchExecutor.execute {
             val ready = runCatching {
                 if (!cached.exists()) {
@@ -631,6 +686,12 @@ class GuidanceFeedback(context: Context) : DeviationListener {
                 lastDynamicFailureMs = System.currentTimeMillis()
             }
             transitionHandler.post {
+                // 합성을 기다리는 사이 화면 전환·끼어들기([stopSpeaking])가 있었으면 이 문장은
+                // 이미 지난 화면의 것이다 — 재생도, onDone 연쇄도 이어가지 않는다.
+                if (speechGeneration.get() != generation) {
+                    Log.i(TAG, "동적 발화 폐기(세대 바뀜): ${text.take(20)}")
+                    return@post
+                }
                 val activeNow = activeSpeechPriority
                 if (activeNow != null && activeNow.level > priority.level && onDone == null) return@post
                 if (!ready || !startDynamicPlayback(cached, text, onDone, priority)) {
@@ -730,6 +791,8 @@ class GuidanceFeedback(context: Context) : DeviationListener {
      * 그 체인 자체를 끊은 뒤에 멈춘다.
      */
     fun stopSpeaking() {
+        speechGeneration.incrementAndGet() // 대기 중인 서버 합성 발화도 무효화 (2026-08-30)
+        synchronized(initLock) { pendingWhileInit = null } // TTS 초기화 대기분도 지난 화면의 것
         utteranceCallbacks.clear()
         utterancePriorities.clear()
         activeUtteranceId = null
@@ -766,8 +829,8 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         /** 즉석 합성 실패 후 이 시간 동안은 재시도 없이 바로 TTS — 오프라인 발화 지연 방지. */
         const val DYNAMIC_FAILURE_BACKOFF_MS = 30_000L
         // 존재 확인 연속 진동 파형 — 140ms 온 / 160ms 오프 반복
-        const val PRESENCE_PULSE_ON_MS = 140L
-        const val PRESENCE_PULSE_OFF_MS = 160L
+        /** 존재 진동 한 펄스 길이 — 휴지 간격은 단계별([GuidanceFeedbackSettingsMapper.presencePulseOffMs]). */
+        const val PRESENCE_PULSE_ON_MS = 100L
         // 등록 스캔 시작/종료 — 전환 earcon(DTMF)·LOST 경고(BEEP2)와 겹치지 않는 음색
         const val SCAN_START_TONE = ToneGenerator.TONE_PROP_BEEP
         const val SCAN_END_TONE = ToneGenerator.TONE_PROP_ACK
@@ -795,6 +858,16 @@ internal object GuidanceFeedbackSettingsMapper {
         if (clamped <= 0f) return null
         return (clamped * 255).toInt().coerceIn(1, 255)
     }
+
+    /**
+     * 존재 진동 단계별 펄스 사이 휴지(ms) — 단계는 [GuidancePolicy.PRESENCE_LEVELS] 기준
+     * 0(멂) .. 3(목표 범위 안). 멀면 약 1.3Hz 의 느린 톡톡, 범위 안이면 약 5Hz 의 빠른 드르륵.
+     * 범위 밖 단계는 가장 가까운 끝으로 clamp 한다.
+     */
+    fun presencePulseOffMs(level: Int): Long =
+        PRESENCE_PULSE_OFF_MS_BY_LEVEL[level.coerceIn(0, PRESENCE_PULSE_OFF_MS_BY_LEVEL.size - 1)]
+
+    private val PRESENCE_PULSE_OFF_MS_BY_LEVEL = longArrayOf(700L, 420L, 220L, 90L)
 
     /** ToneGenerator 볼륨(1..100). soundVolume 0 이면 null(경고음 없음). */
     fun toneVolume(soundVolume: Float): Int? {

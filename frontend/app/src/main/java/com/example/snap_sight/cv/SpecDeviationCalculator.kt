@@ -101,7 +101,7 @@ class SpecDeviationCalculator(
     }
 
     override fun compute(selection: TargetSelection, spec: TargetSpec?): FramingDeviation? {
-        if (spec?.subjectType == TargetSpec.SubjectType.LANDSCAPE) return null
+        if (spec?.subjectType?.sceneOnly == true) return null // 풍경·서류: 겨냥할 bbox 피사체 없음
         val now = clock()
         synchronized(stateLock) {
             // SEARCHING/AMBIGUOUS/UNRESOLVED 상태에서 임의 후보를 골라 READY를 만들지 않는다.

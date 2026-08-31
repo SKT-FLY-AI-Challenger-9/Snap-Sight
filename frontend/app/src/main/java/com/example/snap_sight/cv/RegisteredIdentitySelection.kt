@@ -9,7 +9,7 @@ internal object RegisteredIdentitySelection {
         identityName: String?,
         identities: Map<Int, String>,
     ): TargetSelection {
-        if (identityName == null || spec?.subjectType == TargetSpec.SubjectType.LANDSCAPE) {
+        if (identityName == null || spec?.subjectType?.sceneOnly == true) {
             return base
         }
         // A unique local identity is stronger evidence than the redacted/remote taxonomy.

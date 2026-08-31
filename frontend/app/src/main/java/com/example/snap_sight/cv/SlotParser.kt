@@ -34,8 +34,19 @@ object SlotParser {
     )
 
     // subjectType이 person도 object도 아닌 경우만 다룬다 (object는 OBJECT_LABEL_KEYWORDS로 판정).
+    // 서류(DOCUMENT, 2026-08-30): 서류·종이·신분증류 단어가 있으면 서류 모드 — bbox 대신 텍스트
+    // 영역으로 프레이밍한다. 짧은 키워드가 다른 단어에 우연히 포함되지 않게 2글자 이상만 쓴다.
     private val SUBJECT_TYPE_KEYWORDS = linkedMapOf(
         "풍경" to TargetSpec.SubjectType.LANDSCAPE, "경치" to TargetSpec.SubjectType.LANDSCAPE,
+        "서류" to TargetSpec.SubjectType.DOCUMENT, "문서" to TargetSpec.SubjectType.DOCUMENT,
+        "종이" to TargetSpec.SubjectType.DOCUMENT, "신분증" to TargetSpec.SubjectType.DOCUMENT,
+        "주민등록증" to TargetSpec.SubjectType.DOCUMENT, "주민증" to TargetSpec.SubjectType.DOCUMENT,
+        "면허증" to TargetSpec.SubjectType.DOCUMENT, "여권" to TargetSpec.SubjectType.DOCUMENT,
+        "명함" to TargetSpec.SubjectType.DOCUMENT, "영수증" to TargetSpec.SubjectType.DOCUMENT,
+        "계약서" to TargetSpec.SubjectType.DOCUMENT, "청구서" to TargetSpec.SubjectType.DOCUMENT,
+        "고지서" to TargetSpec.SubjectType.DOCUMENT, "증명서" to TargetSpec.SubjectType.DOCUMENT,
+        "학생증" to TargetSpec.SubjectType.DOCUMENT, "안내문" to TargetSpec.SubjectType.DOCUMENT,
+        "편지" to TargetSpec.SubjectType.DOCUMENT, "처방전" to TargetSpec.SubjectType.DOCUMENT,
     )
 
     // 값은 taxonomy(objects365_yolo26_v1_labels.txt)의 canonical label과 정확히 일치해야 한다.

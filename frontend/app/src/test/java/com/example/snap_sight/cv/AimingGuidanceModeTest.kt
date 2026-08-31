@@ -21,6 +21,21 @@ class AimingGuidanceModeTest {
     }
 
     @Test
+    fun `document intent resolves to the document mode without composition guidance or zoom`() {
+        val document = AimingGuidanceModeResolver.resolve(
+            spec = spec(subjectType = TargetSpec.SubjectType.DOCUMENT),
+            targetSpecPending = false,
+            localIdentityName = null,
+        )
+        assertEquals(AimingGuidanceMode.DOCUMENT, document)
+        assertFalse(document.allowsCompositionGuidance)
+        assertFalse(document.allowsAutoZoom)
+        assertTrue(TargetSpec.SubjectType.DOCUMENT.sceneOnly)
+        assertTrue(TargetSpec.SubjectType.LANDSCAPE.sceneOnly)
+        assertFalse(TargetSpec.SubjectType.OBJECT.sceneOnly)
+    }
+
+    @Test
     fun `landscape and unresolved intent never update auto zoom`() {
         val landscape = AimingGuidanceModeResolver.resolve(
             spec = spec(subjectType = TargetSpec.SubjectType.LANDSCAPE),
