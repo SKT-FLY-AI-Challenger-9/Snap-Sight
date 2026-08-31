@@ -316,6 +316,121 @@ class PersonFramingControllerTest {
         assertTrue(outcome.vibrate)
     }
 
+    // ---- 구도 모드 (2026-08-31, "구도 좋게 찍어줘") — 목표 밴드를 실측 분포로 교체 ----
+
+    @Test
+    fun `full-body composition swaps the case2 target bands`() {
+        val controller = PersonFramingController()
+        // 구도 밴드 중앙값 좌표 — 기본 밴드로는 미도달, 구도 모드에서는 도달이어야 한다
+        val headMid = (PersonFramingController.COMPOSITION_HEAD_MIN +
+            PersonFramingController.COMPOSITION_HEAD_MAX) / 2f
+        val footMid = (PersonFramingController.COMPOSITION_FOOT_MIN +
+            PersonFramingController.COMPOSITION_FOOT_MAX) / 2f
+        val reached = controller.onJudgment(
+            bboxFitsFrame = true, headY = headMid, footY = footMid, bboxHeightRatio = 0.6f,
+            generalReady = false, nowMs = 0,
+            composition = PersonFramingController.CompositionScope.FULL_BODY,
+        )
+        assertEquals(PersonFramingController.Action.None, reached.action)
+        assertTrue(reached.vibrate)
+        assertTrue(reached.targetReached)
+        // 구도 모드는 3초 유지 자동촬영 대신 호출부가 "이대로 찍을까요?"를 묻는다 (2026-08-31)
+        // — 컨트롤러는 시간이 지나도 Capture 를 내지 않고 도달 신호만 유지한다.
+        val stillReached = controller.onJudgment(
+            bboxFitsFrame = true, headY = headMid, footY = footMid, bboxHeightRatio = 0.6f,
+            generalReady = false, nowMs = PersonFramingController.HOLD_MS,
+            composition = PersonFramingController.CompositionScope.FULL_BODY,
+        )
+        assertEquals(PersonFramingController.Action.None, stillReached.action)
+        assertTrue(stillReached.targetReached)
+        assertFalse(stillReached.vibrate)
+    }
+
+    @Test
+    fun `full-body composition does not change case1 behaviour`() {
+        val controller = PersonFramingController()
+        val outcome = controller.onJudgment(
+            bboxFitsFrame = false, headY = 0.20f, footY = null, bboxHeightRatio = null,
+            generalReady = false, nowMs = 0,
+            composition = PersonFramingController.CompositionScope.FULL_BODY,
+        )
+        assertEquals(PersonFramingController.Action.None, outcome.action)
+        assertTrue(outcome.vibrate)
+    }
+
+    @Test
+    fun `upper-body composition keeps zooming in case2 even when full-body bands are met`() {
+        // 상반신 구도: bbox 가 프레임 안에 다 들어와 있으면(하반신이 아직 보이면) 전신 밴드가
+        // 맞아도 도달로 보지 않는다 — 하반신이 밀려날 때까지 계속 줌인해야 한다.
+        val controller = PersonFramingController()
+        val outcome = controller.onJudgment(
+            bboxFitsFrame = true, headY = 0.10f, footY = 0.70f, bboxHeightRatio = 0.65f,
+            generalReady = false, nowMs = 0,
+            composition = PersonFramingController.CompositionScope.UPPER_BODY,
+        )
+        assertEquals(PersonFramingController.Action.RequestZoomStep, outcome.action)
+    }
+
+    @Test
+    fun `upper-body composition keeps zooming past frame overflow until the area target`() {
+        // 발이 프레임 밖으로 나갔어도(case 1) bbox 넓이가 65% 미만이면 계속 줌인해야 한다
+        // (실기기 피드백 2026-08-31 — "발만 사라지고 줌이 끝난다").
+        val controller = PersonFramingController()
+        val headMid = (PersonFramingController.COMPOSITION_UPPER_HEAD_MIN +
+            PersonFramingController.COMPOSITION_UPPER_HEAD_MAX) / 2f
+        val outcome = controller.onJudgment(
+            bboxFitsFrame = false, headY = headMid, footY = null, bboxHeightRatio = null,
+            generalReady = false, nowMs = 0,
+            composition = PersonFramingController.CompositionScope.UPPER_BODY,
+            bboxAreaRatio = 0.40f,
+        )
+        assertEquals(PersonFramingController.Action.RequestZoomStep, outcome.action)
+    }
+
+    @Test
+    fun `upper-body composition reaches target once bbox area and head band are met`() {
+        val controller = PersonFramingController()
+        val headMid = (PersonFramingController.COMPOSITION_UPPER_HEAD_MIN +
+            PersonFramingController.COMPOSITION_UPPER_HEAD_MAX) / 2f
+        val reached = controller.onJudgment(
+            bboxFitsFrame = false, headY = headMid, footY = null, bboxHeightRatio = null,
+            generalReady = false, nowMs = 0,
+            composition = PersonFramingController.CompositionScope.UPPER_BODY,
+            bboxAreaRatio = PersonFramingController.UPPER_BODY_MIN_AREA_RATIO,
+        )
+        assertEquals(PersonFramingController.Action.None, reached.action)
+        assertTrue(reached.vibrate)
+        assertTrue(reached.targetReached)
+        // 상반신 구도도 3초 유지 자동촬영 대신 호출부의 촬영 확인 질문을 거친다 (2026-08-31)
+        val stillReached = controller.onJudgment(
+            bboxFitsFrame = false, headY = headMid, footY = null, bboxHeightRatio = null,
+            generalReady = false, nowMs = PersonFramingController.HOLD_MS,
+            composition = PersonFramingController.CompositionScope.UPPER_BODY,
+            bboxAreaRatio = PersonFramingController.UPPER_BODY_MIN_AREA_RATIO,
+        )
+        assertEquals(PersonFramingController.Action.None, stillReached.action)
+        assertTrue(stillReached.targetReached)
+    }
+
+    @Test
+    fun `upper-body composition still honours the close-enough height short-circuit`() {
+        val controller = PersonFramingController()
+        controller.onJudgment(
+            bboxFitsFrame = true, headY = null, footY = null,
+            bboxHeightRatio = PersonFramingController.CLOSE_ENOUGH_HEIGHT_RATIO,
+            generalReady = false, nowMs = 0,
+            composition = PersonFramingController.CompositionScope.UPPER_BODY,
+        )
+        val held = controller.onJudgment(
+            bboxFitsFrame = true, headY = null, footY = null,
+            bboxHeightRatio = PersonFramingController.CLOSE_ENOUGH_HEIGHT_RATIO,
+            generalReady = false, nowMs = PersonFramingController.CLOSE_ENOUGH_HOLD_MS,
+            composition = PersonFramingController.CompositionScope.UPPER_BODY,
+        )
+        assertEquals(PersonFramingController.Action.None, held.action)
+        assertTrue(held.vibrate)
+    }
+
     @Test
     fun `general ready short-circuits case1 head band wait too`() {
         val controller = PersonFramingController()

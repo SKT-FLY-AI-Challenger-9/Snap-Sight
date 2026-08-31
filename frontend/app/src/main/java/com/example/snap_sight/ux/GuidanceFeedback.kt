@@ -148,6 +148,14 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     @Volatile
     var personSession: (() -> Boolean)? = null
 
+    /**
+     * true 인 동안 방향·READY 안내 발화를 잠시 삼킨다 (진동·경고음은 유지) — 구도 세션이
+     * "상반신에 집중해서 찍을까요?"를 묻고 대답을 듣는 동안 시계 안내와 겹치지 않게 한다
+     * (사용자 요청 2026-08-31). MainActivity 가 질문 PENDING 상태로 연결한다.
+     */
+    @Volatile
+    var holdGuidanceSpeech: (() -> Boolean)? = null
+
     @Volatile
     private var ttsReady = false
 
@@ -251,6 +259,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
                 activeUtteranceId = null
                 activeSpeechPriority = null
             }
+            transitionHandler.post { playNextQueuedAsset() } // TTS 종료 뒤 대기 음원 이어 재생
             val callback = utteranceCallbacks.remove(utteranceId) ?: return
             transitionHandler.postDelayed(callback, TTS_ECHO_GUARD_MS)
         }
@@ -307,6 +316,11 @@ class GuidanceFeedback(context: Context) : DeviationListener {
                 pendingWhileInit = null
             }
         }
+        synchronized(assetPlayerLock) {
+            queuedAssets.removeAll {
+                it.priority == SpeechPriority.ADJUSTMENT || it.priority == SpeechPriority.READY
+            }
+        }
         val hasQueuedTargetGuidance = utterancePriorities.values.any {
             it == SpeechPriority.ADJUSTMENT || it == SpeechPriority.READY
         }
@@ -340,9 +354,10 @@ class GuidanceFeedback(context: Context) : DeviationListener {
             personSession = personSession?.invoke() == true,
             phoneRollDeg = phoneRoll?.invoke(),
         )
+        val holdSpeech = holdGuidanceSpeech?.invoke() == true
         for (action in decision.actions) {
             when (action) {
-                is GuidanceAction.Speak -> speak(
+                is GuidanceAction.Speak -> if (!holdSpeech) speak(
                     action.text,
                     if (action.text == GuidancePolicy.READY_UTTERANCE) SpeechPriority.READY
                     else SpeechPriority.ADJUSTMENT,
@@ -477,6 +492,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         onDone: (() -> Unit)? = null,
         priority: SpeechPriority = SpeechPriority.STATUS,
         interrupt: Boolean = false,
+        rateOverride: Float? = null,
     ) {
         if (interrupt) stopSpeaking()
         if (speechMutedByScreenReader()) {
@@ -510,14 +526,23 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         val flush = active == null || priority.level > active.level
 
         // 한 앱 한 목소리: ① 확정 문장은 프리캐싱 음원, ② 그 외 문장은 즉석 합성(캐시 우선),
-        // ③ 프리셋이 기본이거나 합성 불가·실패면 내장 TTS. FLUSH 상황에서만 음원 경로를 탄다
-        // (진행 중인 높은 우선순위 발화 뒤에 이어 붙이는 드문 경우는 내장 TTS 큐가 처리).
+        // ③ 프리셋이 기본이면 내장 TTS. 프리셋(아리아/올리버) 모드에서 ①②가 모두 실패하면
+        // 내장 TTS 로 목소리를 섞지 않고 침묵한다 ([speakWithTts] 상단 가드, 2026-08-31).
         val assetId = voiceAssetDir?.let { SpeechCatalog.assetIdFor(text) }
+        if (assetId != null && !flush) {
+            // 진행 중인 같은/높은 우선순위 발화를 끊지 않고, 끝난 뒤 프리셋 음원으로 이어
+            // 말한다 — 예전엔 이 경로가 내장 TTS 큐로 새서 기본 목소리가 섞였다 (2026-08-31).
+            synchronized(assetPlayerLock) {
+                queuedAssets.addLast(QueuedAsset(assetId, onDone, priority, rateOverride))
+            }
+            transitionHandler.post { playNextQueuedAsset() } // 그새 발화가 끝났을 수 있다
+            return
+        }
         if (flush && assetId != null) {
             val id = "announce_${utteranceCounter.incrementAndGet()}"
             if (onDone != null) utteranceCallbacks[id] = onDone
             utterancePriorities[id] = priority
-            if (playPrecached(assetId, id, priority)) return
+            if (playPrecached(assetId, id, priority, rateOverride)) return
             utterancePriorities.remove(id)
             utteranceCallbacks.remove(id)
         }
@@ -532,6 +557,24 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         priority: SpeechPriority,
         flush: Boolean,
     ) {
+        // 프리셋 보이스(아리아/올리버) 모드에서는 내장 TTS 를 내지 않는다 (사용자 요청
+        // 2026-08-31 — "무조건 아리아 목소리로"). 여기 도달했다는 건 프리캐싱 음원도, 즉석
+        // 합성도 이 문장을 못 맡았다는 뜻 — 목소리가 섞이느니 침묵을 택하고, onDone 순서
+        // 연쇄만 이어간다. 못 나간 문장은 [SPEECH_COVERAGE_TAG] 로 전부 남겨 추적한다
+        // (`adb logcat -s SpeechCoverage`). 유일한 예외: 프라이버시 게이트가 서버 합성을
+        // 막은 문장(서류 낭독·등록 이름) — 내장 TTS 가 유일한 발화 채널이라 소리를 낸다.
+        if (voiceAssetDir != null) {
+            val privacyBound = dynamicSpeechGate?.invoke(text) == false
+            if (!privacyBound) {
+                Log.w(SPEECH_COVERAGE_TAG, "프리셋 미커버 — 침묵 처리: $text")
+                onDone?.let { done -> transitionHandler.post { done() } }
+                return
+            }
+            Log.i(SPEECH_COVERAGE_TAG, "프라이버시 예외 — 내장 TTS 로 발화: ${text.take(24)}…")
+            // 내장 TTS 는 mp3 재생과 별개 채널이라 QUEUE_ADD 로도 즉시 소리가 난다 — 재생
+            // 중인 프리셋/합성 음원 위에 겹치지 않게 먼저 끊는다 (겹침 원인 ①, 2026-08-31).
+            stopPrecached()
+        }
         val id = "announce_${utteranceCounter.incrementAndGet()}"
         if (onDone != null) utteranceCallbacks[id] = onDone
         utterancePriorities[id] = priority
@@ -550,10 +593,47 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     private var assetPlayer: MediaPlayer? = null
     @Volatile private var assetUtteranceId: String? = null
 
+    /**
+     * 프리셋 음원 대기열 (2026-08-31) — 같은/높은 우선순위 발화가 재생 중이라 끊을 수 없는
+     * (flush=false) 카탈로그 문장을 보관했다가, 현재 발화가 끝나면 이어 재생한다. 예전
+     * 내장 TTS 의 QUEUE_ADD 역할의 프리셋판 — 이게 없으면 그런 문장이 내장 TTS 로 새거나
+     * (프라이버시 예외) 침묵 처리돼 "무엇을 찍을까요?"가 기본 목소리로 나왔다 (실기기 로그
+     * 2026-08-31). [stopSpeaking] 은 대기열도 비운다 (지난 화면의 발화 방지).
+     */
+    private data class QueuedAsset(
+        val assetId: String,
+        val onDone: (() -> Unit)?,
+        val priority: SpeechPriority,
+        val rateOverride: Float?,
+    )
+    private val queuedAssets = ArrayDeque<QueuedAsset>()
+
+    /** 현재 발화가 끝난 뒤 호출 — 대기 중인 프리셋 음원이 있으면 이어 재생한다. */
+    private fun playNextQueuedAsset() {
+        val next = synchronized(assetPlayerLock) {
+            if (activeUtteranceId != null) return
+            queuedAssets.removeFirstOrNull()
+        } ?: return
+        val id = "announce_${utteranceCounter.incrementAndGet()}"
+        next.onDone?.let { utteranceCallbacks[id] = it }
+        utterancePriorities[id] = next.priority
+        if (!playPrecached(next.assetId, id, next.priority, next.rateOverride)) {
+            utterancePriorities.remove(id)
+            utteranceCallbacks.remove(id)
+            next.onDone?.let { done -> transitionHandler.post { done() } }
+            playNextQueuedAsset() // 실패한 항목은 건너뛰고 다음 대기분 시도
+        }
+    }
+
     /** 확정 문장 음원을 즉시 재생한다. 성공 시 true, 실패하면 false(호출부가 TTS 폴백). */
-    private fun playPrecached(assetId: String, utteranceId: String, priority: SpeechPriority): Boolean {
+    private fun playPrecached(
+        assetId: String,
+        utteranceId: String,
+        priority: SpeechPriority,
+        rateOverride: Float? = null,
+    ): Boolean {
         val dir = voiceAssetDir ?: return false
-        return playMediaSource(utteranceId, priority, "asset:$assetId") { player ->
+        return playMediaSource(utteranceId, priority, "asset:$assetId", rateOverride) { player ->
             appContext.assets.openFd("$dir/$assetId.mp3").use { fd ->
                 player.setDataSource(fd.fileDescriptor, fd.startOffset, fd.length)
             }
@@ -570,6 +650,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         utteranceId: String,
         priority: SpeechPriority,
         sourceLabel: String,
+        rateOverride: Float? = null,
         setSource: (MediaPlayer) -> Unit,
     ): Boolean {
         synchronized(assetPlayerLock) {
@@ -581,8 +662,10 @@ class GuidanceFeedback(context: Context) : DeviationListener {
                 player.setOnCompletionListener { completeAsset(utteranceId) }
                 player.setOnErrorListener { _, _, _ -> completeAsset(utteranceId); true }
                 player.prepare()
-                // 재생 배속(0.8/1.0/1.5) — 합성은 1.0배 한 벌이고 재생 시점에 조절한다
-                player.playbackParams = PlaybackParams().setSpeed(pendingSpeechRate)
+                // 재생 배속(0.8/1.0/1.5) — 합성은 1.0배 한 벌이고 재생 시점에 조절한다.
+                // rateOverride 는 특정 안내(촬영 확인 질문, 1.2배속 — 사용자 요청 2026-08-31)의
+                // 문장 단위 배속 지정 — 설정 배속보다 우선한다.
+                player.playbackParams = PlaybackParams().setSpeed(rateOverride ?: pendingSpeechRate)
                 if (!player.isPlaying) player.start()
                 speechStartListener?.invoke(priority) // 서버 합성 경로의 재생 시작 (지연 측정 훅)
                 assetPlayer = player
@@ -664,6 +747,9 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         val fetcher = dynamicSpeechFetcher ?: return false
         if (text.isBlank()) return false
         if (dynamicSpeechGate?.invoke(text) == false) return false
+        // 프리셋 음원(카탈로그)에 없어서 즉석 합성으로 가는 문장 — 전부 남겨 추적한다.
+        // 자주 찍히는 고정 문장이 보이면 카탈로그+음원으로 승격 대상이다 (2026-08-31).
+        Log.i(SPEECH_COVERAGE_TAG, "프리셋에 없는 문장 — 즉석 합성: $text")
         val cached = dynamicCacheFile(voice, text)
         if (cached.exists()) return startDynamicPlayback(cached, text, onDone, priority)
         if (System.currentTimeMillis() - lastDynamicFailureMs < DYNAMIC_FAILURE_BACKOFF_MS) {
@@ -692,8 +778,11 @@ class GuidanceFeedback(context: Context) : DeviationListener {
                     Log.i(TAG, "동적 발화 폐기(세대 바뀜): ${text.take(20)}")
                     return@post
                 }
+                // announce() 의 폐기 규칙과 동일하게 "같은 우선순위도 자르지 않는다" — 합성을
+                // 기다리는 사이 다른 같은 급 발화가 시작됐으면 뒤늦게 그 위로 끼어들지 않는다
+                // (겹침 원인 ③: 서버 응답이 느릴 때 방향 안내를 도중에 끊던 문제, 2026-08-31).
                 val activeNow = activeSpeechPriority
-                if (activeNow != null && activeNow.level > priority.level && onDone == null) return@post
+                if (activeNow != null && activeNow.level >= priority.level && onDone == null) return@post
                 if (!ready || !startDynamicPlayback(cached, text, onDone, priority)) {
                     speakWithTts(text, onDone, priority, flush = true)
                 }
@@ -728,10 +817,10 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         assetUtteranceId = null
         runCatching { player.stop() }
         runCatching { player.release() }
-        if (id != null) completeAsset(id)
+        if (id != null) completeAsset(id, drainQueue = false) // 끊김 — 새 발화가 이어받는다
     }
 
-    private fun completeAsset(utteranceId: String) {
+    private fun completeAsset(utteranceId: String, drainQueue: Boolean = true) {
         synchronized(assetPlayerLock) {
             if (assetUtteranceId == utteranceId) {
                 assetPlayer?.let { runCatching { it.release() } }
@@ -744,6 +833,10 @@ class GuidanceFeedback(context: Context) : DeviationListener {
             activeUtteranceId = null
             activeSpeechPriority = null
         }
+        // 자연 종료 시에만 대기열을 잇는다 — 새 발화가 이전 것을 끊는 경로(stopPrecached)에서
+        // 대기분을 재생하면 방금 시작한 발화를 도로 죽인다. post 로 미뤄 새 발화가 active 를
+        // 먼저 잡게 한다.
+        if (drainQueue) transitionHandler.post { playNextQueuedAsset() }
         val callback = utteranceCallbacks.remove(utteranceId) ?: return
         transitionHandler.postDelayed(callback, TTS_ECHO_GUARD_MS)
     }
@@ -793,6 +886,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     fun stopSpeaking() {
         speechGeneration.incrementAndGet() // 대기 중인 서버 합성 발화도 무효화 (2026-08-30)
         synchronized(initLock) { pendingWhileInit = null } // TTS 초기화 대기분도 지난 화면의 것
+        synchronized(assetPlayerLock) { queuedAssets.clear() } // 대기 음원도 지난 화면의 것
         utteranceCallbacks.clear()
         utterancePriorities.clear()
         activeUtteranceId = null
@@ -815,6 +909,13 @@ class GuidanceFeedback(context: Context) : DeviationListener {
 
     private companion object {
         const val TAG = "GuidanceFeedback"
+
+        /**
+         * 프리셋 커버리지 추적 (2026-08-31) — 프리셋 음원으로 못 나간 문장(즉석 합성행·침묵
+         * 처리·프라이버시 예외)을 남긴다. `adb logcat -s SpeechCoverage` 로 모아 보고, 자주
+         * 보이는 고정 문장은 카탈로그+음원으로 승격한다.
+         */
+        const val SPEECH_COVERAGE_TAG = "SpeechCoverage"
         const val SHORT_VIBRATION_MS = 80L
         /** 짧은 2연타 비프 — 음성보다 덜 거슬리는 "놓침" 신호. */
         const val WARNING_TONE = ToneGenerator.TONE_PROP_BEEP2

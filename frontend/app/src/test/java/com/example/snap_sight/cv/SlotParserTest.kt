@@ -153,7 +153,8 @@ class SlotParserTest {
 
         assertEquals(TargetSpec.SubjectType.OBJECT, spec.subjectType)
         assertEquals("cup", spec.objectLabel)
-        assertEquals(0.6f, spec.confidence)
+        // "예쁘게"가 구도 신호로도 세어져 주체+구도 2개 매칭 (2026-08-31)
+        assertEquals(0.8f, spec.confidence)
     }
 
     @Test
@@ -213,6 +214,39 @@ class SlotParserTest {
         assertEquals(0.6f, spec.confidence)
         assertEquals(TargetSpec.Status.OK, spec.status)
         assertEquals(true, spec.isActionable)
+    }
+
+    @Test
+    fun `composition keyword counts as a signal`() {
+        // "구도 좋게 찍어줘"는 피사체 단어가 없어도 촬영 의도가 명확하다 — 구도 키워드가 매칭
+        // 신호로 세어져 OK(0.6)가 되어야 한다 (2026-08-31 실기기에서 0.4로 떨어져 조준이
+        // 아예 시작되지 않던 문제의 회귀 방지). tests/test_slot_parser.py 미러.
+        val spec = SlotParser.parse("구도 좋게 찍어줘", sessionId = "sess_31")
+
+        assertEquals(TargetSpec.SubjectType.PERSON, spec.subjectType)
+        assertEquals(0.6f, spec.confidence)
+        assertEquals(TargetSpec.Status.OK, spec.status)
+        assertEquals(true, spec.isActionable)
+    }
+
+    @Test
+    fun `upper body utterance parses ok as a person composition request`() {
+        // "상반신 찍어줘" — 프레이밍 사전엔 없지만 구도 신호로 세어져 OK 가 돼야 한다
+        // (실기기 2026-08-31: 0.4 로 떨어져 조준이 시작되지 않았다). MainActivity 는 이
+        // 발화를 질문 없이 곧장 상반신 구도로 보낸다.
+        val spec = SlotParser.parse("상반신 찍어줘", sessionId = "sess_33")
+
+        assertEquals(TargetSpec.SubjectType.PERSON, spec.subjectType)
+        assertEquals(TargetSpec.Status.OK, spec.status)
+        assertEquals(true, spec.isActionable)
+    }
+
+    @Test
+    fun `confidence is capped at one with all four signals`() {
+        val spec = SlotParser.parse("머그컵 든 사람 2명 얼굴 멋지게 찍어줘", sessionId = "sess_32")
+
+        assertEquals(1.0f, spec.confidence)
+        assertEquals(TargetSpec.Status.OK, spec.status)
     }
 
     @Test
