@@ -111,10 +111,18 @@ fun DocumentOutlineOverlay(
     frameAspect: Float = 3f / 4f,
     mirrored: Boolean = false,
     deviceRotation: Int = 0,
+    /** 발화에서 파악한 서류 종류("통장"·"주민등록증" 등) — 외곽선 위에 등록 이름 라벨처럼 표시 (2026-08-31). */
+    label: String? = null,
     modifier: Modifier = Modifier,
 ) {
     Canvas(modifier = modifier.fillMaxSize()) {
         if (outline == null || frameAspect <= 0f) return@Canvas
+        val labelPaint = Paint().apply {
+            color = SnapPalette.AccentLight.toArgb()
+            textSize = 16.sp.toPx()
+            isAntiAlias = true
+            isFakeBoldText = true
+        }
         val viewAspect = size.width / size.height
         val shownWidth: Float
         val shownHeight: Float
@@ -149,6 +157,12 @@ fun DocumentOutlineOverlay(
                     strokeWidth = 3.dp.toPx(),
                 )
             }
+            if (label != null) {
+                val anchor = points.minBy { it.x + it.y } // 좌상단 모서리
+                drawContext.canvas.nativeCanvas.drawText(
+                    label, anchor.x + 10.dp.toPx(), anchor.y + 24.dp.toPx(), labelPaint,
+                )
+            }
             return@Canvas
         }
 
@@ -172,5 +186,10 @@ fun DocumentOutlineOverlay(
         side(br, bl, outline.edgeBottom)
         side(bl, tl, outline.edgeLeft)
         side(tr, br, outline.edgeRight)
+        if (label != null) {
+            drawContext.canvas.nativeCanvas.drawText(
+                label, tl.x + 10.dp.toPx(), tl.y + 24.dp.toPx(), labelPaint,
+            )
+        }
     }
 }
