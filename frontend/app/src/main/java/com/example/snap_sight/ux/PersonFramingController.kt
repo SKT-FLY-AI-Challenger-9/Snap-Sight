@@ -34,8 +34,25 @@ package com.example.snap_sight.ux
  * 움직이는 피사체는 줌하면 화면에서 벗어난다"). [onJudgment] 의 `subjectMoving`
  * ([SubjectMotionDetector] 판정)이 true 인 동안은 case 2 라도 줌 스텝을 요청하지 않고
  * 기다린다 — 이미 걸린 배율을 되돌리지는 않는다.
+ *
+ * 구도 모드(2026-08-31, "구도 좋게 찍어줘"류 발화): 목표 밴드를 큐레이션된 인물 사진
+ * (Wikimedia Commons)에 앱과 같은 YOLO+포즈 좌표 추출을 돌려 얻은 실측 분포
+ * (`ai/tools/composition_stats.py`)로 바꾼다 — "잘 찍힌 사진들이 실제로 쓰는" 배치다.
+ * 범위([CompositionScope])는 둘로 나뉜다:
+ *  - [CompositionScope.FULL_BODY] — case 2 밴드를 전신 사진 분포
+ *    ([COMPOSITION_HEAD_MIN]..[COMPOSITION_FOOT_MAX])로 교체.
+ *  - [CompositionScope.UPPER_BODY] — bbox 넓이(화면 대비 면적)가
+ *    [UPPER_BODY_MIN_AREA_RATIO] 에 이를 때까지 계속 줌인한다. 발이 프레임 밖으로
+ *    나가도(case 1) 멈추지 않는다 — "발만 사라지고 줌이 끝난다"는 실기기 피드백
+ *    (2026-08-31)의 대책. 넓이가 차고 머리가 상반신 사진 분포
+ *    ([COMPOSITION_UPPER_HEAD_MIN]..[COMPOSITION_UPPER_HEAD_MAX])에 들어오면 도달.
+ *    하반신까지 다 보이는 상태에서 "상반신에 집중해서 찍을까요?"라고 물어 "네"면
+ *    이 범위가 된다(사용자 요청 2026-08-31).
  */
 internal class PersonFramingController {
+
+    /** 구도 모드의 촬영 범위 — OFF 는 일반 인물 세션(기본 밴드). */
+    internal enum class CompositionScope { OFF, FULL_BODY, UPPER_BODY }
 
     internal sealed interface Action {
         object None : Action
@@ -49,6 +66,12 @@ internal class PersonFramingController {
         val action: Action = Action.None,
         /** 짧은 확정 진동 1회 — case 1: 좌표 도달, case 2: 줌 시작/줌 종료(도달) 경계. */
         val vibrate: Boolean = false,
+        /**
+         * 구도 모드의 줌-후 목표 도달 (2026-08-31) — 촬영은 여기서 확정하지 않는다. 호출부
+         * (MainActivity)가 인물 위치를 말해주고 "이대로 찍을까요?"를 물은 뒤 셔터를 결정한다.
+         * 3초 유지 자동촬영은 이 흐름으로 대체됐다 (case 1 극근접·비구도 세션은 기존 유지).
+         */
+        val targetReached: Boolean = false,
     )
 
     private var holdSinceMs: Long? = null
@@ -81,6 +104,8 @@ internal class PersonFramingController {
      * @param subjectMoving 피사체가 움직이는 중([SubjectMotionDetector]) — true 면 case 2 의
      *        줌 스텝을 보류한다(줌은 정지 피사체에만, 2026-08-30). 목표 도달·촬영 판정에는
      *        영향을 주지 않는다.
+     * @param composition "구도 좋게 찍어줘"류 발화(2026-08-31)의 촬영 범위 — 목표 밴드를
+     *        큐레이션 사진 실측 분포로 바꾼다. 클래스 주석의 [CompositionScope] 참고.
      */
     fun onJudgment(
         bboxFitsFrame: Boolean,
@@ -90,6 +115,8 @@ internal class PersonFramingController {
         generalReady: Boolean,
         nowMs: Long,
         subjectMoving: Boolean = false,
+        composition: CompositionScope = CompositionScope.OFF,
+        bboxAreaRatio: Float? = null,
     ): Outcome {
         if (fired) return Outcome()
 
@@ -107,16 +134,34 @@ internal class PersonFramingController {
         // generalReady 는 case 1(줌 자체가 불가능한 극근접)에서만 도달로 인정한다 — case 2 에서
         // 허용하면 아직 멀리 있어도(일반 구도만 맞으면) 줌을 걸기도 전에 곧장 촬영돼버린다
         // (사용자 요청 2026-08-28 — "거기까지 안 가고 멀어도 지금 촬영이 자꾸 되잖아").
-        val onTarget = closeEnough || if (!bboxFitsFrame) {
-            generalReady || (headY != null && headY in CASE1_HEAD_MIN..CASE1_HEAD_MAX)
+        val fullBody = composition == CompositionScope.FULL_BODY
+        val upperBody = composition == CompositionScope.UPPER_BODY
+        // case 1 머리 밴드 — 상반신 구도면 상반신 사진 실측 분포로 교체
+        val case1HeadMin = if (upperBody) COMPOSITION_UPPER_HEAD_MIN else CASE1_HEAD_MIN
+        val case1HeadMax = if (upperBody) COMPOSITION_UPPER_HEAD_MAX else CASE1_HEAD_MAX
+        // case 2 머리·발 밴드 — 전신 구도면 전신 사진 실측 분포로 교체
+        val headMin = if (fullBody) COMPOSITION_HEAD_MIN else CASE2_HEAD_MIN
+        val headMax = if (fullBody) COMPOSITION_HEAD_MAX else CASE2_HEAD_MAX
+        val footMin = if (fullBody) COMPOSITION_FOOT_MIN else CASE2_FOOT_MIN
+        val footMax = if (fullBody) COMPOSITION_FOOT_MAX else CASE2_FOOT_MAX
+        val onTarget = closeEnough || if (upperBody) {
+            // 상반신 구도: 발이 프레임 밖으로 나가는 것으로는 부족하다("발만 사라지고 줌이
+            // 끝난다", 2026-08-31) — bbox 넓이가 화면의 65% 이상이 되고 머리가 상반신 밴드에
+            // 들어와야 도달이다. generalReady 는 전신 기준 판정이라 여기선 쓰지 않는다.
+            bboxAreaRatio != null && bboxAreaRatio >= UPPER_BODY_MIN_AREA_RATIO &&
+                headY != null && headY in case1HeadMin..case1HeadMax
+        } else if (!bboxFitsFrame) {
+            generalReady || (headY != null && headY in case1HeadMin..case1HeadMax)
         } else {
-            headY != null && headY in CASE2_HEAD_MIN..CASE2_HEAD_MAX &&
-                footY != null && footY in CASE2_FOOT_MIN..CASE2_FOOT_MAX
+            headY != null && headY in headMin..headMax &&
+                footY != null && footY in footMin..footMax
         }
 
         if (!onTarget) {
             holdSinceMs = null
-            if (!bboxFitsFrame || closeEnough) return Outcome() // case 1, 또는 이미 충분히 큼 — 줌 없음
+            // case 1(프레임 초과)은 줌을 걸지 않는다 — 단, 상반신 구도는 넓이 목표까지 계속
+            // 줌인해야 하므로 예외다. close-enough(이미 충분히 큼)는 두 경우 모두 줌 없음.
+            if ((!bboxFitsFrame && !upperBody) || closeEnough) return Outcome()
             // 움직이는 피사체에는 줌을 걸지 않는다 — 멈출 때까지 기다린다 (2026-08-30).
             // zoomStarted 는 그대로 둔다: 첫 실제 스텝에서 진동하는 규약을 유지하기 위해.
             if (subjectMoving) return Outcome()
@@ -127,6 +172,14 @@ internal class PersonFramingController {
 
         val since = holdSinceMs ?: nowMs.also { holdSinceMs = it }
         val justReached = since == nowMs
+        // 구도 모드의 줌-후 도달(case 2 전신, 또는 상반신 목표)은 촬영을 여기서 확정하지
+        // 않는다 — 호출부가 인물 위치("오른쪽/왼쪽/가운데")를 물어보고 셔터를 결정한다
+        // (사용자 요청 2026-08-31, 3초 유지 자동촬영 대체). case 1 극근접(줌 불가)과 비구도
+        // 세션은 기존 3초 유지 규약을 그대로 쓴다.
+        val questionFlow = composition != CompositionScope.OFF && (bboxFitsFrame || upperBody)
+        if (questionFlow) {
+            return Outcome(vibrate = justReached, targetReached = true)
+        }
         if (nowMs - since >= HOLD_MS) {
             fired = true
             return Outcome(Action.Capture, vibrate = justReached)
@@ -148,6 +201,29 @@ internal class PersonFramingController {
         const val CASE2_HEAD_MAX = 0.15f
         const val CASE2_FOOT_MIN = 0.60f
         const val CASE2_FOOT_MAX = 0.80f
+
+        // 구도 모드 (2026-08-31) — 큐레이션 인물 사진(Wikimedia Commons Quality Images +
+        // Unsplash 전신 포트레이트, 단독 인물+포즈 검출 성공 111장)에 앱과 같은 YOLO+포즈
+        // 추출(`ai/tools/composition_stats.py`)을 돌려 얻은 실측 분포의 p25~p75 를 반올림한
+        // 구간 — 머리(코) 0.193~0.340, 발(발목 평균) 0.743~0.872 (발 상한은 하단 잘림 여유로
+        // 0.85 에 묶음). 기본 밴드보다 머리 위 여백을 더 두는 배치다. 데이터셋을 늘리면 이
+        // 값만 갱신한다.
+        const val COMPOSITION_HEAD_MIN = 0.20f
+        const val COMPOSITION_HEAD_MAX = 0.35f
+        const val COMPOSITION_FOOT_MIN = 0.75f
+        const val COMPOSITION_FOOT_MAX = 0.85f
+
+        // 상반신 구도 (2026-08-31) — 상반신(발목이 안 보이는) 큐레이션 사진 52장의 머리(코) y
+        // 분포 p25~p75(0.280~0.388)를 반올림한 case 1 목표 밴드. 데이터셋을 늘리면 이 값만
+        // 갱신한다.
+        const val COMPOSITION_UPPER_HEAD_MIN = 0.25f
+        const val COMPOSITION_UPPER_HEAD_MAX = 0.40f
+
+        /**
+         * 상반신 구도의 줌 종료 조건 — bbox 넓이(화면 대비 면적)가 이 이상 될 때까지 줌인한다
+         * (사용자 요청 2026-08-31 — "바운딩 박스의 전체 넓이가 화면에 65% 이상 되게").
+         */
+        const val UPPER_BODY_MIN_AREA_RATIO = 0.65f
 
         /** 목표 도달 후 이만큼 유지되면 자동촬영 (사용자 요청 2026-08-28 — "3초 안에"). */
         const val HOLD_MS = 3_000L
