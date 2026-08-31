@@ -77,6 +77,8 @@ fun CaptureScreen(
     modeDebugLabel: String = "",
     /** 서류 모드 외곽 (2026-08-31) — null 이 아니면 파란 사각형으로 그린다 (엣지 확정 변은 실선). */
     documentOutline: DocumentObservation? = null,
+    /** 발화에서 파악한 서류 종류("통장" 등) — 외곽선 라벨 (2026-08-31). */
+    documentTypeLabel: String = "",
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -148,6 +150,7 @@ fun CaptureScreen(
         )
         DocumentOutlineOverlay(
             outline = documentOutline,
+            label = documentTypeLabel.ifBlank { null },
             mirrored = isFrontLens,
             deviceRotation = deviceRotation,
         )
