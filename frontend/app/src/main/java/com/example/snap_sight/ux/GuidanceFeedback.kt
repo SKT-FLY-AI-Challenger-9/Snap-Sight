@@ -557,23 +557,15 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         priority: SpeechPriority,
         flush: Boolean,
     ) {
-        // 프리셋 보이스(아리아/올리버) 모드에서는 내장 TTS 를 내지 않는다 (사용자 요청
-        // 2026-08-31 — "무조건 아리아 목소리로"). 여기 도달했다는 건 프리캐싱 음원도, 즉석
-        // 합성도 이 문장을 못 맡았다는 뜻 — 목소리가 섞이느니 침묵을 택하고, onDone 순서
+        // 프리셋 보이스(아리아/올리버) 모드에서는 내장 TTS 를 **절대** 내지 않는다 (사용자
+        // 요청 2026-08-31 — "기본 tts 는 아예 나오면 안된다"). 여기 도달했다는 건 프리캐싱
+        // 음원도, 즉석 합성도 이 문장을 못 맡았다는 뜻 — 예외 없이 침묵하고 onDone 순서
         // 연쇄만 이어간다. 못 나간 문장은 [SPEECH_COVERAGE_TAG] 로 전부 남겨 추적한다
-        // (`adb logcat -s SpeechCoverage`). 유일한 예외: 프라이버시 게이트가 서버 합성을
-        // 막은 문장(서류 낭독·등록 이름) — 내장 TTS 가 유일한 발화 채널이라 소리를 낸다.
+        // (`adb logcat -s SpeechCoverage`) — 자주 보이면 카탈로그+음원으로 승격 대상이다.
         if (voiceAssetDir != null) {
-            val privacyBound = dynamicSpeechGate?.invoke(text) == false
-            if (!privacyBound) {
-                Log.w(SPEECH_COVERAGE_TAG, "프리셋 미커버 — 침묵 처리: $text")
-                onDone?.let { done -> transitionHandler.post { done() } }
-                return
-            }
-            Log.i(SPEECH_COVERAGE_TAG, "프라이버시 예외 — 내장 TTS 로 발화: ${text.take(24)}…")
-            // 내장 TTS 는 mp3 재생과 별개 채널이라 QUEUE_ADD 로도 즉시 소리가 난다 — 재생
-            // 중인 프리셋/합성 음원 위에 겹치지 않게 먼저 끊는다 (겹침 원인 ①, 2026-08-31).
-            stopPrecached()
+            Log.w(SPEECH_COVERAGE_TAG, "프리셋 미커버 — 침묵 처리(내장 TTS 차단): $text")
+            onDone?.let { done -> transitionHandler.post { done() } }
+            return
         }
         val id = "announce_${utteranceCounter.incrementAndGet()}"
         if (onDone != null) utteranceCallbacks[id] = onDone
