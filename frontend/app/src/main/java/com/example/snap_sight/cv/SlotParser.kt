@@ -64,6 +64,7 @@ object SlotParser {
         "고지서" to TargetSpec.SubjectType.DOCUMENT, "증명서" to TargetSpec.SubjectType.DOCUMENT,
         "학생증" to TargetSpec.SubjectType.DOCUMENT, "안내문" to TargetSpec.SubjectType.DOCUMENT,
         "편지" to TargetSpec.SubjectType.DOCUMENT, "처방전" to TargetSpec.SubjectType.DOCUMENT,
+        "통장" to TargetSpec.SubjectType.DOCUMENT,
     )
 
     // 값은 taxonomy(objects365_yolo26_v1_labels.txt)의 canonical label과 정확히 일치해야 한다.

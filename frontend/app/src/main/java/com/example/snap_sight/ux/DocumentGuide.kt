@@ -347,10 +347,10 @@ internal class DocumentGuide {
         const val SHIFT_RIGHT_UTTERANCE = "폰을 오른쪽으로 조금 옮겨 주세요."
         const val SHIFT_UP_UTTERANCE = "폰을 위로 조금 옮겨 주세요."
         const val SHIFT_DOWN_UTTERANCE = "폰을 아래로 조금 옮겨 주세요."
-        const val TILT_TOP_TOWARD_UTTERANCE = "폰 윗부분을 서류 쪽으로 기울여 주세요."
+        const val TILT_TOP_TOWARD_UTTERANCE = "폰 윗부분을 서류가 있는 쪽으로 기울여 주세요."
         const val TILT_TOP_AWAY_UTTERANCE = "폰 윗부분을 바깥쪽으로 기울여 주세요."
-        const val TILT_LEFT_TOWARD_UTTERANCE = "폰 왼쪽 부분을 서류 쪽으로 기울여 주세요."
-        const val TILT_RIGHT_TOWARD_UTTERANCE = "폰 오른쪽 부분을 서류 쪽으로 기울여 주세요."
+        const val TILT_LEFT_TOWARD_UTTERANCE = "폰 왼쪽 부분을 서류가 있는 쪽으로 기울여 주세요."
+        const val TILT_RIGHT_TOWARD_UTTERANCE = "폰 오른쪽 부분을 서류가 있는 쪽으로 기울여 주세요."
         const val GLARE_UTTERANCE = "빛이 반사돼요. 폰을 조금 기울이거나 자리를 옮겨 주세요."
         const val READY_UTTERANCE = "좋아요. 그대로 잠시 멈춰 주세요."
 
