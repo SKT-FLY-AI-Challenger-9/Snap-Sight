@@ -217,6 +217,7 @@ internal class GuidancePolicy(
         cameraOrientationRad: Pair<Float, Float>? = null,
         personSession: Boolean = false,
         phoneRollDeg: Float? = null,
+        personFramingBusy: Boolean = false,
     ): List<GuidanceAction> = processJudgment(
         state = state,
         result = result,
@@ -228,6 +229,7 @@ internal class GuidancePolicy(
         cameraOrientationRad = cameraOrientationRad,
         personSession = personSession,
         phoneRollDeg = phoneRollDeg,
+        personFramingBusy = personFramingBusy,
     ).actions
 
     /**
@@ -257,6 +259,7 @@ internal class GuidancePolicy(
         cameraOrientationRad: Pair<Float, Float>? = null,
         personSession: Boolean = false,
         phoneRollDeg: Float? = null,
+        personFramingBusy: Boolean = false,
     ): GuidanceDecision {
         val readiness = readinessEvaluator.evaluate(result, nowMs)
         // 존재 확인 진동 — 어떤 안내 분기든 상관없이 매 판정마다 갱신한다
@@ -264,6 +267,7 @@ internal class GuidancePolicy(
         val actions = judge(
             state, result, readiness, nowMs, zoomHandlesDistance, readyBlockedReason,
             pitchDeviationDeg, phonePitchDeg, cameraOrientationRad, personSession, phoneRollDeg,
+            personFramingBusy,
         )
         return GuidanceDecision(readiness, presence + actions)
     }
@@ -357,6 +361,7 @@ internal class GuidancePolicy(
         cameraOrientationRad: Pair<Float, Float>? = null,
         personSession: Boolean = false,
         phoneRollDeg: Float? = null,
+        personFramingBusy: Boolean = false,
     ): List<GuidanceAction> {
         if (!state.detected) {
             // 첫 검출 전에는 "사라졌어요"(LOST)가 아니라 탐색 안내(t2/t3)를 쓴다 — 비프 없음
@@ -437,6 +442,10 @@ internal class GuidancePolicy(
             if (readyBlockedReason != null) {
                 return onReadyBlocked(readyBlockedReason, nowMs)
             }
+            // 인물 프레이밍이 줌·도달·촬영 확인을 맡는 동안은 "좋아요"를 내지 않는다 (실기기
+            // 2026-08-31 — 줌 중에 사람이 가운데면 일반 READY 가 떠서 "좋아요"가 겹쳐 나왔다).
+            // 도달 알림은 프레이밍 흐름(진동·"이대로 찍을까요?")이 대신한다.
+            if (personFramingBusy) return emptyList()
             return onReady(nowMs)
         }
         // 추가 게이트(시선 등)는 구도 안정화 중에도 즉시 알려준다.
@@ -467,9 +476,15 @@ internal class GuidancePolicy(
         val direction = pickDirection(state, result, zoomHandlesDistance)
             ?: visibilityFallbackDirection(readiness, result, personSession)
         if (direction == null) {
+            // 프레이밍 국면 문구("구도에 맞게 확대하는 중이에요")가 화면에 있으니 하트비트도 쉼
+            if (personFramingBusy) return emptyList()
             return heartbeat(readiness, zoomHandlesDistance, nowMs)
         }
-        return speakDirectionIfDue(refineVerticalWithPitch(direction, phonePitchDeg), nowMs)
+        val refined = refineVerticalWithPitch(direction, phonePitchDeg)
+        // 인물 프레이밍이 줌으로 상하·거리를 바꾸는 동안 "가까이/윗부분을 기울여" 류는 판정과
+        // 충돌한다 (2026-08-31) — 좌우 시계 안내만 계속 낸다 (중앙 유도는 여전히 정책 몫).
+        if (personFramingBusy && !allowedDuringPersonFraming(refined)) return emptyList()
+        return speakDirectionIfDue(refined, nowMs)
     }
 
     /**
@@ -879,6 +894,15 @@ internal class GuidancePolicy(
          */
         private fun verticalDirection(vSign: Float): GuidanceDirection =
             if (vSign < 0f) GuidanceDirection.TILT_TOP_TOWARD else GuidanceDirection.TILT_TOP_AWAY
+
+        /**
+         * 인물 프레이밍이 줌·상하를 맡는 동안에도 말해도 되는 안내인가 — 좌우 시계(10/11/1/2시)와
+         * 수평 회전만. 나머지(가까이·기울이기)는 줌이 만드는 변화와 충돌한다 (2026-08-31).
+         */
+        private fun allowedDuringPersonFraming(direction: GuidanceDirection): Boolean =
+            direction is GuidanceDirection.Clock ||
+                direction === GuidanceDirection.ROLL_TURN_LEFT ||
+                direction === GuidanceDirection.ROLL_TURN_RIGHT
 
         /** 1~12 범위로 감는다 (0 또는 음수 → +12, 13 이상 → 12를 뺌을 반복). */
         private fun wrapHour(rawHour: Int): Int {
