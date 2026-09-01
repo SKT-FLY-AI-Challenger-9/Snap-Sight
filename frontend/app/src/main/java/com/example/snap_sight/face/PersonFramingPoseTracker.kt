@@ -47,6 +47,14 @@ class PersonFramingPoseTracker(
     var footY: Float? = null
         private set
 
+    /**
+     * 좌우 골반 평균의 프레임 기준 정규화 y. 미검출/저신뢰(프레임 밖 추정 포함)면 null —
+     * 상반신 구도(2026-08-31 개편)의 줌 종료 판정("골반이 하단 근처 또는 프레임 밖")에 쓴다.
+     */
+    @Volatile
+    var hipY: Float? = null
+        private set
+
     @Volatile
     var lastUpdatedAtMs: Long = 0L
         private set
@@ -64,6 +72,7 @@ class PersonFramingPoseTracker(
     fun reset() {
         headY = null
         footY = null
+        hipY = null
         lastUpdatedAtMs = 0L
         nextAnalysisAtMs = 0L
     }
@@ -85,6 +94,7 @@ class PersonFramingPoseTracker(
         if (personBox == null) {
             headY = null
             footY = null
+            hipY = null
             return
         }
 
@@ -106,6 +116,7 @@ class PersonFramingPoseTracker(
             }
             headY = landmarkY(pose, PoseLandmark.NOSE, region.top, frame.height)
             footY = averageAnkleY(pose, region.top, frame.height)
+            hipY = averagePairY(pose, PoseLandmark.LEFT_HIP, PoseLandmark.RIGHT_HIP, region.top, frame.height)
             lastUpdatedAtMs = now
         } finally {
             bitmap.recycle()
@@ -134,10 +145,13 @@ class PersonFramingPoseTracker(
         return (fullFramePixelY / frameHeight).coerceIn(0f, 1f)
     }
 
-    private fun averageAnkleY(pose: Pose, regionTop: Int, frameHeight: Int): Float? {
+    private fun averageAnkleY(pose: Pose, regionTop: Int, frameHeight: Int): Float? =
+        averagePairY(pose, PoseLandmark.LEFT_ANKLE, PoseLandmark.RIGHT_ANKLE, regionTop, frameHeight)
+
+    private fun averagePairY(pose: Pose, leftType: Int, rightType: Int, regionTop: Int, frameHeight: Int): Float? {
         val ys = listOfNotNull(
-            landmarkY(pose, PoseLandmark.LEFT_ANKLE, regionTop, frameHeight),
-            landmarkY(pose, PoseLandmark.RIGHT_ANKLE, regionTop, frameHeight),
+            landmarkY(pose, leftType, regionTop, frameHeight),
+            landmarkY(pose, rightType, regionTop, frameHeight),
         )
         if (ys.isEmpty()) return null
         return ys.sum() / ys.size

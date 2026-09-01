@@ -9,7 +9,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -86,16 +88,26 @@ fun ResultScreen(
         }
 
         if (photo != null) {
-            Image(
-                bitmap = photo.asImageBitmap(),
-                contentDescription = "방금 촬영한 사진",
-                contentScale = ContentScale.Crop,
+            // 원본 비율 유지 (사용자 요청 2026-08-31) — 고정 틀에 맞춰 자르지 않고 그대로 축소한다.
+            // 높이 300dp 를 기준으로 사진 비율만큼 폭을 잡아 가운데 정렬 (세로 사진은 좁게,
+            // 가로 사진은 화면 폭 한도 안에서 넓게).
+            val photoAspect = photo.width.toFloat() / photo.height.coerceAtLeast(1)
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(300.dp)
-                    .padding(top = 16.dp)
-                    .clip(RoundedCornerShape(16.dp)),
-            )
+                    .padding(top = 16.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Image(
+                    bitmap = photo.asImageBitmap(),
+                    contentDescription = "방금 촬영한 사진",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .height(300.dp)
+                        .aspectRatio(photoAspect)
+                        .clip(RoundedCornerShape(16.dp)),
+                )
+            }
         }
 
         if (!headline.isNullOrBlank()) {
