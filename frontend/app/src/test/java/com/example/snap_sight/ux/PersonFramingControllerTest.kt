@@ -372,9 +372,9 @@ class PersonFramingControllerTest {
     }
 
     @Test
-    fun `upper-body composition keeps zooming past frame overflow until the area target`() {
-        // 발이 프레임 밖으로 나갔어도(case 1) bbox 넓이가 65% 미만이면 계속 줌인해야 한다
-        // (실기기 피드백 2026-08-31 — "발만 사라지고 줌이 끝난다").
+    fun `upper-body composition keeps zooming while the hip is still high`() {
+        // 발이 프레임 밖(footY null)이어도 골반이 아직 화면 중간이면(하반신이 많이 보임) 계속
+        // 줌인해야 한다 (2026-08-31 개편 — "발목만 잘린 전신" 문제. 기존 넓이 65% 기준 폐기).
         val controller = PersonFramingController()
         val headMid = (PersonFramingController.COMPOSITION_UPPER_HEAD_MIN +
             PersonFramingController.COMPOSITION_UPPER_HEAD_MAX) / 2f
@@ -382,13 +382,13 @@ class PersonFramingControllerTest {
             bboxFitsFrame = false, headY = headMid, footY = null, bboxHeightRatio = null,
             generalReady = false, nowMs = 0,
             composition = PersonFramingController.CompositionScope.UPPER_BODY,
-            bboxAreaRatio = 0.40f,
+            hipY = 0.5f,
         )
         assertEquals(PersonFramingController.Action.RequestZoomStep, outcome.action)
     }
 
     @Test
-    fun `upper-body composition reaches target once bbox area and head band are met`() {
+    fun `upper-body composition reaches target when feet are gone and the hip is low or out`() {
         val controller = PersonFramingController()
         val headMid = (PersonFramingController.COMPOSITION_UPPER_HEAD_MIN +
             PersonFramingController.COMPOSITION_UPPER_HEAD_MAX) / 2f
@@ -396,20 +396,79 @@ class PersonFramingControllerTest {
             bboxFitsFrame = false, headY = headMid, footY = null, bboxHeightRatio = null,
             generalReady = false, nowMs = 0,
             composition = PersonFramingController.CompositionScope.UPPER_BODY,
-            bboxAreaRatio = PersonFramingController.UPPER_BODY_MIN_AREA_RATIO,
+            hipY = PersonFramingController.UPPER_BODY_HIP_MIN,
         )
         assertEquals(PersonFramingController.Action.None, reached.action)
         assertTrue(reached.vibrate)
         assertTrue(reached.targetReached)
-        // 상반신 구도도 3초 유지 자동촬영 대신 호출부의 촬영 확인 질문을 거친다 (2026-08-31)
+        // 골반이 프레임 밖(null)이어도 도달 — 상반신 구도도 촬영 확인 질문을 거친다 (2026-08-31)
         val stillReached = controller.onJudgment(
             bboxFitsFrame = false, headY = headMid, footY = null, bboxHeightRatio = null,
             generalReady = false, nowMs = PersonFramingController.HOLD_MS,
             composition = PersonFramingController.CompositionScope.UPPER_BODY,
-            bboxAreaRatio = PersonFramingController.UPPER_BODY_MIN_AREA_RATIO,
+            hipY = null,
         )
         assertEquals(PersonFramingController.Action.None, stillReached.action)
         assertTrue(stillReached.targetReached)
+    }
+
+    @Test
+    fun `upper-body composition still zooms while feet remain visible`() {
+        // 발이 아직 보이면(footY != null) 골반·머리가 어떻든 도달이 아니다 — 하반신을 밀어낸다
+        val controller = PersonFramingController()
+        val headMid = (PersonFramingController.COMPOSITION_UPPER_HEAD_MIN +
+            PersonFramingController.COMPOSITION_UPPER_HEAD_MAX) / 2f
+        val outcome = controller.onJudgment(
+            bboxFitsFrame = false, headY = headMid, footY = 0.95f, bboxHeightRatio = null,
+            generalReady = false, nowMs = 0,
+            composition = PersonFramingController.CompositionScope.UPPER_BODY,
+            hipY = 0.8f,
+        )
+        assertEquals(PersonFramingController.Action.RequestZoomStep, outcome.action)
+    }
+
+    // ---- 줌 머리 안전장치 (2026-08-31 — "너무 줌인돼서 머리가 잘린다") ----
+
+    @Test
+    fun `a zoom step that would push the head out is withheld in any mode`() {
+        // headY 0.06: 한 스텝(×1.15) 뒤 0.5−0.44×1.15 ≈ −0.006 < 0.01 → 줌 금지
+        val general = PersonFramingController().onJudgment(
+            bboxFitsFrame = true, headY = 0.06f, footY = 0.5f, bboxHeightRatio = 0.5f,
+            generalReady = false, nowMs = 0,
+        )
+        assertEquals(PersonFramingController.Action.None, general.action)
+
+        val upperFeetVisible = PersonFramingController().onJudgment(
+            bboxFitsFrame = false, headY = 0.06f, footY = 0.9f, bboxHeightRatio = null,
+            generalReady = false, nowMs = 0,
+            composition = PersonFramingController.CompositionScope.UPPER_BODY,
+        )
+        assertEquals(PersonFramingController.Action.None, upperFeetVisible.action)
+    }
+
+    @Test
+    fun `upper-body accepts the head-guard state as reached once feet are gone`() {
+        // 머리가 밴드보다 높아도 더 줌하면 잘리는 상황 + 발이 이미 밖 → 최선 도달 (무한 대기 방지)
+        val outcome = PersonFramingController().onJudgment(
+            bboxFitsFrame = false, headY = 0.06f, footY = null, bboxHeightRatio = null,
+            generalReady = false, nowMs = 0,
+            composition = PersonFramingController.CompositionScope.UPPER_BODY,
+            hipY = 0.9f,
+        )
+        assertEquals(PersonFramingController.Action.None, outcome.action)
+        assertTrue(outcome.targetReached)
+    }
+
+    @Test
+    fun `upper-body waits without zooming when the pose head is missing`() {
+        // 머리 좌표 없이는 상반신 줌을 멈출 조건이 없다 — 포즈가 잡힐 때까지 확대 보류
+        val outcome = PersonFramingController().onJudgment(
+            bboxFitsFrame = true, headY = null, footY = null, bboxHeightRatio = 0.4f,
+            generalReady = false, nowMs = 0,
+            composition = PersonFramingController.CompositionScope.UPPER_BODY,
+        )
+        assertEquals(PersonFramingController.Action.None, outcome.action)
+        assertFalse(outcome.targetReached)
     }
 
     @Test

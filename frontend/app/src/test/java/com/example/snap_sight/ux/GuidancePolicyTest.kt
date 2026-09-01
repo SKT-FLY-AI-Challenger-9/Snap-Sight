@@ -481,6 +481,38 @@ class GuidancePolicyTest {
             it is GuidanceAction.PresenceVibrationLevel || it == GuidanceAction.PresenceVibrationStop
         }
 
+    // ---- 인물 프레이밍과의 발화 충돌 (2026-08-31) — 줌 중 "좋아요"·상하 안내 억제 ----
+
+    @Test
+    fun `person framing busy silences ready and vertical guidance but keeps the clock`() {
+        // 수직 이탈 — 프레이밍 줌이 상하를 맡는 동안은 침묵
+        val vertical = GuidancePolicy().onJudgment(
+            GuidanceStateMapper.from(result(x = 0f, size = 0f, y = 0.4f)),
+            result(x = 0f, size = 0f, y = 0.4f), 0, personFramingBusy = true,
+        )
+        assertTrue(vertical.none { it is GuidanceAction.Speak })
+        // 좌우 이탈 — 시계 안내는 계속 나간다 (중앙 유도는 여전히 정책 몫)
+        val horizontal = GuidancePolicy().onJudgment(
+            GuidanceStateMapper.from(result(x = 0.3f, size = 0f)),
+            result(x = 0.3f, size = 0f), 0, personFramingBusy = true,
+        )
+        assertEquals(listOf(GuidanceDirection.Clock(1).utterance), speech(horizontal))
+        // READY(중앙·안정화 뒤) — "좋아요"를 내지 않는다: 프레이밍 도달 흐름(진동·질문)이 대신한다
+        val busy = GuidancePolicy()
+        busy.onJudgment(GuidanceStateMapper.from(result(0f, 0f)), result(0f, 0f), 0, personFramingBusy = true)
+        val readyWhileBusy = busy.onJudgment(
+            GuidanceStateMapper.from(result(0f, 0f)), result(0f, 0f), 400, personFramingBusy = true,
+        )
+        assertTrue(readyWhileBusy.none { it is GuidanceAction.Speak })
+        // 대조: busy 가 아니면 같은 시퀀스에서 READY 가 말해진다
+        val idle = GuidancePolicy()
+        idle.onJudgment(GuidanceStateMapper.from(result(0f, 0f)), result(0f, 0f), 0)
+        assertEquals(
+            listOf(GuidancePolicy.READY_UTTERANCE),
+            speech(idle.onJudgment(GuidanceStateMapper.from(result(0f, 0f)), result(0f, 0f), 400)),
+        )
+    }
+
     // ---- 탐색 안내 (노션 스크립트 상태 3, 2026-08-24) ----
 
     @Test

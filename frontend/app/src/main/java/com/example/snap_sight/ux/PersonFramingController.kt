@@ -41,13 +41,17 @@ package com.example.snap_sight.ux
  * 범위([CompositionScope])는 둘로 나뉜다:
  *  - [CompositionScope.FULL_BODY] — case 2 밴드를 전신 사진 분포
  *    ([COMPOSITION_HEAD_MIN]..[COMPOSITION_FOOT_MAX])로 교체.
- *  - [CompositionScope.UPPER_BODY] — bbox 넓이(화면 대비 면적)가
- *    [UPPER_BODY_MIN_AREA_RATIO] 에 이를 때까지 계속 줌인한다. 발이 프레임 밖으로
- *    나가도(case 1) 멈추지 않는다 — "발만 사라지고 줌이 끝난다"는 실기기 피드백
- *    (2026-08-31)의 대책. 넓이가 차고 머리가 상반신 사진 분포
- *    ([COMPOSITION_UPPER_HEAD_MIN]..[COMPOSITION_UPPER_HEAD_MAX])에 들어오면 도달.
+ *  - [CompositionScope.UPPER_BODY] — 발이 프레임 밖으로 나가고(footY null), 골반이 하단
+ *    근처([UPPER_BODY_HIP_MIN] 이상) 또는 프레임 밖(hipY null)이 될 때까지 계속 줌인하고,
+ *    머리가 상반신 사진 분포([COMPOSITION_UPPER_HEAD_MIN]..[COMPOSITION_UPPER_HEAD_MAX])에
+ *    들어오면 도달 (2026-08-31 개편 — 기존 "bbox 넓이 65%" 기준은 마른 체형에서 영영 못
+ *    채워 상한 6배까지 과확대되던 원인이라 폐기: "너무 줌인되거나 발목만 잘린 전신").
  *    하반신까지 다 보이는 상태에서 "상반신에 집중해서 찍을까요?"라고 물어 "네"면
  *    이 범위가 된다(사용자 요청 2026-08-31).
+ *
+ * 줌 안전장치 (2026-08-31): 중앙 기준 줌은 중심 위쪽을 더 위로 밀어낸다 — 한 스텝
+ * (×[ZOOM_STEP_PREVIEW]) 뒤 머리가 [HEAD_TOP_GUARD] 위로 나갈 상황이면 어느 모드든 더
+ * 줌하지 않는다 (머리 잘림·오버슈트 방지).
  */
 internal class PersonFramingController {
 
@@ -106,6 +110,8 @@ internal class PersonFramingController {
      *        영향을 주지 않는다.
      * @param composition "구도 좋게 찍어줘"류 발화(2026-08-31)의 촬영 범위 — 목표 밴드를
      *        큐레이션 사진 실측 분포로 바꾼다. 클래스 주석의 [CompositionScope] 참고.
+     * @param hipY 좌우 골반 평균 정규화 y — 미검출/프레임 밖이면 null. 상반신 구도의 줌 종료
+     *        판정에만 쓴다 (2026-08-31 개편).
      */
     fun onJudgment(
         bboxFitsFrame: Boolean,
@@ -116,7 +122,7 @@ internal class PersonFramingController {
         nowMs: Long,
         subjectMoving: Boolean = false,
         composition: CompositionScope = CompositionScope.OFF,
-        bboxAreaRatio: Float? = null,
+        hipY: Float? = null,
     ): Outcome {
         if (fired) return Outcome()
 
@@ -144,12 +150,19 @@ internal class PersonFramingController {
         val headMax = if (fullBody) COMPOSITION_HEAD_MAX else CASE2_HEAD_MAX
         val footMin = if (fullBody) COMPOSITION_FOOT_MIN else CASE2_FOOT_MIN
         val footMax = if (fullBody) COMPOSITION_FOOT_MAX else CASE2_FOOT_MAX
+        // 줌 안전장치 (2026-08-31): 중앙 기준 줌은 중심 위쪽을 더 위로 밀어낸다 — 한 스텝 뒤
+        // 머리가 [HEAD_TOP_GUARD] 위로 나갈 상황이면 더 줌하지 않는다 (머리 잘림·오버슈트 방지).
+        val headAfterStep = headY?.let { 0.5f - (0.5f - it) * ZOOM_STEP_PREVIEW }
+        val zoomWouldCutHead = headAfterStep != null && headAfterStep < HEAD_TOP_GUARD
         val onTarget = closeEnough || if (upperBody) {
-            // 상반신 구도: 발이 프레임 밖으로 나가는 것으로는 부족하다("발만 사라지고 줌이
-            // 끝난다", 2026-08-31) — bbox 넓이가 화면의 65% 이상이 되고 머리가 상반신 밴드에
-            // 들어와야 도달이다. generalReady 는 전신 기준 판정이라 여기선 쓰지 않는다.
-            bboxAreaRatio != null && bboxAreaRatio >= UPPER_BODY_MIN_AREA_RATIO &&
-                headY != null && headY in case1HeadMin..case1HeadMax
+            // 상반신 구도 (2026-08-31 개편): 발이 안 보이고(footY null), 골반이 하단 근처 또는
+            // 프레임 밖이고, 머리가 상반신 밴드에 들어오면 도달 — 기존 "bbox 넓이 65%" 기준은
+            // 마른 체형에서 영영 못 채워 상한까지 과확대되던 원인이라 폐기했다. 머리가 더
+            // 줌하면 잘릴 만큼 높아도 발이 이미 밖이면 최선 도달로 인정한다(무한 대기 방지).
+            // generalReady 는 전신 기준 판정이라 여기선 쓰지 않는다.
+            headY != null && footY == null &&
+                (hipY == null || hipY >= UPPER_BODY_HIP_MIN) &&
+                (headY in case1HeadMin..case1HeadMax || zoomWouldCutHead)
         } else if (!bboxFitsFrame) {
             generalReady || (headY != null && headY in case1HeadMin..case1HeadMax)
         } else {
@@ -159,12 +172,16 @@ internal class PersonFramingController {
 
         if (!onTarget) {
             holdSinceMs = null
-            // case 1(프레임 초과)은 줌을 걸지 않는다 — 단, 상반신 구도는 넓이 목표까지 계속
+            // case 1(프레임 초과)은 줌을 걸지 않는다 — 단, 상반신 구도는 목표까지 계속
             // 줌인해야 하므로 예외다. close-enough(이미 충분히 큼)는 두 경우 모두 줌 없음.
             if ((!bboxFitsFrame && !upperBody) || closeEnough) return Outcome()
             // 움직이는 피사체에는 줌을 걸지 않는다 — 멈출 때까지 기다린다 (2026-08-30).
             // zoomStarted 는 그대로 둔다: 첫 실제 스텝에서 진동하는 규약을 유지하기 위해.
             if (subjectMoving) return Outcome()
+            // 다음 스텝이 머리를 프레임 위로 밀어낼 상황이면 줌하지 않는다 (모든 모드 공통).
+            if (zoomWouldCutHead) return Outcome()
+            // 상반신은 머리 좌표 없이는 멈출 조건이 없다 — 포즈가 잡힐 때까지 확대를 보류한다.
+            if (upperBody && headY == null) return Outcome()
             val firstStep = !zoomStarted
             zoomStarted = true
             return Outcome(Action.RequestZoomStep, vibrate = firstStep)
@@ -220,10 +237,26 @@ internal class PersonFramingController {
         const val COMPOSITION_UPPER_HEAD_MAX = 0.40f
 
         /**
-         * 상반신 구도의 줌 종료 조건 — bbox 넓이(화면 대비 면적)가 이 이상 될 때까지 줌인한다
-         * (사용자 요청 2026-08-31 — "바운딩 박스의 전체 넓이가 화면에 65% 이상 되게").
+         * 상반신 구도의 줌 종료 조건 (2026-08-31 개편) — 골반이 이 y(하단 15% 띠) 아래로
+         * 내려오거나 프레임 밖(hipY null)이어야 "하반신이 잘린 상반신 구도"다.
+         * 근거(인체 비례): 코≈키의 93%·골반≈53% 높이라, 머리 밴드 중앙(0.30)에서 골반이 0.75면
+         * 화면 하단이 무릎 근처다 — 상반신이 아니라 무릎샷 (사용자 지적 2026-08-31). 진짜
+         * 허리~골반 컷은 골반이 하단에 붙는다(≈0.95+). ML Kit 이 가장자리 랜드마크를 놓쳐
+         * null 로 빠지는 것까지 감안해 0.85 를 하한으로 둔다.
          */
-        const val UPPER_BODY_MIN_AREA_RATIO = 0.65f
+        const val UPPER_BODY_HIP_MIN = 0.85f
+
+        /**
+         * 한 스텝 뒤 머리가 이 y 위로 나가면 줌을 멈춘다 (머리 잘림 방지). 기본 case 2 밴드가
+         * 머리 0~15% 를 허용하므로, 밴드 안의 정상 줌을 막지 않도록 "정말 잘리기 직전"에만 건다.
+         */
+        const val HEAD_TOP_GUARD = 0.01f
+
+        /**
+         * 줌 한 스텝의 배율 미리보기 — [com.example.snap_sight.camera.AutoZoomController.PERSON_FRAMING_ZOOM_STEP]
+         * 과 같은 값 (이 파일은 android 의존이 없어 값만 복제; 그쪽을 바꾸면 여기도 바꾼다).
+         */
+        const val ZOOM_STEP_PREVIEW = 1.15f
 
         /** 목표 도달 후 이만큼 유지되면 자동촬영 (사용자 요청 2026-08-28 — "3초 안에"). */
         const val HOLD_MS = 3_000L

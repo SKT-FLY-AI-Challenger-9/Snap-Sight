@@ -383,6 +383,13 @@ class MainActivity : ComponentActivity() {
     @Volatile
     private var personFramingPhase = FramingPhase.NONE
 
+    /**
+     * 마지막 인물 줌 스텝 시각 (2026-08-31) — 스텝 뒤에는 그 배율에서 잰 **새 포즈 관측**이
+     * 와야 다음 스텝을 허용한다. 포즈 신선창(1.2초)이 줌 쿨다운(0.5초)보다 길어, 낡은 좌표로
+     * 연속 확대되던 오버슈트("너무 줌인")의 원인이었다. 분석 스레드에서만 접근.
+     */
+    private var lastPersonZoomStepAtMs = 0L
+
     /** 인물(subjectType=person 또는 등록 이름) 세션 — 자동촬영 승자 컷에 3분할 크롭 적용. */
     @Volatile
     private var portraitCropEligible = false
@@ -711,13 +718,19 @@ class MainActivity : ComponentActivity() {
         // 인물 세션 감지 (사용자 요청 2026-08-27) — 머리·발이 잘릴 만큼 가까우면 "뒤로 가라"를
         // 촬영자가 아니라 피사체에게 전달하라고 안내한다.
         guidanceFeedback.personSession = { portraitCropEligible }
+        // 인물 프레이밍이 줌·도달을 맡는 동안은 정책의 READY("좋아요")·상하/가까이 안내를 쉰다
+        // (실기기 2026-08-31 — 줌 중에 사람이 가운데면 "좋아요"가 겹쳐 나왔다). 좌우 시계는 유지.
+        guidanceFeedback.personFramingBusy = { personFramingPhase != FramingPhase.NONE }
         // 구도 범위 질문("상반신에 집중해서 찍을까요?")·촬영 확인 질문("이대로 찍을까요?")과
         // 시계 안내가 겹치지 않게, 질문~대답·확정 발화 동안은 방향·READY 발화를 삼킨다
         // (사용자 요청 2026-08-31). 진동·경고음은 유지된다.
         guidanceFeedback.holdGuidanceSpeech = {
             compositionQuestion == CompositionQuestion.PENDING ||
                 captureConfirm == CaptureConfirm.PENDING ||
-                captureConfirm == CaptureConfirm.FIRING
+                captureConfirm == CaptureConfirm.FIRING ||
+                // RE_GUIDE 중에는 전용 유도 문구("조금 오른쪽으로 이동해 주세요")가 직접 안내한다
+                // — 정책의 시계 안내까지 나가면 같은 축을 두 목소리가 말한다 (실기기 2026-08-31).
+                captureConfirm == CaptureConfirm.RE_GUIDE
         }
         // 좌우 수평 (2026-08-30, 엔드유저 피드백) — 10° 이상 기울어져 있으면 다른 축보다 먼저
         // "폰 오른쪽/왼쪽을 조금 올려 주세요". 센서는 조준 중에만 돌고(tiltMonitor.start),
@@ -3234,6 +3247,7 @@ class MainActivity : ComponentActivity() {
         reGuideDirectionAtMs = 0L
         captureTargetZone = CaptureZone.CENTER
         personFramingPhase = FramingPhase.NONE
+        lastPersonZoomStepAtMs = 0L
         personFramingPose.reset()
         personFraming.reset()
         subjectMotion.reset()
@@ -3707,7 +3721,8 @@ class MainActivity : ComponentActivity() {
                         } else {
                             PersonFramingController.CompositionScope.OFF
                         },
-                        bboxAreaRatio = bboxAreaRatio,
+                        // 상반신 구도의 줌 종료 판정 (2026-08-31 개편) — 골반 좌표 기반
+                        hipY = if (poseFresh) personFramingPose.hipY else null,
                     )
                 } else {
                     personFramingDebugLabel = ""
@@ -3739,7 +3754,14 @@ class MainActivity : ComponentActivity() {
                         } else {
                             AutoZoomController.MAX_ZOOM
                         }
-                        if (autoZoom.requestZoomStep(maxZoom = zoomCeiling) != null) {
+                        // 줌 스텝 뒤에는 그 배율에서 잰 새 포즈 관측이 와야 다음 스텝 — 포즈
+                        // 신선창(1.2초)이 쿨다운(0.5초)보다 길어 낡은 좌표로 연속 확대되던
+                        // 오버슈트 방지 (2026-08-31). 포즈가 아예 없으면(신선하지 않으면)
+                        // bbox 기반 블라인드 줌이므로 기존 쿨다운만 따른다.
+                        val poseGateOk = !personFramingPose.isFresh(output.timestampMs) ||
+                            personFramingPose.lastUpdatedAtMs > lastPersonZoomStepAtMs
+                        if (poseGateOk && autoZoom.requestZoomStep(maxZoom = zoomCeiling) != null) {
+                            lastPersonZoomStepAtMs = System.currentTimeMillis()
                             guidanceFeedback.playScanTick()
                         }
                     }

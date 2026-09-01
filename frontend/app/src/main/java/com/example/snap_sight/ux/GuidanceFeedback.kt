@@ -149,6 +149,14 @@ class GuidanceFeedback(context: Context) : DeviationListener {
     var personSession: (() -> Boolean)? = null
 
     /**
+     * 인물 프레이밍이 줌 중이거나 목표에 도달한 상태인가 (2026-08-31) — true 면 [GuidancePolicy]
+     * 가 READY("좋아요")·상하 기울이기·"가까이"를 내지 않는다 (프레이밍 흐름과의 발화 충돌 방지).
+     * MainActivity 가 FramingPhase 로 연결한다. 분석 스레드에서 호출된다.
+     */
+    @Volatile
+    var personFramingBusy: (() -> Boolean)? = null
+
+    /**
      * true 인 동안 방향·READY 안내 발화를 잠시 삼킨다 (진동·경고음은 유지) — 구도 세션이
      * "상반신에 집중해서 찍을까요?"를 묻고 대답을 듣는 동안 시계 안내와 겹치지 않게 한다
      * (사용자 요청 2026-08-31). MainActivity 가 질문 PENDING 상태로 연결한다.
@@ -353,6 +361,7 @@ class GuidanceFeedback(context: Context) : DeviationListener {
             cameraOrientationRad = cameraOrientationRad?.invoke(),
             personSession = personSession?.invoke() == true,
             phoneRollDeg = phoneRoll?.invoke(),
+            personFramingBusy = personFramingBusy?.invoke() == true,
         )
         val holdSpeech = holdGuidanceSpeech?.invoke() == true
         for (action in decision.actions) {
@@ -387,10 +396,16 @@ class GuidanceFeedback(context: Context) : DeviationListener {
      * 표현한다(엔드유저 피드백 2026-08-30). 모터 과열·소음을 피하려고 가장 빠른 단계도 휴지를 둔다.
      */
     private fun startPresenceVibration(level: Int) {
-        val amplitude = GuidanceFeedbackSettingsMapper.vibrationAmplitude(vibrationIntensity) ?: return
+        if (GuidanceFeedbackSettingsMapper.vibrationAmplitude(vibrationIntensity) == null) return
         if (presenceVibrating && presenceLevel == level) return
         presenceVibrating = true
         presenceLevel = level
+        playPresenceWaveform(level)
+    }
+
+    /** 존재 패턴 파형 재생 — 확정 진동([vibrateConfirm]) 뒤 복구에도 쓴다. */
+    private fun playPresenceWaveform(level: Int) {
+        val amplitude = GuidanceFeedbackSettingsMapper.vibrationAmplitude(vibrationIntensity) ?: return
         val timings = longArrayOf(
             0, PRESENCE_PULSE_ON_MS, GuidanceFeedbackSettingsMapper.presencePulseOffMs(level),
         )
@@ -455,9 +470,29 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         runCatching { generator.startTone(SCAN_END_TONE, SCAN_TONE_MS) }
     }
 
-    /** 인물 프레이밍 확정 진동 — [PersonFramingController.Outcome.vibrate] 전용 공개 창구. */
+    /**
+     * 인물 프레이밍 확정 진동 — [PersonFramingController.Outcome.vibrate] 전용 공개 창구.
+     * 존재 확인 연속 진동이 도는 중에도 삼켜지지 않는다 (실기기 2026-08-31 — [vibrateShort] 는
+     * 존재 패턴을 지키려고 스스로 빠지기 때문에 목표 도달 진동이 아예 안 느껴졌다):
+     * 잠깐 끊고 2연타로 구분해 울린 뒤 존재 패턴을 복구한다.
+     */
     fun vibrateConfirm() {
-        vibrateShort()
+        if (!presenceVibrating) {
+            vibrateShort()
+            return
+        }
+        val amplitude = GuidanceFeedbackSettingsMapper.vibrationAmplitude(vibrationIntensity) ?: return
+        runCatching { vibrator.cancel() }
+        val timings = longArrayOf(0, CONFIRM_PULSE_MS, CONFIRM_GAP_MS, CONFIRM_PULSE_MS)
+        val effect = if (vibrator.hasAmplitudeControl()) {
+            VibrationEffect.createWaveform(timings, intArrayOf(0, amplitude, 0, amplitude), -1)
+        } else {
+            VibrationEffect.createWaveform(timings, -1)
+        }
+        runCatching { vibrator.vibrate(effect) }
+        transitionHandler.postDelayed({
+            if (presenceVibrating) playPresenceWaveform(presenceLevel.coerceAtLeast(0))
+        }, CONFIRM_PULSE_MS + CONFIRM_GAP_MS + CONFIRM_PULSE_MS + CONFIRM_RESUME_SLACK_MS)
     }
 
     private fun playTransitionTone(rising: Boolean) {
@@ -924,6 +959,11 @@ class GuidanceFeedback(context: Context) : DeviationListener {
         // 존재 확인 연속 진동 파형 — 140ms 온 / 160ms 오프 반복
         /** 존재 진동 한 펄스 길이 — 휴지 간격은 단계별([GuidanceFeedbackSettingsMapper.presencePulseOffMs]). */
         const val PRESENCE_PULSE_ON_MS = 100L
+
+        // 프레이밍 확정 2연타 (2026-08-31) — 존재 패턴(단발 반복)과 구분되는 리듬
+        const val CONFIRM_PULSE_MS = 90L
+        const val CONFIRM_GAP_MS = 70L
+        const val CONFIRM_RESUME_SLACK_MS = 60L
         // 등록 스캔 시작/종료 — 전환 earcon(DTMF)·LOST 경고(BEEP2)와 겹치지 않는 음색
         const val SCAN_START_TONE = ToneGenerator.TONE_PROP_BEEP
         const val SCAN_END_TONE = ToneGenerator.TONE_PROP_ACK
