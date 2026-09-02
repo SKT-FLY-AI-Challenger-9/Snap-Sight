@@ -186,8 +186,8 @@ def test_demo_target_spec_keeps_only_matching_candidates_in_public_jsonl(tmp_pat
             return FrameResult(
                 (
                     TrackedObject(1, "Person", 0.9, bbox, class_id=0),
-                    TrackedObject(2, "Bottle", 0.8, bbox, class_id=5),
-                    TrackedObject(3, "Chair", 0.7, bbox, class_id=2),
+                    TrackedObject(2, "Bottle", 0.8, bbox, class_id=26),
+                    TrackedObject(3, "Chair", 0.7, bbox, class_id=36),
                 )
             )
 
