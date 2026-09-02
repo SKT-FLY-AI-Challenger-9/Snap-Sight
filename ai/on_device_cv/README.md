@@ -143,13 +143,13 @@ selection JSONL의 `analyzed=false`로 미분석 프레임을 구분할 수 있�
 - `landscape`: 객체 target을 만들지 않음
 - 요청 개수보다 후보가 적으면 `searching`, 같으면 `selected`, 많으면 `ambiguous`
 
-`objectLabel`은 실제 checkpoint의 canonical label을 사용합니다. 전체 364개 사물 허용값은
+`objectLabel`은 실제 checkpoint의 canonical label을 사용합니다. 전체 169개 사물 허용값은
 `ai/taxonomy/objects365_yolo26_v1.json`에 고정되어 있으며 공백과 슬래시를 보존합니다.
 예를 들어 `wine_glass`가 아니라 `wine glass`입니다. CV는 `rawText`를 다시 파싱하지 않으므로
 STT/NLU가 발화를 이 canonical 값으로 변환해야 합니다. `framing`은 현재 detection filtering이
 아니라 후속 구도 판단용 값입니다.
 
-TargetSpec을 사용하면 detector load 시 모델의 365개 class 이름과 순서를 taxonomy와 대조합니다.
+TargetSpec을 사용하면 detector load 시 모델의 170개 class 이름과 순서를 taxonomy와 대조합니다.
 따라서 `--model`로 COCO/subset 모델을 넘기면 class ID 오해를 막기 위해 명확히 실패하며, 해당
 모델용 taxonomy와 그 taxonomy를 명시하는 TargetSpec 계약/selector adapter가 별도로 필요합니다.
 Objects365 class 순서를 유지한 fine-tuned 모델은 같은 taxonomy를 계속 사용할 수 있습니다.
@@ -216,7 +216,7 @@ PC prototype은 Python 3.11 이상을 기준으로 합니다. 현재는 저장�
 
 ## 모델과 Face Detector 교체 지점
 
-같은 365개 class ID와 label 순서를 유지해 fine-tuning한 모델은 pipeline 수정 없이 바꿀 수 있습니다.
+같은 170개 class ID와 label 순서를 유지해 fine-tuning한 모델은 pipeline 수정 없이 바꿀 수 있습니다.
 
 ```powershell
 python -m ai.on_device_cv --source .\sample.mp4 --model .\models\best.pt

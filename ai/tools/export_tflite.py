@@ -28,7 +28,7 @@ from pathlib import Path
 from ai.taxonomy import OBJECTS365_YOLO26
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_WEIGHTS = REPOSITORY_ROOT / "yolo26n-objv1-150.pt"
+DEFAULT_WEIGHTS = REPOSITORY_ROOT / "yolo26n-kr170-v5.pt"
 DEFAULT_ASSETS_DIR = REPOSITORY_ROOT / "frontend" / "app" / "src" / "main" / "assets"
 DEFAULT_MODEL_NAME = "objects365_yolo26_v1.tflite"
 DEFAULT_LABELS_NAME = "objects365_yolo26_v1_labels.txt"
