@@ -1,0 +1,104 @@
+// 이 파일: 사용자가 말한 문장을 백엔드로 보내는 통신 담당.
+// 백엔드가 문장을 해석해 "무엇을 찍고 싶은지"(타겟 스펙)로 돌려주면 받아온다.
+// 서버가 응답하지 못해도 촬영 흐름이 멈추지 않게 실패를 조용히 처리한다.
+package com.example.snap_sight.network
+
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import com.example.snap_sight.cv.TargetSpec
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+
+/**
+ * ① 인식된 발화 텍스트를 백엔드로 보내 타겟 스펙을 받아오는 클라이언트.
+ *
+ * [SpeechToTextRecognizer][com.example.snap_sight.stt.SpeechToTextRecognizer]가
+ * 온디바이스에서 인식한 텍스트를 그대로 전달한다 (오디오 업로드 없음).
+ *
+ * 백엔드 계약: POST {baseUrl}/api/session/utterance (application/json)
+ *  - session_id: 문자열
+ *  - raw_text: STT로 인식된 텍스트
+ * 응답: ai/target_spec_schema.md 의 TargetSpec JSON. 파싱은 [TargetSpec.fromJsonOrNull]에
+ * 위임한다 — CV 쪽 검증 규칙(`ai/target_spec.py`)과 항상 같은 기준을 쓰기 위함이다.
+ * 응답 body가 스키마를 어겨도(HTTP 자체는 성공) 예외 없이 [Callback.onSuccess]에 null이 온다.
+ */
+class UtteranceClient(
+    private val baseUrl: String? = null, // null = 요청 시점에 BackendConfig.baseUrl 사용
+    private val client: OkHttpClient = SnapSightHttp.client(
+        connectSeconds = 5,
+        writeSeconds = 10,
+        readSeconds = 10,
+    ),
+) {
+
+    interface Callback {
+        /** [spec]은 응답이 스키마를 어겼을 때만 null — HTTP 자체 실패는 [onFailure]로 온다. */
+        fun onSuccess(spec: TargetSpec?)
+        fun onSuccess(sessionId: String, spec: TargetSpec?) = onSuccess(spec)
+        fun onFailure(error: Throwable)
+        fun onFailure(sessionId: String, error: Throwable) = onFailure(error)
+    }
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val requests = SessionRequestRegistry()
+
+    fun sendUtterance(
+        sessionId: String,
+        rawText: String,
+        callback: Callback,
+    ): NetworkRequestHandle {
+        val handle = requests.replace(sessionId)
+        val worker = Thread({
+            var terminalPosted = false
+            try {
+                val requestJson = JSONObject().apply {
+                    put("session_id", sessionId)
+                    put("raw_text", rawText)
+                }
+                val request = Request.Builder()
+                    .url("${baseUrl ?: BackendConfig.baseUrl}/api/session/utterance")
+                    .post(requestJson.toString().toRequestBody(JSON))
+                    .build()
+
+                val spec = client.executeCancellable(handle, request) { response ->
+                    if (!response.isSuccessful) {
+                        throw IllegalStateException("타겟 스펙 요청 실패: HTTP ${response.code}")
+                    }
+                    val body = response.body?.string().orEmpty()
+                    TargetSpec.fromJsonOrNull(body) { error ->
+                        Log.w(TAG, "타겟 스펙 응답 파싱 실패 [$sessionId]", error)
+                    }
+                }
+                terminalPosted = true
+                mainHandler.post {
+                    if (requests.finish(sessionId, handle)) callback.onSuccess(sessionId, spec)
+                }
+            } catch (t: Throwable) {
+                if (handle.isCancelled) return@Thread
+                Log.e(TAG, "타겟 스펙 요청 실패 [$sessionId]", t)
+                terminalPosted = true
+                mainHandler.post {
+                    if (requests.finish(sessionId, handle)) callback.onFailure(sessionId, t)
+                }
+            } finally {
+                handle.clearWorker(Thread.currentThread())
+                if (!terminalPosted) requests.remove(sessionId, handle)
+            }
+        }, "SnapSight-UtteranceUpload-${sessionId.takeLast(8)}")
+        if (handle.attachWorker(worker)) worker.start()
+        return handle
+    }
+
+    fun cancel(sessionId: String) = requests.cancel(sessionId)
+
+    fun cancelAll() = requests.cancelAll()
+
+    companion object {
+        private const val TAG = "UtteranceClient"
+        private val JSON = "application/json; charset=utf-8".toMediaType()
+    }
+}

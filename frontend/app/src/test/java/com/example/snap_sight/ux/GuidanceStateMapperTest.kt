@@ -1,0 +1,159 @@
+package com.example.snap_sight.ux
+
+import com.example.snap_sight.cv.DeviationResult
+import com.example.snap_sight.cv.ObservationFreshness
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * [GuidanceStateMapper] 임계값·경계값 검증. landscape 판정(subjectType)은 이 레이어에 들어오지
+ * 않으므로(알려진 interface blocker, GuidanceFeedback.kt 참고) 여기서는 다루지 않는다 —
+ * non-landscape 세션에서 [DeviationResult] → [GuidanceState] 변환만 검증한다.
+ */
+class GuidanceStateMapperTest {
+
+    private fun result(x: Float, size: Float) =
+        DeviationResult(subjectDetected = true, xDeviation = x, sizeDeviation = size, yDeviation = 0f)
+
+    // --- 미탐지 ---
+
+    @Test
+    fun undetectedMapsToDetectedFalseWithNullFields() {
+        val state = GuidanceStateMapper.from(
+            DeviationResult(subjectDetected = false, xDeviation = null, sizeDeviation = null)
+        )
+        assertFalse(state.detected)
+        assertNull(state.horizontal)
+        assertNull(state.distance)
+        assertFalse(state.isReady)
+    }
+
+    // --- 수직 축 (additive, READY 판정 제외) ---
+
+    @Test
+    fun verticalIsNullWhenNoYDeviation() {
+        val state = GuidanceStateMapper.from(
+            DeviationResult(subjectDetected = true, xDeviation = 0f, sizeDeviation = 0f)
+        )
+        assertNull(state.vertical)
+        assertFalse(state.isReady)
+    }
+
+    @Test
+    fun verticalMapsUpDownCenteredAndAlwaysAffectsReady() {
+        fun withY(y: Float) = GuidanceStateMapper.from(
+            DeviationResult(subjectDetected = true, xDeviation = 0f, sizeDeviation = 0f, yDeviation = y)
+        )
+        assertEquals(VerticalAlignment.UP, withY(-0.30f).vertical)
+        assertEquals(VerticalAlignment.DOWN, withY(0.30f).vertical)
+        assertEquals(VerticalAlignment.CENTERED, withY(0.10f).vertical)
+        assertFalse(withY(-0.30f).isReady)
+        assertTrue(withY(0.10f).isReady)
+    }
+
+    // --- 수평 축 경계값 ---
+
+    @Test
+    fun xExactlyAtNegativeThresholdIsCentered() {
+        // 조건이 `<` 이므로 경계값 자체는 CENTERED
+        val state = GuidanceStateMapper.from(result(x = -GuidanceStateMapper.MAX_ABS_X_DEVIATION, size = 0f))
+        assertEquals(HorizontalAlignment.CENTERED, state.horizontal)
+    }
+
+    @Test
+    fun xExactlyAtPositiveThresholdIsCentered() {
+        val state = GuidanceStateMapper.from(result(x = GuidanceStateMapper.MAX_ABS_X_DEVIATION, size = 0f))
+        assertEquals(HorizontalAlignment.CENTERED, state.horizontal)
+    }
+
+    @Test
+    fun xJustBeyondNegativeThresholdIsLeft() {
+        val state = GuidanceStateMapper.from(result(x = -(GuidanceStateMapper.MAX_ABS_X_DEVIATION + 0.001f), size = 0f))
+        assertEquals(HorizontalAlignment.LEFT, state.horizontal)
+    }
+
+    @Test
+    fun xJustBeyondPositiveThresholdIsRight() {
+        val state = GuidanceStateMapper.from(result(x = GuidanceStateMapper.MAX_ABS_X_DEVIATION + 0.001f, size = 0f))
+        assertEquals(HorizontalAlignment.RIGHT, state.horizontal)
+    }
+
+    @Test
+    fun xAtZeroIsCentered() {
+        val state = GuidanceStateMapper.from(result(x = 0f, size = 0f))
+        assertEquals(HorizontalAlignment.CENTERED, state.horizontal)
+    }
+
+    // --- 거리 축 경계값 ---
+
+    @Test
+    fun sizeExactlyAtNegativeThresholdIsCentered() {
+        val state = GuidanceStateMapper.from(result(x = 0f, size = -GuidanceStateMapper.MAX_ABS_SIZE_DEVIATION))
+        assertEquals(DistanceAlignment.CENTERED, state.distance)
+    }
+
+    @Test
+    fun sizeExactlyAtPositiveThresholdIsCentered() {
+        val state = GuidanceStateMapper.from(result(x = 0f, size = GuidanceStateMapper.MAX_ABS_SIZE_DEVIATION))
+        assertEquals(DistanceAlignment.CENTERED, state.distance)
+    }
+
+    @Test
+    fun sizeJustBelowNegativeThresholdIsCloser() {
+        // size_deviation 음수 = 목표보다 작음(=멀다)가 아니라, 계약상 음수는 "너무 멂" — CLOSER 판정 기준값 아래
+        val state = GuidanceStateMapper.from(result(x = 0f, size = -(GuidanceStateMapper.MAX_ABS_SIZE_DEVIATION + 0.001f)))
+        assertEquals(DistanceAlignment.CLOSER, state.distance)
+    }
+
+    @Test
+    fun sizeJustAboveThresholdIsFarther() {
+        val state = GuidanceStateMapper.from(result(x = 0f, size = GuidanceStateMapper.MAX_ABS_SIZE_DEVIATION + 0.001f))
+        assertEquals(DistanceAlignment.FARTHER, state.distance)
+    }
+
+    // --- isReady 조합 ---
+
+    @Test
+    fun readyOnlyWhenAllAxesCentered() {
+        val ready = GuidanceStateMapper.from(result(x = 0f, size = 0f))
+        assertTrue(ready.isReady)
+
+        val offHorizontal = GuidanceStateMapper.from(result(x = 0.3f, size = 0f))
+        assertFalse(offHorizontal.isReady)
+
+        // 크기 초과는 READY 를 막지 않는다 (2026-08-23) — 너무 작음(음수)만 막는다
+        val tooBig = GuidanceStateMapper.from(result(x = 0f, size = 0.2f))
+        assertTrue(tooBig.isReady)
+
+        val offDistance = GuidanceStateMapper.from(result(x = 0f, size = -0.2f))
+        assertFalse(offDistance.isReady)
+
+        val offBoth = GuidanceStateMapper.from(result(x = 0.3f, size = -0.2f))
+        assertFalse(offBoth.isReady)
+    }
+
+    @Test
+    fun detectedIsTrueWheneverSubjectDetected() {
+        val state = GuidanceStateMapper.from(result(x = 0.3f, size = 0.3f))
+        assertTrue(state.detected)
+    }
+
+    @Test
+    fun predictedObservationCanLookCenteredButIsNeverReady() {
+        val state = GuidanceStateMapper.from(
+            DeviationResult(
+                subjectDetected = true,
+                xDeviation = 0f,
+                sizeDeviation = 0f,
+                yDeviation = 0f,
+                observationFreshness = ObservationFreshness.PREDICTED,
+                observationAgeMs = 100L,
+            )
+        )
+        assertEquals(HorizontalAlignment.CENTERED, state.horizontal)
+        assertFalse(state.isReady)
+    }
+}

@@ -1,0 +1,29 @@
+# Web framework
+fastapi
+uvicorn[standard]
+python-multipart  # FastAPI 파일 업로드(UploadFile/Form) 처리에 필요
+
+# Computer vision / on-device models
+opencv-python
+mediapipe
+numpy
+ultralytics>=8.4.83,<9  # YOLO26n Objects365 PC prototype
+
+# MLLM integration
+anthropic
+openai  # 오픈소스 모델 비교용 (Together.ai 등 OpenAI 호환 호스팅 API 호출)
+python-dotenv
+
+# Image processing
+pillow
+
+# Environment / utilities
+pydantic
+requests  # ai/tts_client.py(ElevenLabs TTS 호출)에서 직접 사용 — 다른 패키지의 간접 의존에 기대지 않는다
+
+# Testing
+pytest
+
+# Formatter / Linter
+black
+ruff

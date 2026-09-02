@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 배포 빌드는 사진·음성·설명 메타데이터를 평문으로 보내지 않는다.
+     로컬 개발 HTTP 허용은 src/debug의 동일 이름 리소스로만 덮어쓴다. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>
