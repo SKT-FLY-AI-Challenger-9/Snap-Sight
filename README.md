@@ -1,4 +1,10 @@
-# Snap-Sight
+<div align="center">
+
+<img src="frontend/app/src/main/res/drawable-nodpi/logo_chameleon.png" alt="카멜레ON" width="360" />
+
+**시각장애인을 위한 촬영 보조 APP**
+
+</div>
 
 AI camera assistant that helps blind and low-vision users frame and capture photos independently.
 
@@ -8,7 +14,7 @@ AI camera assistant that helps blind and low-vision users frame and capture phot
 
 시각장애인도 우리가 일상에서 자주 사진을 찍는 것처럼 기록용 사진을 찍을 수 있어야 한다. 여행지에서 순간을 기록하고, 자녀의 성장 과정을 남기고, 나의 일상을 SNS에 공유하며 소통하는 경험은 시각 여부와 무관하게 누구에게나 필요하다.
 
-Snap-Sight는 음성으로 촬영 의도를 전달하면 AI가 피사체 위치를 추적해 햅틱·사운드 피드백으로 프레이밍을 안내하고, 촬영 시점 전후 프레임 중 가장 좋은 컷을 자동으로 골라주는 카메라 어시스턴트다.
+카멜레ON은 음성으로 촬영 의도를 전달하면 AI가 피사체 위치를 추적해 햅틱·사운드 피드백으로 프레이밍을 안내하고, 촬영 시점 전후 프레임 중 가장 좋은 컷을 자동으로 골라주는 카메라 어시스턴트다.
 
 ## 핵심 아이디어
 
@@ -102,7 +108,7 @@ flowchart TD
 - **백엔드**: Python, FastAPI, uvicorn
 - **온디바이스 위치 추적**: YOLO(Objects365 365-class) TFLite + ByteTrack-lite 트래커 (PC 참조 구현은 `ai/on_device_cv`)
 - **온디바이스 인식 (ML Kit)**: Pose(인물 프레이밍 머리·발·골반), Face(셀카 시선·인물 크롭·얼굴 등록), 한국어 Text Recognition(서류 모드)
-- **MLLM 연동**: Anthropic API (Claude)
+- **MLLM 연동**: Anthropic API
 - **음성**: Android SpeechRecognizer(STT), 내장 TTS + SKT A.X TTS 프리셋 보이스(백엔드 프록시·프리캐싱 음원)
 - **이미지 처리**: Pillow (백엔드)
 - **모바일**: Android 네이티브 (Kotlin, Jetpack Compose, CameraX, TFLite 런타임, TalkBack 접근성 대응)
@@ -157,7 +163,7 @@ frontend/                     # ⑤⑥ Android 네이티브 앱 (Kotlin, Compose
 tests/                        # pytest — 백엔드 + ai 참조 구현 + Kotlin 미러 계약 검증
 ```
 
-> iOS는 6인 역할표가 Android 전용으로 확정되면서 폴더 구조에서 뺐다. 다시 포함하기로 하면 `ios/`를 추가하고 이 문서와 CLAUDE.md의 "Android" 표기를 되돌릴 것.
+> iOS는 6인 역할표가 Android 전용으로 확정되면서 폴더 구조에서 뺐다. 다시 포함하기로 하면 `ios/`를 추가하고 이 문서의 "Android" 표기를 되돌릴 것.
 
 ## 설치 및 실행
 
@@ -179,7 +185,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-MLLM(Claude) 연동을 위해 Anthropic API 키가 필요하다. 저장소 루트에 `.env` 파일을 만들고 `.env.example`을 참고해 아래처럼 채운다.
+MLLM 연동을 위해 Anthropic API 키가 필요하다. 저장소 루트에 `.env` 파일을 만들고 `.env.example`을 참고해 아래처럼 채운다.
 
 ```
 ANTHROPIC_API_KEY=your_api_key_here
@@ -214,10 +220,6 @@ python -m ai.tools.export_tflite
 ```
 
 모델 자산이 없어도 앱은 정상 기동하며, CV 결과만 비어 있는 상태로 동작한다.
-
-## 개발 가이드
-
-코드 작성 규칙, 아키텍처 제약(온디바이스 vs 클라우드 분리 등), 팀 간 인터페이스 계약(데이터 포맷)은 [CLAUDE.md](CLAUDE.md)에 정리되어 있다. 새로 합류했다면 먼저 확인할 것.
 
 ## 라이선스
 
