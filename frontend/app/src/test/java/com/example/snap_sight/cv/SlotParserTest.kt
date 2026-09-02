@@ -45,28 +45,30 @@ class SlotParserTest {
 
     @Test
     fun `object label keyword coverage matches the python reference`() {
-        // Python 표(약 250+ 라벨)와 규모가 어긋나면 포팅이 뒤처졌다는 신호다.
+        // 170-class taxonomy 에서 person 을 뺀 169개가 상한이다.
         assertTrue(
             "objectLabel 커버리지가 Python 참조 구현보다 후퇴함",
-            SlotParser.OBJECT_LABEL_KEYWORDS.values.toSet().size >= 250,
+            SlotParser.OBJECT_LABEL_KEYWORDS.values.toSet().size >= 160,
         )
     }
 
     @Test
     fun `longer keyword wins when one keyword contains another`() {
         val cases = mapOf(
-            "쌍안경 찍어줘" to "binoculars",
-            "커피테이블 찍어줘" to "coffee table",
-            "나비넥타이 매고 찍어줘" to "bow tie",
-            "세발자전거 찍어줘" to "tricycle",
+            // 긴 키워드가 짧은 키워드를 품고 있을 때 긴 쪽이 이겨야 한다
             "감자튀김 찍어줘" to "french fries",
-            "찻주전자 찍어줘" to "tea pot",
+            "감자칼 찍어줘" to "vegetable peeler",
+            "농구골대 찍어줘" to "basketball hoop",
+            "실리콘주걱 찍어줘" to "silicon spatula",
+            "곰인형 찍어줘" to "teddy bear",
             // 짧은 키워드 쪽도 단독으로는 여전히 잘 잡혀야 한다
+            "감자 찍어줘" to "potato",
+            "골대 찍어줘" to "goalpost",
+            "주걱 찍어줘" to "rice spatula",
+            "인형 찍어줘" to "doll",
             "안경 찍어줘" to "glasses",
-            "테이블 찍어줘" to "dining table",
             "넥타이 찍어줘" to "tie",
             "자전거 찍어줘" to "bicycle",
-            "감자 찍어줘" to "potato",
             "주전자 찍어줘" to "kettle",
         )
         for ((text, expectedLabel) in cases) {
@@ -110,7 +112,8 @@ class SlotParserTest {
     @Test
     fun `common words containing removed short keywords do not false match`() {
         assertNull(SlotParser.parse("이렇게 크게 나오게 찍어줘", sessionId = "sess_11").objectLabel)
-        assertEquals("shrimp", SlotParser.parse("새우 요리 옆에서 찍어줘", sessionId = "sess_12").objectLabel)
+        // shrimp 는 170-class taxonomy 에 없다 — '새'가 '새우'에 걸리지 않는지만 확인한다.
+        assertNull(SlotParser.parse("새우 요리 옆에서 찍어줘", sessionId = "sess_12").objectLabel)
         assertNull(SlotParser.parse("풍경 배경으로 찍어줘", sessionId = "sess_13").objectLabel)
     }
 
@@ -179,12 +182,13 @@ class SlotParserTest {
 
     @Test
     fun `unrecognized object keeps safe defaults`() {
-        val spec = SlotParser.parse("저 정수기 좀 찍어줘", sessionId = "sess_6")
+        // 정수기는 170-class 에 실제로 있으므로, taxonomy 밖 사물로 바꾼다.
+        val spec = SlotParser.parse("저 헬리콥터 좀 찍어줘", sessionId = "sess_6")
 
         assertEquals(TargetSpec.SubjectType.PERSON, spec.subjectType)
         assertNull(spec.objectLabel)
         assertEquals(0.4f, spec.confidence)
-        assertEquals("저 정수기 좀 찍어줘", spec.rawText)
+        assertEquals("저 헬리콥터 좀 찍어줘", spec.rawText)
     }
 
     @Test

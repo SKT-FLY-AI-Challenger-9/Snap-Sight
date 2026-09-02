@@ -24,25 +24,28 @@ def test_object_label_keywords_have_no_duplicate_keys_and_good_coverage():
     """딕셔너리 리터럴은 중복 키를 조용히 덮어써서 실수를 숨긴다 — 개수로 한 번 더 확인.
     또한 이슈 #30의 목적(커버리지 확장)이 실제로 달성됐는지 최소 기준으로 확인한다."""
     covered_labels = set(OBJECT_LABEL_KEYWORDS.values())
-    assert len(covered_labels) >= 250, "objectLabel 커버리지가 이슈 #30 이전 수준으로 후퇴함"
+    # 170-class taxonomy 에서 person 을 뺀 169개가 상한이다.
+    assert len(covered_labels) >= 160, "objectLabel 커버리지가 후퇴함"
 
 
 def test_longer_keyword_wins_when_one_keyword_contains_another():
     """짧은 키워드가 더 긴 키워드의 substring인 경우(예: "안경" ⊂ "쌍안경"),
     dict 순서가 아니라 더 길고 구체적인 쪽이 이겨야 한다. 실제로 발견됐던 충돌 사례들."""
     cases = {
-        "쌍안경 찍어줘": "binoculars",
-        "커피테이블 찍어줘": "coffee table",
-        "나비넥타이 매고 찍어줘": "bow tie",
-        "세발자전거 찍어줘": "tricycle",
+        # 긴 키워드가 짧은 키워드를 품고 있을 때 긴 쪽이 이겨야 한다
         "감자튀김 찍어줘": "french fries",
-        "찻주전자 찍어줘": "tea pot",
+        "감자칼 찍어줘": "vegetable peeler",
+        "농구골대 찍어줘": "basketball hoop",
+        "실리콘주걱 찍어줘": "silicon spatula",
+        "곰인형 찍어줘": "teddy bear",
         # 짧은 키워드 쪽도 단독으로는 여전히 잘 잡혀야 한다 (longest-match가 과하게 막지 않는지 확인)
+        "감자 찍어줘": "potato",
+        "골대 찍어줘": "goalpost",
+        "주걱 찍어줘": "rice spatula",
+        "인형 찍어줘": "doll",
         "안경 찍어줘": "glasses",
-        "테이블 찍어줘": "dining table",
         "넥타이 찍어줘": "tie",
         "자전거 찍어줘": "bicycle",
-        "감자 찍어줘": "potato",
         "주전자 찍어줘": "kettle",
     }
     for text, expected_label in cases.items():
@@ -81,7 +84,8 @@ def test_common_words_containing_removed_short_keywords_do_not_false_match():
     """"크게"("게"=crab 포함), "새우"("새"=wild bird 포함), "배경"("배"=pear 포함) 같은
     일상 단어가 objectLabel로 잘못 잡히지 않는지 직접 확인 (실제로 발견됐던 버그)."""
     assert parse_target_spec("이렇게 크게 나오게 찍어줘", session_id="sess_11").object_label is None
-    assert parse_target_spec("새우 요리 옆에서 찍어줘", session_id="sess_12").object_label == "shrimp"
+    # shrimp 는 170-class taxonomy 에 없다 — '새'가 '새우'에 걸리지 않는지만 확인한다.
+    assert parse_target_spec("새우 요리 옆에서 찍어줘", session_id="sess_12").object_label is None
     assert parse_target_spec("풍경 배경으로 찍어줘", session_id="sess_13").object_label is None
 
 
@@ -145,12 +149,13 @@ def test_digit_count_pattern_parsed():
 def test_unrecognized_object_keeps_safe_defaults():
     """objectLabel 목록(그리고 애초에 Objects365 taxonomy)에 없는 사물은 person으로
     잘못 분류하지 않고 null로 안전하게 폴백한다."""
-    spec = parse_target_spec("저 정수기 좀 찍어줘", session_id="sess_6")
+    # 정수기는 170-class 에 실제로 있으므로, taxonomy 밖 사물로 바꾼다.
+    spec = parse_target_spec("저 헬리콥터 좀 찍어줘", session_id="sess_6")
 
     assert spec.subject_type is SubjectType.PERSON
     assert spec.object_label is None
     assert spec.confidence == 0.4
-    assert spec.raw_text == "저 정수기 좀 찍어줘"
+    assert spec.raw_text == "저 헬리콥터 좀 찍어줘"
 
 
 def test_schema_metadata_fields_are_populated():

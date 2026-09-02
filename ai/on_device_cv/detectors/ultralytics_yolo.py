@@ -20,7 +20,7 @@ ModelFactory = Callable[..., Any]
 class UltralyticsDetectorConfig:
     """Settings owned specifically by the Ultralytics detector adapter."""
 
-    model: str = "yolo26n-objv1-150.pt"
+    model: str = "yolo26n-kr170-v5.pt"
     input_size: int = 640
     confidence_threshold: float = 0.10
     max_detections: int = 300
@@ -48,8 +48,8 @@ class UltralyticsDetectorConfig:
 class UltralyticsYoloDetector:
     """Run a YOLO detection checkpoint and emit the shared detection contract.
 
-    The default checkpoint is Ultralytics' nano model pretrained on all 365
-    Objects365 classes. A compatible fine-tuned checkpoint can be supplied via
+    The default checkpoint is the Korean-domain 170-class model that ships with the
+    app. A compatible fine-tuned checkpoint can be supplied via
     :class:`UltralyticsDetectorConfig` without changing pipeline or tracker code.
     A native TFLite deployment should use its own adapter and config for explicit
     runtime control.

@@ -210,7 +210,7 @@ ultralytics 8.4.120 / LiteRT-Torch 경로로 export 한 실제 모델은 다음�
 
 - export 전에 checkpoint 의 `model.names` 를 `ai/taxonomy/objects365_yolo26_v1.json` 과
   class ID 순서까지 대조한다. 어긋나면 아무것도 만들지 않고 실패한다 — 한 칸만 밀려도
-  detector 가 조용히 엉뚱한 label 을 붙이기 때문이다. (현재 체크포인트는 365개 순서 일치 확인됨)
+  detector 가 조용히 엉뚱한 label 을 붙이기 때문이다. (현재 taxonomy 는 170-class `snapsight_kr170_v1`)
 - 라벨 파일은 **줄 번호 = class ID** 다. 정렬하거나 빈 줄을 넣으면 매핑이 깨진다.
 - 좌표 단위(정규화 vs 입력 픽셀)는 첫 유효 추론 결과에서 자동 판별하고 로그에 남긴다.
 
