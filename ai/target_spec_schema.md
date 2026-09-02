@@ -61,8 +61,8 @@ detector 입력을 제한하지 않는다. Objects365가 지원하는 전체 객
 
 `subjectType="object"`일 때 어떤 사물인지 식별하는 v0.2 필드다. 허용값의 단일 기준은
 [`ai/taxonomy/objects365_yolo26_v1.json`](taxonomy/objects365_yolo26_v1.json)의 `labels` 중
-`person`을 제외한 364개 값이다. 이 목록은 실제 배포 checkpoint
-`yolo26n-objv1-150.pt`의 365개 `model.names`와 class ID 순서까지 일치한다.
+`person`을 제외한 169개 값이다. 이 목록은 실제 배포 checkpoint
+`yolo26n-kr170-v5.pt`의 170개 `model.names`와 class ID 순서까지 일치한다.
 
 - 값은 모델의 canonical label을 그대로 사용한다. 영문 소문자와 내부 공백/슬래시를
   보존한다. 예: `cup`, `wine glass`, `cell phone`, `cabinet/shelf`.

@@ -59,7 +59,7 @@ def test_target_spec_applies_documented_defaults():
     assert target_spec.object_label is None
 
 
-@pytest.mark.parametrize("object_label", ["cup", "wine glass", "cabinet/shelf", "flashlight"])
+@pytest.mark.parametrize("object_label", ["cup", "wine glass", "cabinet/shelf", "kimchi"])
 def test_target_spec_v02_accepts_exact_objects365_object_labels(object_label):
     payload = valid_payload(
         schemaVersion="0.2",

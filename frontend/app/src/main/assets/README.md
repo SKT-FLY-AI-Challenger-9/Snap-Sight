@@ -4,8 +4,11 @@
 
 | 파일 | 설명 |
 | --- | --- |
-| `objects365_yolo26_v1.tflite` | Objects365 365-class YOLO detector (TFLite) |
-| `objects365_yolo26_v1_labels.txt` | 줄 번호 = class ID 인 라벨 목록 (365줄) |
+| `objects365_yolo26_v1.tflite` | 한국형 170-class YOLO detector (TFLite) |
+| `objects365_yolo26_v1_labels.txt` | 줄 번호 = class ID 인 라벨 목록 (170줄) |
+
+> 파일 이름은 과거 365-class 시절 그대로다. 내용은 `snapsight_kr170_v1` taxonomy
+> (Objects365 유래 101개 + 한국 생활 객체 69개)이며 라벨 파일이 단일 기준이다.
 
 두 파일 모두 저장소 루트에서 생성한다.
 
@@ -16,7 +19,7 @@ python -m ai.tools.export_tflite
 
 스크립트는 다음을 수행한다.
 
-1. `yolo26n-objv1-150.pt` 의 `model.names` 가 `ai/taxonomy/objects365_yolo26_v1.json` 과
+1. `yolo26n-kr170-v5.pt` 의 `model.names` 가 `ai/taxonomy/objects365_yolo26_v1.json` 과
    class ID 순서까지 일치하는지 검증 (어긋나면 export 하지 않고 실패)
 2. TFLite export
 3. 이 디렉터리로 모델 복사 + 라벨 파일 생성

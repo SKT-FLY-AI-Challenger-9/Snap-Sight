@@ -19,8 +19,8 @@ from ai.taxonomy import ObjectTaxonomy
 BOX = BoundingBox(0.1, 0.1, 0.4, 0.8)
 PERSON_1 = TrackedObject(1, "Person", 0.9, BOX, class_id=0)
 PERSON_2 = TrackedObject(2, "Person", 0.8, BOX, class_id=0)
-BOTTLE = TrackedObject(3, "Bottle", 0.85, BOX, class_id=5)
-CHAIR = TrackedObject(4, "Chair", 0.75, BOX, class_id=2)
+BOTTLE = TrackedObject(3, "Bottle", 0.85, BOX, class_id=26)
+CHAIR = TrackedObject(4, "Chair", 0.75, BOX, class_id=36)
 ALL_OBJECTS = FrameResult((PERSON_1, PERSON_2, BOTTLE, CHAIR))
 
 
@@ -63,7 +63,7 @@ def test_generic_object_intent_selects_all_supported_non_person_objects():
 
 
 def test_specific_object_label_selects_only_that_objects365_class():
-    cup = TrackedObject(10, "cup", 0.9, BOX, class_id=7)
+    cup = TrackedObject(10, "cup", 0.9, BOX, class_id=24)
     selection = TargetSelector().select(
         FrameResult((PERSON_1, BOTTLE, CHAIR, cup)),
         target_spec(
